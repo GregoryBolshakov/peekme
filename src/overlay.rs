@@ -52,6 +52,22 @@ pub fn layout(rows: usize, sel_first: usize, sel_last: usize) -> Layout {
     }
 }
 
+/// The same placement with a smaller box, still touching the selection.
+/// The region is unchanged, so rows the box gives back are redrawn in place.
+pub fn shrink(lay: &Layout, height: usize) -> Layout {
+    let height = height.min(lay.box_height);
+    let box_top = if lay.below {
+        lay.box_top
+    } else {
+        lay.box_top + lay.box_height - height
+    };
+    Layout {
+        box_top,
+        box_height: height,
+        ..*lay
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Style {
     Plain,
@@ -135,6 +151,11 @@ impl PeekBox {
             }
             _ => markdown_lines(&self.text, width),
         }
+    }
+
+    /// Rows the box needs to show all of its text (borders included), at least 3.
+    pub fn fitted_height(&self, cols: usize) -> usize {
+        self.body_lines(cols.saturating_sub(4)).len().max(1) + 2
     }
 
     /// Max scroll offset for a box of `height` rows on a `cols`-wide screen.
@@ -241,9 +262,16 @@ pub fn open_frame(snap: &Snapshot, lay: &Layout, peek: &PeekBox) -> String {
         }
     }
     peek.draw(&mut out, lay, snap.cols);
-    render::restore_cursor(&mut out, snap);
+    hide_cursor_at_rest(&mut out, snap);
     out.push_str(SYNC_END);
     out
+}
+
+/// While the box is open the cursor stays hidden: its row may now be inside the
+/// box. The pen and position are still put back for the child's next write.
+fn hide_cursor_at_rest(out: &mut String, snap: &Snapshot) {
+    render::restore_cursor(out, snap);
+    out.push_str("\x1b[?25l");
 }
 
 /// A frame that only refreshes the box (while text streams in).
@@ -251,7 +279,7 @@ pub fn box_frame(snap: &Snapshot, lay: &Layout, peek: &PeekBox) -> String {
     let mut out = String::from(SYNC_BEGIN);
     out.push_str("\x1b[?25l");
     peek.draw(&mut out, lay, snap.cols);
-    render::restore_cursor(&mut out, snap);
+    hide_cursor_at_rest(&mut out, snap);
     out.push_str(SYNC_END);
     out
 }
@@ -354,8 +382,6 @@ fn inline_spans(s: &str) -> Vec<(Style, String)> {
 /// Word-wrap styled spans to `width` columns, keeping each word's style.
 fn wrap(spans: &[(Style, String)], width: usize) -> Vec<Line> {
     let width = width.max(8);
-    let mut lines = vec![Vec::new()];
-    let mut col = 0;
     let indent = spans
         .first()
         .map(|(_, t)| {
@@ -368,45 +394,69 @@ fn wrap(spans: &[(Style, String)], width: usize) -> Vec<Line> {
         .unwrap_or(0)
         .min(width / 2);
 
+    // Words are split on spaces only, so a word may span several styles
+    // ("`main`," is one word): punctuation never starts a line on its own.
+    let mut words: Vec<Line> = vec![Vec::new()];
+    let mut lead_spaces = 0;
     for (style, text) in spans {
-        let pieces = text.split(' ');
-        let mut first = true;
-        for word in pieces {
-            let piece = if first {
-                word.to_string()
-            } else {
-                format!(" {word}")
-            };
-            first = false;
-            let w = piece.width();
-            if col + w > width && col > indent {
-                lines.push(vec![(Style::Plain, " ".repeat(indent))]);
-                col = indent;
-                let word = piece.trim_start().to_string();
-                col += word.width();
-                push(lines.last_mut().unwrap(), *style, word);
-            } else if w > width {
-                // A single word longer than the line: hard-break it.
-                let mut chunk = String::new();
-                for ch in piece.chars() {
-                    let cw = ch.width().unwrap_or(0);
-                    if col + cw > width {
-                        push(
-                            lines.last_mut().unwrap(),
-                            *style,
-                            std::mem::take(&mut chunk),
-                        );
-                        lines.push(Vec::new());
-                        col = 0;
-                    }
-                    chunk.push(ch);
-                    col += cw;
+        for (i, part) in text.split(' ').enumerate() {
+            if i > 0 {
+                if words.last().is_some_and(|w| !w.is_empty()) {
+                    words.push(Vec::new());
+                } else if words.len() == 1 {
+                    lead_spaces += 1;
                 }
-                push(lines.last_mut().unwrap(), *style, chunk);
-            } else {
-                col += w;
-                push(lines.last_mut().unwrap(), *style, piece);
             }
+            if !part.is_empty() {
+                push(words.last_mut().unwrap(), *style, part.to_string());
+            }
+        }
+    }
+    let width_of = |w: &Line| w.iter().map(|(_, t)| t.width()).sum::<usize>();
+
+    let mut lines: Vec<Line> = vec![Vec::new()];
+    let mut col = 0;
+    if lead_spaces > 0 {
+        push(
+            &mut lines[0],
+            Style::Plain,
+            " ".repeat(lead_spaces.min(width / 2)),
+        );
+        col = lead_spaces.min(width / 2);
+    }
+    for word in words.into_iter().filter(|w| !w.is_empty()) {
+        let w = width_of(&word);
+        let sep = usize::from(
+            col > 0 && !(lead_spaces > 0 && col == lead_spaces.min(width / 2) && lines.len() == 1),
+        );
+        if col + sep + w > width && col > indent {
+            lines.push(vec![(Style::Plain, " ".repeat(indent))]);
+            col = indent;
+        } else if sep == 1 {
+            push(lines.last_mut().unwrap(), Style::Plain, " ".into());
+            col += 1;
+        }
+        if col + w <= width {
+            col += w;
+            for (style, text) in word {
+                push(lines.last_mut().unwrap(), style, text);
+            }
+            continue;
+        }
+        // A single word longer than the line: hard-break it.
+        for (style, text) in word {
+            let mut chunk = String::new();
+            for ch in text.chars() {
+                let cw = ch.width().unwrap_or(0);
+                if col + cw > width {
+                    push(lines.last_mut().unwrap(), style, std::mem::take(&mut chunk));
+                    lines.push(Vec::new());
+                    col = 0;
+                }
+                chunk.push(ch);
+                col += cw;
+            }
+            push(lines.last_mut().unwrap(), style, chunk);
         }
     }
     lines
@@ -435,6 +485,21 @@ mod tests {
         assert!(!l.below);
         assert_eq!(l.box_top + l.box_height, 37);
         assert_eq!(l.region, (0, 37));
+    }
+
+    #[test]
+    fn punctuation_stays_with_its_word() {
+        let text = "one straight sequence on top of the current `main`, without merge commits";
+        for width in 20..60 {
+            for line in markdown_lines(text, width) {
+                let s: String = line.iter().map(|(_, t)| t.as_str()).collect();
+                assert!(
+                    !s.trim_start().starts_with(','),
+                    "line starts with a comma at width {width}: {s:?}"
+                );
+                assert!(s.width() <= width);
+            }
+        }
     }
 
     #[test]

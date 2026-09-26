@@ -499,6 +499,16 @@ impl App {
             Progress::Done => {
                 open.peek.status = Status::Done;
                 open.peek.deep_available = !open.deep;
+                // Give back the rows the text doesn't need, once, now that it is complete.
+                let fitted = open.peek.fitted_height(open.snap.cols).max(3);
+                if fitted < open.lay.box_height {
+                    // Same region, smaller box: one frame redraws every row of it.
+                    open.lay = overlay::shrink(&open.lay, fitted);
+                    let frame = overlay::open_frame(&open.snap, &open.lay, &open.peek);
+                    out.write_all(frame.as_bytes())?;
+                    out.flush()?;
+                    return Ok(());
+                }
             }
             Progress::Failed(e) => open.peek.status = Status::Error(e),
         }
@@ -571,6 +581,14 @@ mod tests {
                     .into();
             real.advance(overlay::open_frame(&snap, &lay, &peek).as_bytes());
             real.advance(overlay::box_frame(&snap, &lay, &peek).as_bytes());
+            let small = overlay::shrink(&lay, 4);
+            real.advance(overlay::open_frame(&snap, &small, &peek).as_bytes());
+            real.advance(overlay::close_frame(&snap, &small).as_bytes());
+            assert!(
+                same_screen(&real.snapshot(), &snap),
+                "not restored after shrinking"
+            );
+            real.advance(overlay::open_frame(&snap, &lay, &peek).as_bytes());
             assert!(
                 !same_screen(&real.snapshot(), &snap),
                 "the box should be visible"

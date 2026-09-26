@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The box gets smaller when the explanation is complete, so it takes only the rows it needs.
+- A comma or a bracket after styled text no longer starts a new line in the box.
+- The terminal cursor is hidden while the box is open. Before, it could show inside the box text.
+
 ## 0.0.1 (2026-09-26)
 
 First working version.
