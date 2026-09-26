@@ -463,12 +463,13 @@ dependencies = [
 
 [[package]]
 name = "peekme"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
  "arboard",
  "crossterm",
+ "libc",
  "portable-pty",
  "serde",
  "serde_json",

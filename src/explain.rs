@@ -216,7 +216,11 @@ impl AppServer {
 }
 
 fn codex_bin() -> String {
-    std::env::var("PEEKME_CODEX_BIN").unwrap_or_else(|_| "codex".into())
+    std::env::var("PEEKME_CODEX_BIN").unwrap_or_else(|_| {
+        crate::launch::find_real_codex()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "codex".into())
+    })
 }
 
 /// Run one explanation, reporting progress on `tx`. Blocks; call from a thread.

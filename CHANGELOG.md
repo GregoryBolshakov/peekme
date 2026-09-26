@@ -1,7 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 (2026-09-26)
 
+- `peekme install` makes `codex` open with peekme. It adds a shell function `codex` and a
+  `codex` link at the front of PATH. Aliases and scripts that call `codex` keep working.
+  `peekme uninstall` removes it and leaves your files as they were. `peekme doctor` checks the
+  setup and says what is in the way.
+- The first plain `peekme` run asks once if it should set this up.
+- Only Codex's interactive screen gets peekme. `codex exec`, `login`, `mcp` and the other
+  subcommands, and output to a pipe or a file, run plain Codex directly.
+- peekme never wraps itself twice.
+- Ctrl+Z works. Codex stops, you get your shell back, and `fg` brings it back. Before, Ctrl+Z
+  did nothing inside peekme.
+- The Codex input line and status line stay live while the box is open. You can type, and
+  Enter sends the message and closes the box. If Codex needs more room, for example for an
+  approval question, the box closes by itself.
+- If peekme can't start its terminal, it starts Codex directly. If something inside peekme
+  fails later, it logs the error, puts the screen back and keeps passing Codex through.
+  The log is in `~/.local/state/peekme/peekme.log`.
 - The box gets smaller when the explanation is complete, so it takes only the rows it needs.
 - A comma or a bracket after styled text no longer starts a new line in the box.
 - The terminal cursor is hidden while the box is open. Before, it could show inside the box text.

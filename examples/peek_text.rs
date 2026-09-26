@@ -7,6 +7,9 @@
 mod context;
 #[path = "../src/explain.rs"]
 mod explain;
+#[allow(dead_code)]
+#[path = "../src/launch.rs"]
+mod launch;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();

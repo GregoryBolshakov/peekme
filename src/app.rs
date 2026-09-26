@@ -1,16 +1,20 @@
 //! The wrapper: run the child in a PTY, pass its output through untouched,
 //! and open peek boxes in place on request.
 
+use std::collections::VecDeque;
 use std::io::{Read, Write};
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
+use alacritty_terminal::term::cell::Cell;
 use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use crate::explain::{self, AppServer, Progress};
 use crate::input::{self, Consumed, Kind, Token};
+use crate::jobctl;
 use crate::overlay::{self, Layout, PeekBox, Status};
 use crate::render::{self, SYNC_BEGIN, SYNC_END};
 use crate::select::{self, SelectionSource};
@@ -23,6 +27,15 @@ enum Msg {
     ChildGone,
     Peek(u64, Progress),
     AppServer(Result<Arc<AppServer>, String>),
+    /// The child suspended itself (Ctrl+Z).
+    ChildStopped,
+}
+
+/// Why `run` failed. Setup failures happen before the child starts, so the
+/// caller can still run the command without peekme.
+pub enum Failure {
+    Setup(anyhow::Error),
+    Runtime(anyhow::Error),
 }
 
 struct Open {
@@ -35,6 +48,12 @@ struct Open {
     peek: PeekBox,
     /// Child output held back while the box is open, replayed on close.
     held: Vec<u8>,
+    /// First row of the child's live area (Codex's composer and status),
+    /// kept updating while the box is open.
+    strip_top: Option<usize>,
+    /// What the live rows currently show on the terminal.
+    strip_shown: Vec<Vec<Cell>>,
+    strip_dirty: bool,
 }
 
 /// A hotkey press waiting for the child to finish a synchronized update.
@@ -42,8 +61,32 @@ struct PendingOpen {
     since: Instant,
 }
 
-pub fn run(program: &str, args: &[String]) -> Result<i32> {
-    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+pub fn run(program: &str, args: &[String]) -> std::result::Result<i32, Failure> {
+    let setup = setup(program, args).map_err(Failure::Setup)?;
+    event_loop(setup).map_err(Failure::Runtime)
+}
+
+struct Setup {
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    helper_pid: Option<u32>,
+    master: Box<dyn portable_pty::MasterPty + Send>,
+    writer: Box<dyn Write + Send>,
+    rx: mpsc::Receiver<Msg>,
+    tx: Sender<Msg>,
+    cols: u16,
+    rows: u16,
+}
+
+fn setup(program: &str, args: &[String]) -> Result<Setup> {
+    // Test hook (debug builds only): pretend setup failed, to check fail-open.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("PEEKME_TEST_FAIL_SETUP").is_some() {
+        anyhow::bail!("setup failure requested by PEEKME_TEST_FAIL_SETUP");
+    }
+    let (cols, rows) = match crossterm::terminal::size() {
+        Ok((c, r)) if c > 0 && r > 0 => (c, r),
+        _ => (80, 24),
+    };
     let pty = native_pty_system();
     let pair = pty
         .openpty(PtySize {
@@ -53,16 +96,29 @@ pub fn run(program: &str, args: &[String]) -> Result<i32> {
             pixel_height: 0,
         })
         .context("could not open a pseudo-terminal")?;
-    let mut cmd = CommandBuilder::new(program);
+    // Run the command under the job-control helper (see jobctl.rs) so that
+    // Ctrl+Z works; without our own path, run it directly.
+    let exe = std::env::current_exe().ok();
+    let mut cmd = match &exe {
+        Some(exe) => {
+            let mut c = CommandBuilder::new(exe);
+            c.arg(jobctl::HELPER_ARG);
+            c.arg(program);
+            c
+        }
+        None => CommandBuilder::new(program),
+    };
     cmd.args(args);
     cmd.cwd(std::env::current_dir()?);
-    let mut child = pair
+    cmd.env(crate::launch::ACTIVE_ENV, "1");
+    let child = pair
         .slave
         .spawn_command(cmd)
         .with_context(|| format!("could not start `{program}`"))?;
+    let helper_pid = exe.and(child.process_id());
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader()?;
-    let mut writer = pair.master.take_writer()?;
+    let writer = pair.master.take_writer()?;
     let master = pair.master;
 
     let (tx, rx) = mpsc::channel::<Msg>();
@@ -98,13 +154,19 @@ pub fn run(program: &str, args: &[String]) -> Result<i32> {
             }
         });
     }
-    // Window size changes.
+    // Window size changes, and the helper reporting that the child stopped.
     {
         let tx = tx.clone();
-        let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::SIGWINCH])?;
+        let mut signals =
+            signal_hook::iterator::Signals::new([signal_hook::consts::SIGWINCH, jobctl::STOPPED])?;
         std::thread::spawn(move || {
-            for _ in signals.forever() {
-                if tx.send(Msg::Resize).is_err() {
+            for sig in signals.forever() {
+                let msg = if sig == jobctl::STOPPED {
+                    Msg::ChildStopped
+                } else {
+                    Msg::Resize
+                };
+                if tx.send(msg).is_err() {
                     break;
                 }
             }
@@ -114,11 +176,35 @@ pub fn run(program: &str, args: &[String]) -> Result<i32> {
     {
         let tx = tx.clone();
         std::thread::spawn(move || {
-            let r = AppServer::start().map_err(|e| format!("{e:#}"));
+            let r = std::panic::catch_unwind(AppServer::start)
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("internal error")))
+                .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::AppServer(r));
         });
     }
+    Ok(Setup {
+        child,
+        helper_pid,
+        master,
+        writer,
+        rx,
+        tx,
+        cols,
+        rows,
+    })
+}
 
+fn event_loop(setup: Setup) -> Result<i32> {
+    let Setup {
+        mut child,
+        helper_pid,
+        master,
+        mut writer,
+        rx,
+        tx,
+        cols,
+        rows,
+    } = setup;
     let mut app = App {
         shadow: Shadow::new(cols, rows),
         open: None,
@@ -130,50 +216,109 @@ pub fn run(program: &str, args: &[String]) -> Result<i32> {
         selection: SelectionSource::new(),
         server: None,
         server_error: None,
-        tx: tx.clone(),
+        tx,
         cwd: std::env::current_dir()?.to_string_lossy().into_owned(),
+        viewport_top: None,
+        degraded: false,
+        size: (cols, rows),
     };
     let mut stdout = std::io::stdout().lock();
+    let mut queue: VecDeque<Msg> = VecDeque::new();
 
     loop {
-        let msg = match rx.recv_timeout(Duration::from_millis(40)) {
-            Ok(m) => m,
-            Err(RecvTimeoutError::Timeout) => {
-                app.tick(&mut stdout, &mut *writer)?;
-                continue;
-            }
-            Err(RecvTimeoutError::Disconnected) => break,
+        let msg = match queue.pop_front() {
+            Some(m) => m,
+            None => match rx.recv_timeout(Duration::from_millis(40)) {
+                Ok(m) => m,
+                Err(RecvTimeoutError::Timeout) => {
+                    guarded(&mut app, &mut stdout, |app, out| app.tick(out))?;
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            },
         };
         match msg {
-            Msg::Output(bytes) => app.on_output(&bytes, &mut stdout, &mut *writer)?,
-            Msg::Input(bytes) => app.on_input(&bytes, &mut stdout, &mut *writer)?,
+            Msg::Output(bytes) => guarded(&mut app, &mut stdout, |app, out| {
+                app.on_output(&bytes, out, &mut *writer)
+            })?,
+            Msg::Input(bytes) => {
+                if app.degraded {
+                    writer.write_all(&bytes)?;
+                    writer.flush()?;
+                } else {
+                    guarded(&mut app, &mut stdout, |app, out| {
+                        app.on_input(&bytes, out, &mut *writer)
+                    })?
+                }
+            }
             Msg::Resize => {
-                let (c, r) = crossterm::terminal::size().unwrap_or((cols, rows));
+                let (c, r) = crossterm::terminal::size().unwrap_or(app.size);
                 let _ = master.resize(PtySize {
                     rows: r,
                     cols: c,
                     pixel_width: 0,
                     pixel_height: 0,
                 });
-                app.on_resize(c, r, &mut stdout)?;
+                guarded(&mut app, &mut stdout, |app, out| app.on_resize(c, r, out))?;
             }
-            Msg::Peek(id, p) => app.on_progress(id, p, &mut stdout)?,
+            Msg::Peek(id, p) => guarded(&mut app, &mut stdout, |app, out| {
+                app.on_progress(id, p, out)
+            })?,
             Msg::AppServer(r) => match r {
                 Ok(s) => app.server = Some(s),
                 Err(e) => app.server_error = Some(e),
             },
+            Msg::ChildStopped => {
+                // The child restores the terminal before it stops; let those
+                // bytes reach the screen first.
+                let deadline = Instant::now() + Duration::from_millis(60);
+                while let Ok(m) =
+                    rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                {
+                    match m {
+                        Msg::Output(bytes) => guarded(&mut app, &mut stdout, |app, out| {
+                            app.on_output(&bytes, out, &mut *writer)
+                        })?,
+                        other => queue.push_back(other),
+                    }
+                }
+                guarded(&mut app, &mut stdout, |app, out| app.close(out, false))?;
+                stdout.flush()?;
+                jobctl::suspend_self();
+                // Resumed. The window may have changed size meanwhile.
+                queue.push_front(Msg::Resize);
+                if let Some(pid) = helper_pid {
+                    jobctl::continue_child(pid);
+                }
+            }
             Msg::ChildGone => break,
         }
     }
 
-    if app.open.is_some() {
-        app.close(&mut stdout, true)?;
+    if app.open.is_some() && !app.degraded {
+        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| app.close(&mut stdout, true)));
     }
     if let Some(s) = &app.server {
         s.shutdown();
     }
     let status = child.wait()?;
     Ok(status.exit_code() as i32)
+}
+
+/// Run a handler; if the peek code panics, fall back to plain pass-through for
+/// the rest of the session instead of taking the child down with it.
+fn guarded(
+    app: &mut App,
+    out: &mut dyn Write,
+    f: impl FnOnce(&mut App, &mut dyn Write) -> Result<()>,
+) -> Result<()> {
+    match std::panic::catch_unwind(AssertUnwindSafe(|| f(app, out))) {
+        Ok(r) => r,
+        Err(_) => {
+            app.degrade(out);
+            Ok(())
+        }
+    }
 }
 
 struct App {
@@ -189,31 +334,56 @@ struct App {
     server_error: Option<String>,
     tx: Sender<Msg>,
     cwd: String,
+    /// Where the child's live area starts, learned from its scroll regions.
+    viewport_top: Option<usize>,
+    /// Set after a panic in the peek code: from then on, pass everything through.
+    degraded: bool,
+    size: (u16, u16),
 }
 
 impl App {
     fn on_output(
         &mut self,
         bytes: &[u8],
-        out: &mut impl Write,
+        out: &mut dyn Write,
         child: &mut dyn Write,
     ) -> Result<()> {
+        if self.degraded {
+            out.write_all(bytes)?;
+            return Ok(out.flush()?);
+        }
+        if self.open.is_none() {
+            // Pass through first: whatever happens below, the user sees the child.
+            out.write_all(bytes)?;
+            out.flush()?;
+        }
+        if let Some(k) = viewport_top(bytes, self.size.1 as usize) {
+            self.viewport_top = Some(k);
+        }
         self.shadow.advance(bytes);
         match &mut self.open {
             None => {
-                out.write_all(bytes)?;
-                out.flush()?;
                 // The real terminal answers the child's queries; drop the shadow's copies.
                 self.shadow.take_replies();
             }
             Some(open) => {
                 open.held.extend_from_slice(bytes);
-                open.peek.waiting_updates += 1;
                 // The real terminal won't see these bytes yet, so the shadow answers.
                 let replies = self.shadow.take_replies();
                 if !replies.is_empty() {
                     child.write_all(&replies)?;
                     child.flush()?;
+                }
+                match open.strip_top {
+                    Some(top) => {
+                        open.strip_dirty = true;
+                        // The live area grew into the box (an approval prompt, say):
+                        // the child needs the room more than we do.
+                        if self.viewport_top.is_some_and(|k| k < top) {
+                            self.close(out, false)?;
+                        }
+                    }
+                    None => open.peek.waiting_updates += 1,
                 }
             }
         }
@@ -224,8 +394,67 @@ impl App {
         Ok(())
     }
 
-    fn tick(&mut self, out: &mut impl Write, _child: &mut dyn Write) -> Result<()> {
+    /// Redraw the child's live rows under the box from the shadow, only the
+    /// rows that changed, and put the cursor where the child has it.
+    fn refresh_strip(&mut self, out: &mut dyn Write) -> Result<()> {
+        let Some(open) = &mut self.open else {
+            return Ok(());
+        };
+        let Some(top) = open.strip_top else {
+            return Ok(());
+        };
+        let now = self.shadow.snapshot();
+        let mut bytes = String::from(SYNC_BEGIN);
+        for r in top..now.rows.len() {
+            let i = r - top;
+            let changed = open
+                .strip_shown
+                .get(i)
+                .is_none_or(|shown| !same_cells(shown, &now.rows[r]));
+            if changed {
+                render::row(&mut bytes, r, &now.rows[r]);
+            }
+        }
+        open.strip_shown = now.rows[top..].to_vec();
+        open.strip_dirty = false;
+        bytes.push_str(&strip_cursor(&now, top));
+        bytes.push_str(SYNC_END);
+        out.write_all(bytes.as_bytes())?;
+        out.flush()?;
+        Ok(())
+    }
+
+    /// Stop the peek feature for this session after a panic in it, putting the
+    /// screen back as well as possible.
+    fn degrade(&mut self, out: &mut dyn Write) {
+        crate::log("peek code panicked; passing the child through for the rest of the session");
+        self.degraded = true;
+        self.pending = None;
+        if let Some(open) = self.open.take() {
+            let repaint = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let mut s = String::from(SYNC_BEGIN);
+                if let Some(top) = open.strip_top {
+                    render::rows(&mut s, top, &open.snap.rows[top..]);
+                }
+                s.push_str(&overlay::close_frame(&open.snap, &open.lay));
+                s
+            }))
+            .unwrap_or_default();
+            let _ = out.write_all(repaint.as_bytes());
+            let _ = out.write_all(&open.held);
+            let _ = out.write_all(SYNC_END.as_bytes());
+            let _ = out.flush();
+        }
+    }
+
+    fn tick(&mut self, out: &mut dyn Write) -> Result<()> {
+        if self.degraded {
+            return Ok(());
+        }
         self.shadow.check_sync_timeout();
+        if self.open.as_ref().is_some_and(|o| o.strip_dirty) {
+            self.refresh_strip(out)?;
+        }
         if let Some(p) = &self.pending
             && (!self.shadow.in_sync_update() || p.since.elapsed() > Duration::from_millis(200))
         {
@@ -235,12 +464,7 @@ impl App {
         Ok(())
     }
 
-    fn on_input(
-        &mut self,
-        bytes: &[u8],
-        out: &mut impl Write,
-        child: &mut dyn Write,
-    ) -> Result<()> {
+    fn on_input(&mut self, bytes: &[u8], out: &mut dyn Write, child: &mut dyn Write) -> Result<()> {
         let tokens = input::tokenize(bytes, &mut self.carry, &mut self.in_paste);
         let mut forward: Vec<u8> = Vec::new();
         for t in tokens {
@@ -275,8 +499,15 @@ impl App {
                 }
                 (Kind::Passive | Kind::Release, _) => forward.extend_from_slice(&t.bytes),
                 (_, true) => {
-                    // Any other key closes the box and goes to the child as usual.
-                    self.close(out, false)?;
+                    let live = self.open.as_ref().is_some_and(|o| o.strip_top.is_some());
+                    // With the child's input line live under the box, typing goes
+                    // to it and the box stays. Enter sends the message and the
+                    // conversation moves on, so the box closes. Without the live
+                    // line any key closes the box.
+                    if !live || t.bytes == b"\r" {
+                        self.flush_forward(&mut forward, child)?;
+                        self.close(out, false)?;
+                    }
                     forward.extend_from_slice(&t.bytes);
                 }
                 (_, false) => forward.extend_from_slice(&t.bytes),
@@ -322,7 +553,7 @@ impl App {
         }
     }
 
-    fn request_open(&mut self, out: &mut impl Write) -> Result<()> {
+    fn request_open(&mut self, out: &mut dyn Write) -> Result<()> {
         if self.shadow.in_sync_update() {
             // Never cut into the child's half-finished frame.
             self.pending = Some(PendingOpen {
@@ -333,7 +564,7 @@ impl App {
         self.open_peek(out)
     }
 
-    fn open_peek(&mut self, out: &mut impl Write) -> Result<()> {
+    fn open_peek(&mut self, out: &mut dyn Write) -> Result<()> {
         // If the child's frame never finished, show what a terminal without
         // synchronized output already shows: everything received so far.
         if self.shadow.in_sync_update() {
@@ -341,15 +572,25 @@ impl App {
         }
         let snap = self.shadow.snapshot();
         let rows = snap.rows.len();
+        // Test hook (debug builds only): panic after the box is drawn, to check
+        // that the session degrades to pass-through instead of dying.
+        #[cfg(debug_assertions)]
+        let panic_after_open = std::env::var_os("PEEKME_TEST_PANIC").is_some();
         self.next_id += 1;
         let id = self.next_id;
 
         let selection = self.selection.read();
         let located = selection.as_deref().and_then(|s| select::locate(&snap, s));
         let mut remembered = None;
+        let mut strip = None;
         let (peek, lay) = match (&selection, located) {
             (Some(sel), Some(loc)) => {
-                let lay = overlay::layout(rows, loc.first_row, loc.last_row);
+                // Keep the child's live area (input line, status) out of the box's
+                // way when we know where it starts and the selection is above it.
+                strip = self
+                    .viewport_top
+                    .filter(|&k| loc.last_row < k && k < rows && k >= rows / 3);
+                let lay = overlay::layout(strip.unwrap_or(rows), loc.first_row, loc.last_row);
                 let mut peek = PeekBox::new(sel);
                 let max_lines = lay.box_height.saturating_sub(2).clamp(3, 12);
                 if let Some(e) = self.start_explain(id, loc.screen.clone(), max_lines, false) {
@@ -368,9 +609,13 @@ impl App {
             }
         };
 
-        let frame = overlay::open_frame(&snap, &lay, &peek);
+        let mut frame = overlay::open_frame(&snap, &lay, &peek);
+        if let Some(top) = strip {
+            frame.push_str(&strip_cursor(&snap, top));
+        }
         out.write_all(frame.as_bytes())?;
         out.flush()?;
+        let strip_shown = strip.map_or_else(Vec::new, |top| snap.rows[top..].to_vec());
         self.open = Some(Open {
             id,
             selection: remembered,
@@ -379,7 +624,14 @@ impl App {
             lay,
             peek,
             held: Vec::new(),
+            strip_top: strip,
+            strip_shown,
+            strip_dirty: false,
         });
+        #[cfg(debug_assertions)]
+        if panic_after_open {
+            panic!("panic requested by PEEKME_TEST_PANIC");
+        }
         Ok(())
     }
 
@@ -416,7 +668,7 @@ impl App {
 
     /// If the open box explains the current selection, re-explain it with the
     /// whole conversation in the same box. Returns false when that doesn't apply.
-    fn escalate(&mut self, out: &mut impl Write) -> Result<bool> {
+    fn escalate(&mut self, out: &mut dyn Write) -> Result<bool> {
         let current = self.selection.read();
         let Some(open) = &self.open else {
             return Ok(false);
@@ -442,21 +694,32 @@ impl App {
             Some(e) => Status::Error(e),
             None => Status::Thinking,
         };
-        out.write_all(overlay::box_frame(&open.snap, &open.lay, &open.peek).as_bytes())?;
+        let mut frame = overlay::box_frame(&open.snap, &open.lay, &open.peek);
+        if let Some(top) = open.strip_top {
+            frame.push_str(&strip_cursor(&self.shadow.snapshot(), top));
+        }
+        out.write_all(frame.as_bytes())?;
         out.flush()?;
         Ok(true)
     }
 
     /// Close the box: repaint the region from the snapshot, then replay held
     /// output so the terminal reaches exactly the child's current state.
-    fn close(&mut self, out: &mut impl Write, skip_repaint: bool) -> Result<()> {
+    fn close(&mut self, out: &mut dyn Write, skip_repaint: bool) -> Result<()> {
         let Some(open) = self.open.take() else {
             return Ok(());
         };
         let mut bytes = Vec::new();
         bytes.extend_from_slice(SYNC_BEGIN.as_bytes());
         if !skip_repaint {
-            bytes.extend_from_slice(overlay::close_frame(&open.snap, &open.lay).as_bytes());
+            // The live rows show newer content than the snapshot; put them back
+            // too, so replaying the held output starts from the state it expects.
+            let mut s = String::new();
+            if let Some(top) = open.strip_top {
+                render::rows(&mut s, top, &open.snap.rows[top..]);
+            }
+            s.push_str(&overlay::close_frame(&open.snap, &open.lay));
+            bytes.extend_from_slice(s.as_bytes());
         }
         bytes.extend_from_slice(&render::strip_answered_queries(&open.held));
         bytes.extend_from_slice(SYNC_END.as_bytes());
@@ -465,7 +728,7 @@ impl App {
         Ok(())
     }
 
-    fn scroll(&mut self, down: bool, out: &mut impl Write) -> Result<()> {
+    fn scroll(&mut self, down: bool, out: &mut dyn Write) -> Result<()> {
         let Some(open) = &mut self.open else {
             return Ok(());
         };
@@ -476,12 +739,16 @@ impl App {
         } else {
             open.peek.scroll.saturating_sub(step)
         };
-        out.write_all(overlay::box_frame(&open.snap, &open.lay, &open.peek).as_bytes())?;
+        let mut frame = overlay::box_frame(&open.snap, &open.lay, &open.peek);
+        if let Some(top) = open.strip_top {
+            frame.push_str(&strip_cursor(&self.shadow.snapshot(), top));
+        }
+        out.write_all(frame.as_bytes())?;
         out.flush()?;
         Ok(())
     }
 
-    fn on_progress(&mut self, id: u64, p: Progress, out: &mut impl Write) -> Result<()> {
+    fn on_progress(&mut self, id: u64, p: Progress, out: &mut dyn Write) -> Result<()> {
         let Some(open) = &mut self.open else {
             return Ok(());
         };
@@ -504,7 +771,10 @@ impl App {
                 if fitted < open.lay.box_height {
                     // Same region, smaller box: one frame redraws every row of it.
                     open.lay = overlay::shrink(&open.lay, fitted);
-                    let frame = overlay::open_frame(&open.snap, &open.lay, &open.peek);
+                    let mut frame = overlay::open_frame(&open.snap, &open.lay, &open.peek);
+                    if let Some(top) = open.strip_top {
+                        frame.push_str(&strip_cursor(&self.shadow.snapshot(), top));
+                    }
                     out.write_all(frame.as_bytes())?;
                     out.flush()?;
                     return Ok(());
@@ -512,21 +782,72 @@ impl App {
             }
             Progress::Failed(e) => open.peek.status = Status::Error(e),
         }
-        out.write_all(overlay::box_frame(&open.snap, &open.lay, &open.peek).as_bytes())?;
+        let mut frame = overlay::box_frame(&open.snap, &open.lay, &open.peek);
+        if let Some(top) = open.strip_top {
+            frame.push_str(&strip_cursor(&self.shadow.snapshot(), top));
+        }
+        out.write_all(frame.as_bytes())?;
         out.flush()?;
         Ok(())
     }
 
-    fn on_resize(&mut self, cols: u16, rows: u16, out: &mut impl Write) -> Result<()> {
+    fn on_resize(&mut self, cols: u16, rows: u16, out: &mut dyn Write) -> Result<()> {
         // The terminal has already reflowed the box; don't paint old-width rows
         // back. Codex reprints its whole transcript after a resize anyway.
         if self.open.is_some() {
             self.close(out, true)?;
         }
         self.pending = None;
+        self.viewport_top = None;
+        self.size = (cols, rows);
         self.shadow.resize(cols, rows);
         Ok(())
     }
+}
+
+fn same_cells(a: &[Cell], b: &[Cell]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| x.c == y.c && x.fg == y.fg && x.bg == y.bg && x.flags == y.flags)
+}
+
+/// Cursor for the live rows: where the child has it, if it is visible and in
+/// those rows; hidden otherwise (it would land inside the box).
+fn strip_cursor(now: &Snapshot, top: usize) -> String {
+    let (r, c) = now.cursor;
+    if now.cursor_visible && r >= top {
+        format!("\x1b[{};{}H\x1b[?25h", r + 1, c + 1)
+    } else {
+        "\x1b[?25l".into()
+    }
+}
+
+/// The child's live area starts below the scroll region it uses to push
+/// history up: Codex writes `CSI 1;K r`, then scrolls rows 1..K. Returns K as a
+/// 0-based row (the first live row) for the last such region in `bytes`.
+fn viewport_top(bytes: &[u8], rows: usize) -> Option<usize> {
+    let mut found = None;
+    let mut i = 0;
+    while let Some(pos) = bytes[i..].windows(4).position(|w| w == b"\x1b[1;") {
+        let start = i + pos + 4;
+        let digits = bytes[start..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        if digits > 0
+            && bytes.get(start + digits) == Some(&b'r')
+            && let Ok(k) = std::str::from_utf8(&bytes[start..start + digits])
+                .unwrap_or("")
+                .parse::<usize>()
+            && k > 0
+            && k < rows
+        {
+            found = Some(k);
+        }
+        i = start;
+    }
+    found
 }
 
 /// Where to show a one-line message: just above the cursor's row.
@@ -694,5 +1015,83 @@ mod tests {
                 "diverged when cut at {cut}"
             );
         }
+    }
+
+    #[test]
+    fn viewport_top_from_scroll_regions() {
+        assert_eq!(viewport_top(b"x\x1b[1;24r\x1b[24S\x1b[r", 40), Some(24));
+        assert_eq!(viewport_top(b"\x1b[1;24r..\x1b[1;16r", 40), Some(16));
+        assert_eq!(viewport_top(b"\x1b[1;40r", 40), None);
+        assert_eq!(viewport_top(b"\x1b[1;5H\x1b[r", 40), None);
+    }
+
+    fn test_app(cols: u16, rows: u16) -> App {
+        let (tx, _rx) = mpsc::channel();
+        App {
+            shadow: Shadow::new(cols, rows),
+            open: None,
+            pending: None,
+            next_id: 0,
+            consumed: Consumed::default(),
+            carry: Vec::new(),
+            in_paste: false,
+            selection: SelectionSource::new(),
+            server: None,
+            server_error: Some("test".into()),
+            tx,
+            cwd: "/tmp".into(),
+            viewport_top: None,
+            degraded: false,
+            size: (cols, rows),
+        }
+    }
+
+    /// Drive the real App code over real Codex output: open a box with the live
+    /// strip, let Codex draw and type under it, then close with Enter. The
+    /// emulated terminal must end up identical to the child's own screen.
+    #[test]
+    fn live_strip_round_trip() {
+        // SAFETY: only this test reads the variable.
+        unsafe { std::env::set_var("PEEKME_SELECTION", "Collaboration mode") };
+        let mut app = test_app(120, 40);
+        let mut real = Shadow::new(120, 40);
+        let mut child: Vec<u8> = Vec::new();
+        let mut out: Vec<u8> = Vec::new();
+
+        app.on_output(CODEX, &mut out, &mut child).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let k = app.viewport_top.expect("viewport found in Codex output");
+
+        app.open_peek(&mut out).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        assert_eq!(app.open.as_ref().unwrap().strip_top, Some(k));
+
+        // Codex echoes typing in its input line and pushes a history line up.
+        let later = format!(
+            "\x1b[?2026h\x1b[{};3Hhello\x1b[?2026l\x1b[1;{k}r\x1b[1S\x1b[r\x1b[{k};1Hpushed up",
+            k + 2
+        );
+        app.on_input(b"hello", &mut out, &mut child).unwrap();
+        assert!(app.open.is_some(), "typing must not close the box");
+        assert_eq!(child, b"hello");
+        app.on_output(later.as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        app.tick(&mut out).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let now = app.shadow.snapshot();
+        let shown = real.snapshot();
+        for r in k..40 {
+            assert!(
+                same_cells(&shown.rows[r], &now.rows[r]),
+                "live row {r} not updated"
+            );
+        }
+
+        app.on_input(b"\r", &mut out, &mut child).unwrap();
+        assert!(app.open.is_none(), "Enter closes the box");
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+        assert!(same_screen(&real.snapshot(), &app.shadow.snapshot()));
     }
 }
