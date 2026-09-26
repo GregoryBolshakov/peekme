@@ -1,5 +1,5 @@
 //! The shadow terminal: an in-memory emulator fed every byte the child writes,
-//! so codex-peek always knows exactly what the user's screen shows.
+//! so peekme always knows exactly what the user's screen shows.
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;

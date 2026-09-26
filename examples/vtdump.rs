@@ -1,5 +1,5 @@
 //! Development helper: replay a captured byte stream through the same emulator
-//! codex-peek uses and print the resulting screen.
+//! peekme uses and print the resulting screen.
 //!
 //!     cargo run --example vtdump -- <file> <cols> <rows> [byte-offset]
 

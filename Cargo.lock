@@ -114,21 +114,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-peek"
-version = "0.0.1"
-dependencies = [
- "alacritty_terminal",
- "anyhow",
- "arboard",
- "crossterm",
- "portable-pty",
- "serde",
- "serde_json",
- "signal-hook 0.3.18",
- "unicode-width",
-]
-
-[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -474,6 +459,21 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "peekme"
+version = "0.0.1"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "arboard",
+ "crossterm",
+ "portable-pty",
+ "serde",
+ "serde_json",
+ "signal-hook 0.3.18",
+ "unicode-width",
 ]
 
 [[package]]

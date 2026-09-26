@@ -1,4 +1,4 @@
-//! codex-peek: select text in Codex CLI output, press Alt+P, and read an
+//! peekme: select text in Codex CLI output, press Alt+P, and read an
 //! explanation that opens inline under it.
 
 mod app;
@@ -13,21 +13,21 @@ mod shadow;
 use std::io::IsTerminal;
 
 const HELP: &str = "\
-codex-peek {version}
+peekme {version}
 Select text in Codex's output with the mouse, press Alt+P, and an explanation
 from a smaller model opens inline under it. Esc closes it.
 
 USAGE:
-    codex-peek [--] [COMMAND [ARGS...]]      (COMMAND defaults to `codex`)
+    peekme [--] [COMMAND [ARGS...]]    (COMMAND defaults to `codex`)
 
 EXAMPLES:
-    codex-peek                     run codex
-    codex-peek codex resume --last   arguments go to codex
-    alias codex='codex-peek codex'
+    peekme                         run codex
+    peekme codex resume --last     arguments go to codex
+    alias codex='peekme codex'
 
 ENVIRONMENT:
-    CODEX_PEEK_MODEL       model for explanations (default: the account's fast model)
-    CODEX_PEEK_CODEX_BIN   codex binary used for the explainer (default: codex)
+    PEEKME_MODEL        model for explanations (default: the account's fast model)
+    PEEKME_CODEX_BIN    codex binary used for the explainer (default: codex)
 ";
 
 fn main() {
@@ -38,7 +38,7 @@ fn main() {
             return;
         }
         Some("-V" | "--version") => {
-            println!("codex-peek {}", env!("CARGO_PKG_VERSION"));
+            println!("peekme {}", env!("CARGO_PKG_VERSION"));
             return;
         }
         Some("--") => {
@@ -57,7 +57,7 @@ fn main() {
         std::process::exit(match status {
             Ok(s) => s.code().unwrap_or(1),
             Err(e) => {
-                eprintln!("codex-peek: could not start `{program}`: {e}");
+                eprintln!("peekme: could not start `{program}`: {e}");
                 127
             }
         });
@@ -70,14 +70,14 @@ fn main() {
     }));
 
     if let Err(e) = crossterm::terminal::enable_raw_mode() {
-        eprintln!("codex-peek: could not switch the terminal to raw mode: {e}");
+        eprintln!("peekme: could not switch the terminal to raw mode: {e}");
         std::process::exit(1);
     }
     let code = match app::run(&program, &rest) {
         Ok(code) => code,
         Err(e) => {
             restore_terminal();
-            eprintln!("codex-peek: {e:#}");
+            eprintln!("peekme: {e:#}");
             1
         }
     };

@@ -4,7 +4,7 @@ flicker_test.py - does swapping to the alternate screen flicker in THIS terminal
 
 Draws a dense, colourful Codex-like screen, then repeatedly swaps to the
 alternate screen and redraws an identical copy there, then swaps back - exactly
-what codex-peek does when entering/leaving peek mode. If the swap is clean, the
+what peekme does when entering/leaving peek mode. If the swap is clean, the
 screen looks perfectly still while it strobes 7 times a second.
 
 Phases (4 s each):

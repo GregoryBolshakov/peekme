@@ -4,7 +4,7 @@ use crate::shadow::Snapshot;
 
 /// Reads the user's current mouse selection.
 ///
-/// `CODEX_PEEK_SELECTION` overrides it (used by tests and for manual debugging).
+/// `PEEKME_SELECTION` overrides it (used by tests and for manual debugging).
 pub struct SelectionSource {
     #[cfg(target_os = "linux")]
     clipboard: Option<arboard::Clipboard>,
@@ -19,7 +19,7 @@ impl SelectionSource {
     }
 
     pub fn read(&mut self) -> Option<String> {
-        if let Ok(s) = std::env::var("CODEX_PEEK_SELECTION") {
+        if let Ok(s) = std::env::var("PEEKME_SELECTION") {
             return Some(s).filter(|s| !s.trim().is_empty());
         }
         self.read_system()

@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
     };
     let cwd = std::env::current_dir()?.to_string_lossy().into_owned();
     // SAFETY: single-threaded at this point.
-    unsafe { std::env::set_var("CODEX_PEEK_DEBUG_PROMPT", "1") };
+    unsafe { std::env::set_var("PEEKME_DEBUG_PROMPT", "1") };
     let t0 = std::time::Instant::now();
     let server = explain::AppServer::start()?;
     let req = explain::Request {
@@ -37,7 +37,7 @@ fn main() -> anyhow::Result<()> {
     explain::explain(&server, req, |p| match p {
         explain::Progress::Started { model, source } => {
             let prompt =
-                std::fs::read_to_string(std::env::temp_dir().join("codex-peek-last-prompt.txt"))
+                std::fs::read_to_string(std::env::temp_dir().join("peekme-last-prompt.txt"))
                     .unwrap_or_default();
             println!(
                 "===== prompt ({} chars) =====\n{prompt}\n===== {model} · {source} · {:.1}s =====",

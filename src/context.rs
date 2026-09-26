@@ -462,12 +462,12 @@ mod tests {
             items: vec![item(
                 "1",
                 Source::Agent,
-                "Run **`codex-peek --help`** to see the\noptions, then `alias` it.",
+                "Run **`peekme --help`** to see the\noptions, then `alias` it.",
             )],
         };
         let s = screen(
-            "  Run codex-peek --help to see the\n  options, then alias it.",
-            "codex-peek --help",
+            "  Run peekme --help to see the\n  options, then alias it.",
+            "peekme --help",
         );
         let hit = find(&conv, &s).unwrap();
         let text: String = conv.items[0]
@@ -476,7 +476,7 @@ mod tests {
             .skip(hit.start)
             .take(hit.end - hit.start)
             .collect();
-        assert_eq!(text, "codex-peek --help");
+        assert_eq!(text, "peekme --help");
     }
 
     #[test]
@@ -510,7 +510,7 @@ mod tests {
         );
         let conv = Conversation {
             id: "t".into(),
-            title: Some("codex-peek design".into()),
+            title: Some("peekme design".into()),
             items: vec![
                 item("1", Source::User, "what is a shadow emulator?"),
                 item(

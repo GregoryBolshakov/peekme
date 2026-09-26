@@ -255,7 +255,7 @@ fn classify(bytes: &[u8]) -> Kind {
     Kind::Key
 }
 
-/// Tracks key presses consumed by codex-peek so that their repeat and release
+/// Tracks key presses consumed by peekme so that their repeat and release
 /// events are swallowed too; the child then always sees balanced key events.
 #[derive(Default)]
 pub struct Consumed {

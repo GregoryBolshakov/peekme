@@ -71,7 +71,7 @@ impl AppServer {
         std::thread::spawn(move || reader.read_loop(BufReader::new(stdout)));
         server.request(
             "initialize",
-            json!({"clientInfo": {"name": "codex-peek", "version": env!("CARGO_PKG_VERSION")}}),
+            json!({"clientInfo": {"name": "peekme", "version": env!("CARGO_PKG_VERSION")}}),
         )?;
         server.notify("initialized", Value::Null)?;
         Ok(server)
@@ -101,7 +101,7 @@ impl AppServer {
                 (Some(id), Some(_)) => {
                     // A request from the server (e.g. an approval). The explainer
                     // never needs one, so refuse it.
-                    let _ = self.send(&json!({"id": id, "error": {"code": -32601, "message": "not supported by codex-peek"}}));
+                    let _ = self.send(&json!({"id": id, "error": {"code": -32601, "message": "not supported by peekme"}}));
                 }
                 (None, Some(_)) => {
                     let thread = msg.pointer("/params/threadId").and_then(Value::as_str);
@@ -164,12 +164,12 @@ impl AppServer {
         self.subscribers.lock().unwrap().remove(thread);
     }
 
-    /// The model used for explanations: `CODEX_PEEK_MODEL`, else the account's
+    /// The model used for explanations: `PEEKME_MODEL`, else the account's
     /// model described as fast/efficient, else Codex's default.
     fn model(&self) -> Option<String> {
         self.model
             .get_or_init(|| {
-                if let Ok(m) = std::env::var("CODEX_PEEK_MODEL") {
+                if let Ok(m) = std::env::var("PEEKME_MODEL") {
                     return Some(m);
                 }
                 let list = self.request("model/list", json!({})).ok()?;
@@ -216,7 +216,7 @@ impl AppServer {
 }
 
 fn codex_bin() -> String {
-    std::env::var("CODEX_PEEK_CODEX_BIN").unwrap_or_else(|_| "codex".into())
+    std::env::var("PEEKME_CODEX_BIN").unwrap_or_else(|_| "codex".into())
 }
 
 /// Run one explanation, reporting progress on `tx`. Blocks; call from a thread.
@@ -291,9 +291,9 @@ fn run(server: &AppServer, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
         .map(String::from)
         .or(model)
         .unwrap_or_default();
-    if std::env::var_os("CODEX_PEEK_DEBUG_PROMPT").is_some() {
+    if std::env::var_os("PEEKME_DEBUG_PROMPT").is_some() {
         let _ = std::fs::write(
-            std::env::temp_dir().join("codex-peek-last-prompt.txt"),
+            std::env::temp_dir().join("peekme-last-prompt.txt"),
             &built.prompt,
         );
     }

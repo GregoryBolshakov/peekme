@@ -661,7 +661,7 @@ mod tests {
             shadow.advance(&CODEX[..cut]);
             real.advance(&CODEX[..cut]);
             if shadow.in_sync_update() {
-                continue; // codex-peek waits for the frame to finish before opening
+                continue; // peekme waits for the frame to finish before opening
             }
             let snap = shadow.snapshot();
             let lay = overlay::layout(40, 10, 11);

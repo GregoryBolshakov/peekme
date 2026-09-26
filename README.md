@@ -1,6 +1,6 @@
-# codex-peek
+# peekme
 
-Select text in [Codex CLI](https://github.com/openai/codex) output, press **Alt+P**, and a short
+Peek me. Pick me. Select text in [Codex CLI](https://github.com/openai/codex) output, press **Alt+P**, and a short
 explanation opens right under that text, inside the terminal. The lines below move down to make
 room, like Peek in VS Code. Esc closes it and the screen is exactly as before.
 
@@ -14,15 +14,15 @@ Status: 0.0.1, first working version. Tested on Linux with X11.
 You need Rust and Codex CLI (logged in).
 
 ```
-cargo install --git https://github.com/GregoryBolshakov/codex-peek
+cargo install peekme
 ```
 
 ## Use
 
 ```
-codex-peek                       # starts codex inside codex-peek
-codex-peek codex resume --last   # arguments go to codex
-alias codex='codex-peek codex'   # use it every time
+peekme                       # starts codex inside peekme
+peekme codex resume --last   # arguments go to codex
+alias codex='peekme codex'   # use it every time
 ```
 
 Select text with the mouse as you normally do, then press Alt+P.
@@ -35,14 +35,14 @@ Select text with the mouse as you normally do, then press Alt+P.
 | Esc | box is open | close the box |
 | any other key | box is open | close the box, the key goes to Codex |
 
-No API key is needed. codex-peek asks Codex's own `app-server` with your existing Codex login.
+No API key is needed. peekme asks Codex's own `app-server` with your existing Codex login.
 It uses a temporary thread that is not saved, so nothing appears in your session history. It
 does use your Codex plan, a little for each explanation.
 
 ## How it works
 
 Codex runs in a pseudo-terminal. Its output goes to your terminal unchanged, and the same bytes
-also go to a terminal emulator in memory (`alacritty_terminal`). So codex-peek always knows what
+also go to a terminal emulator in memory (`alacritty_terminal`). So peekme always knows what
 is on your screen.
 
 On Alt+P it reads your mouse selection (the X11 PRIMARY selection) and finds it on the screen.
@@ -61,7 +61,7 @@ slow. So the model gets small parts, each with a size limit:
 
 1. One line saying this is Codex CLI and in which directory. This is enough for text from Codex
    itself, like the startup tips.
-2. The text around the selection, with the selection marked in place like `⟦this⟧`. codex-peek
+2. The text around the selection, with the selection marked in place like `⟦this⟧`. peekme
    finds it in the conversation by searching for the selection together with the words next to
    it on screen. This way it finds the right place when the same words appear many times. If the
    text is not in the conversation, it uses the screen.
@@ -75,9 +75,9 @@ the whole conversation.
 
 | Variable | Meaning |
 |---|---|
-| `CODEX_PEEK_MODEL` | model for explanations. Default is the model your account lists as fast |
-| `CODEX_PEEK_CODEX_BIN` | codex binary to use for explanations. Default is `codex` |
-| `CODEX_PEEK_SELECTION` | use this text instead of the mouse selection, for testing |
+| `PEEKME_MODEL` | model for explanations. Default is the model your account lists as fast |
+| `PEEKME_CODEX_BIN` | codex binary to use for explanations. Default is `codex` |
+| `PEEKME_SELECTION` | use this text instead of the mouse selection, for testing |
 
 ## Limits of 0.0.1
 
@@ -88,7 +88,7 @@ the whole conversation.
   selection.
 - While the box is open, the Codex input line under it does not update. It updates when you
   close the box.
-- Ctrl+Z does not suspend Codex when it runs inside codex-peek.
+- Ctrl+Z does not suspend Codex when it runs inside peekme.
 - An explanation takes about 3 seconds to arrive.
 
 ## Development

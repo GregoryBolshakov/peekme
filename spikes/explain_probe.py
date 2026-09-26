@@ -18,7 +18,7 @@ def pump(until, timeout=90):
             print(ts(),"SERVER REQUEST", m["method"]); send({"id":m["id"],"result":{"decision":"decline"}})
         if until(m): return m
     return None
-send({"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex-peek-probe","version":"0.0.1"}}})
+send({"id":1,"method":"initialize","params":{"clientInfo":{"name":"peekme-probe","version":"0.0.1"}}})
 pump(lambda m:m.get("id")==1); print(ts(),"initialized")
 send({"method":"initialized"})
 dev=("You are a peek explainer inside a terminal. The user selected a phrase in an AI coding "

@@ -8,7 +8,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::render::{self, SYNC_BEGIN, SYNC_END};
 use crate::shadow::Snapshot;
 
-/// Where the box sits and which screen rows codex-peek repaints.
+/// Where the box sits and which screen rows peekme repaints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
     /// First and last screen rows of the box.
@@ -112,7 +112,7 @@ impl PeekBox {
 
     pub fn message(text: &str) -> Self {
         Self {
-            title: "codex-peek".into(),
+            title: "peekme".into(),
             model: String::new(),
             text: String::new(),
             status: Status::Message(text.into()),
