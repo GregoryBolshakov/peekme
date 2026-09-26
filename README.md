@@ -1,8 +1,10 @@
 # peekme
 
 Peek me. Pick me. Select text in [Codex CLI](https://github.com/openai/codex) output, press **Alt+P**, and a short
-explanation opens right under that text, inside the terminal. The lines below move down to make
+explanation opens right next to that text, inside the terminal. The other lines move to make
 room, like Peek in VS Code. Esc closes it and the screen is exactly as before.
+
+![peekme demo: select "coordinate first" in a Codex answer, press Alt+P, read the explanation, press Esc](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo.gif)
 
 The explanation comes from a small, fast model and it knows the conversation. If you select
 "its split panes" in an answer that recommends Kitty, it tells you it is about Kitty.
