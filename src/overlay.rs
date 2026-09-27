@@ -101,6 +101,8 @@ pub struct PeekBox {
     pub waiting_updates: usize,
     /// Offer "Alt+P again" to re-explain with the whole conversation.
     pub deep_available: bool,
+    /// The whole chat is big: the next Alt+P confirms sending it.
+    pub confirm_deep: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +125,7 @@ impl PeekBox {
             scroll: 0,
             waiting_updates: 0,
             deep_available: false,
+            confirm_deep: false,
         }
     }
 
@@ -135,6 +138,7 @@ impl PeekBox {
             scroll: 0,
             waiting_updates: 0,
             deep_available: false,
+            confirm_deep: false,
         }
     }
 
@@ -220,6 +224,9 @@ impl PeekBox {
         let mut hints = vec!["Esc close".to_string()];
         if self.deep_available {
             hints.push("Alt+P again: use whole chat".into());
+        }
+        if self.confirm_deep {
+            hints.push("Alt+P: send anyway".into());
         }
         if lines.len() > inner_h {
             hints.push(format!(

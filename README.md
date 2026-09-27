@@ -51,6 +51,10 @@ No API key is needed. peekme asks Codex's own `app-server` with your existing Co
 It uses a temporary thread that is not saved, so nothing appears in your session history. It
 does use your Codex plan, a little for each explanation.
 
+peekme connects on the first Alt+P, not before. Since Codex 0.157 a shared Codex server runs in
+the background, and peekme uses it, so it adds only a few MB of memory. Without that server it
+starts its own `codex app-server`, which takes about 250 MB.
+
 Only Codex's interactive screen gets peekme: `codex`, `codex "prompt"`, `codex resume` and
 `codex fork`. Commands like `codex exec`, `codex login` or `codex mcp`, and anything with output
 going to a pipe or a file, run plain Codex directly.
@@ -87,7 +91,9 @@ slow. So the model gets small parts, each with a size limit:
 4. The first places in the conversation where the same words were used before.
 
 Usually this is 1 to 7 KB of text. When it is not enough, press Alt+P again and the model gets
-the whole conversation.
+the whole conversation. A long chat can be 5 to 30 times bigger than a normal explanation, so
+above about 40k tokens peekme shows the size first and sends it only when you press Alt+P once
+more.
 
 ## Settings
 
@@ -95,6 +101,7 @@ the whole conversation.
 |---|---|
 | `PEEKME_MODEL` | model for explanations. Default is the model your account lists as fast |
 | `PEEKME_CODEX_BIN` | codex binary to use for explanations. Default is `codex` |
+| `PEEKME_OWN_SERVER` | set to 1 to start peekme's own `codex app-server` instead of using the shared one |
 | `PEEKME_SELECTION` | use this text instead of the mouse selection, for testing |
 
 ### How `codex` gets peekme

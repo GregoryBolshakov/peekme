@@ -12,7 +12,7 @@ use alacritty_terminal::term::cell::Cell;
 use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
-use crate::explain::{self, AppServer, Progress};
+use crate::explain::{self, Progress};
 use crate::input::{self, Consumed, Kind, Mouse, Token};
 use crate::jobctl;
 use crate::overlay::{self, Layout, PeekBox, Status};
@@ -26,7 +26,6 @@ enum Msg {
     Resize,
     ChildGone,
     Peek(u64, Progress),
-    AppServer(Result<Arc<AppServer>, String>),
     /// The child suspended itself (Ctrl+Z).
     ChildStopped,
 }
@@ -172,16 +171,6 @@ fn setup(program: &str, args: &[String]) -> Result<Setup> {
             }
         });
     }
-    // Explainer backend, started in the background so the child starts instantly.
-    {
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            let r = std::panic::catch_unwind(AppServer::start)
-                .unwrap_or_else(|_| Err(anyhow::anyhow!("internal error")))
-                .map_err(|e| format!("{e:#}"));
-            let _ = tx.send(Msg::AppServer(r));
-        });
-    }
     Ok(Setup {
         child,
         helper_pid,
@@ -214,8 +203,7 @@ fn event_loop(setup: Setup) -> Result<i32> {
         carry: Vec::new(),
         in_paste: false,
         selection: SelectionSource::new(),
-        server: None,
-        server_error: None,
+        explainer: Some(Arc::new(explain::Slot::default())),
         tx,
         cwd: std::env::current_dir()?.to_string_lossy().into_owned(),
         viewport_top: None,
@@ -264,10 +252,6 @@ fn event_loop(setup: Setup) -> Result<i32> {
             Msg::Peek(id, p) => guarded(&mut app, &mut stdout, |app, out| {
                 app.on_progress(id, p, out)
             })?,
-            Msg::AppServer(r) => match r {
-                Ok(s) => app.server = Some(s),
-                Err(e) => app.server_error = Some(e),
-            },
             Msg::ChildStopped => {
                 // The child restores the terminal before it stops; let those
                 // bytes reach the screen first.
@@ -298,8 +282,8 @@ fn event_loop(setup: Setup) -> Result<i32> {
     if app.open.is_some() && !app.degraded {
         let _ = std::panic::catch_unwind(AssertUnwindSafe(|| app.close(&mut stdout, true)));
     }
-    if let Some(s) = &app.server {
-        s.shutdown();
+    if let Some(slot) = &app.explainer {
+        slot.shutdown();
     }
     let status = child.wait()?;
     Ok(status.exit_code() as i32)
@@ -330,8 +314,8 @@ struct App {
     carry: Vec<u8>,
     in_paste: bool,
     selection: SelectionSource,
-    server: Option<Arc<AppServer>>,
-    server_error: Option<String>,
+    /// The explainer connection, made on the first Alt+P (None in tests).
+    explainer: Option<Arc<explain::Slot>>,
     tx: Sender<Msg>,
     cwd: String,
     /// Where the child's live area starts, learned from its scroll regions.
@@ -632,7 +616,8 @@ impl App {
                 let lay = overlay::layout(strip.unwrap_or(rows), loc.first_row, loc.last_row);
                 let mut peek = PeekBox::new(sel);
                 let max_lines = lay.box_height.saturating_sub(2).clamp(3, 12);
-                if let Some(e) = self.start_explain(id, loc.screen.clone(), max_lines, false) {
+                if let Some(e) = self.start_explain(id, loc.screen.clone(), max_lines, false, false)
+                {
                     peek.status = Status::Error(e);
                 }
                 remembered = Some((sel.clone(), loc.screen));
@@ -682,27 +667,32 @@ impl App {
         screen: crate::context::ScreenSel,
         max_lines: usize,
         deep: bool,
+        force: bool,
     ) -> Option<String> {
-        match (&self.server, &self.server_error) {
-            (Some(server), _) => {
-                let req = explain::Request {
-                    screen,
-                    cwd: self.cwd.clone(),
-                    max_lines,
-                    deep,
-                };
-                let server = server.clone();
-                let tx = self.tx.clone();
-                std::thread::spawn(move || {
-                    explain::explain(&server, req, |p| {
-                        let _ = tx.send(Msg::Peek(id, p));
-                    })
-                });
-                None
+        let Some(slot) = self.explainer.clone() else {
+            return Some("explainer disabled".into());
+        };
+        let req = explain::Request {
+            screen,
+            cwd: self.cwd.clone(),
+            max_lines,
+            deep,
+            force,
+        };
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let send = |p| {
+                let _ = tx.send(Msg::Peek(id, p));
+            };
+            let run = std::panic::catch_unwind(AssertUnwindSafe(|| match slot.get() {
+                Ok(server) => explain::explain(&server, req, send),
+                Err(e) => send(Progress::Failed(format!("explainer unavailable: {e:#}"))),
+            }));
+            if run.is_err() {
+                let _ = tx.send(Msg::Peek(id, Progress::Failed("internal error".into())));
             }
-            (None, Some(e)) => Some(format!("explainer unavailable: {e}")),
-            (None, None) => Some("explainer is still starting, try again".into()),
-        }
+        });
+        None
     }
 
     /// If the open box explains the current selection, re-explain it with the
@@ -715,20 +705,24 @@ impl App {
         let Some((sel, screen)) = &open.selection else {
             return Ok(false);
         };
-        if open.deep || current.as_deref() != Some(sel.as_str()) {
+        // Allowed once from the normal explanation, and once more to confirm
+        // sending a big chat.
+        let force = open.peek.confirm_deep;
+        if (open.deep && !force) || current.as_deref() != Some(sel.as_str()) {
             return Ok(false);
         }
         let screen = screen.clone();
         let max_lines = open.lay.box_height.saturating_sub(2).clamp(3, 12);
         self.next_id += 1;
         let id = self.next_id;
-        let err = self.start_explain(id, screen, max_lines, true);
+        let err = self.start_explain(id, screen, max_lines, true, force);
         let open = self.open.as_mut().unwrap();
         open.id = id;
         open.deep = true;
         open.peek.text.clear();
         open.peek.scroll = 0;
         open.peek.deep_available = false;
+        open.peek.confirm_deep = false;
         open.peek.status = match err {
             Some(e) => Status::Error(e),
             None => Status::Thinking,
@@ -820,6 +814,14 @@ impl App {
                 }
             }
             Progress::Failed(e) => open.peek.status = Status::Error(e),
+            Progress::TooBig { tokens, ratio } => {
+                open.peek.status = Status::Message(format!(
+                    "This chat is about {}k tokens, about {ratio} times a normal peek. \
+                     Press Alt+P again to send it anyway, or Esc to close.",
+                    tokens / 1000
+                ));
+                open.peek.confirm_deep = true;
+            }
         }
         let mut frame = overlay::box_frame(&open.snap, &open.lay, &open.peek);
         if let Some(top) = open.strip_top {
@@ -1075,8 +1077,7 @@ mod tests {
             carry: Vec::new(),
             in_paste: false,
             selection: SelectionSource::new(),
-            server: None,
-            server_error: Some("test".into()),
+            explainer: None,
             tx,
             cwd: "/tmp".into(),
             viewport_top: None,

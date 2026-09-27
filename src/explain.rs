@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -25,6 +25,11 @@ pub enum Progress {
     Delta(String),
     Done,
     Failed(String),
+    /// The whole chat is much bigger than a normal explanation; ask first.
+    TooBig {
+        tokens: usize,
+        ratio: usize,
+    },
 }
 
 pub struct Request {
@@ -35,21 +40,56 @@ pub struct Request {
     /// Explain with the whole conversation (a forked thread) instead of the
     /// compact context.
     pub deep: bool,
+    /// Send the whole conversation even when it is big.
+    pub force: bool,
 }
+
+/// Above this estimate, "the whole chat" asks before sending (a normal
+/// explanation is about 9k tokens with Codex's own overhead).
+pub const DEEP_ASK_ABOVE_TOKENS: usize = 40_000;
 
 type Pending = Mutex<HashMap<u64, Sender<Result<Value, String>>>>;
 
+enum Writer {
+    /// Our own `codex app-server` process.
+    Stdio(ChildStdin),
+    /// Codex's shared background server.
+    Shared(crate::ws::Sender),
+}
+
 pub struct AppServer {
-    stdin: Mutex<ChildStdin>,
+    writer: Mutex<Writer>,
     next_id: AtomicU64,
     pending: Arc<Pending>,
     subscribers: Arc<Mutex<HashMap<String, Sender<Value>>>>,
-    child: Mutex<Child>,
+    child: Mutex<Option<Child>>,
     model: OnceLock<Option<String>>,
+    alive: AtomicBool,
 }
 
 impl AppServer {
+    /// Connect to Codex's shared background server when it runs (no extra
+    /// process, no start-up time), otherwise start our own `codex app-server`.
     pub fn start() -> Result<Arc<Self>> {
+        if std::env::var_os("PEEKME_OWN_SERVER").is_none()
+            && let Some(path) = shared_socket()
+            && let Ok(server) = Self::start_shared(&path)
+        {
+            return Ok(server);
+        }
+        Self::start_own()
+    }
+
+    fn start_shared(path: &std::path::Path) -> Result<Arc<Self>> {
+        let (tx, mut rx) = crate::ws::connect(path)?;
+        let server = Self::new(Writer::Shared(tx), None);
+        let reader = server.clone();
+        std::thread::spawn(move || reader.read_loop(std::iter::from_fn(move || rx.next_text())));
+        server.handshake()?;
+        Ok(server)
+    }
+
+    fn start_own() -> Result<Arc<Self>> {
         let mut child = Command::new(codex_bin())
             .arg("app-server")
             .stdin(Stdio::piped())
@@ -59,27 +99,42 @@ impl AppServer {
             .context("could not start `codex app-server`")?;
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
-        let server = Arc::new(Self {
-            stdin: Mutex::new(stdin),
+        let server = Self::new(Writer::Stdio(stdin), Some(child));
+        let reader = server.clone();
+        std::thread::spawn(move || {
+            reader.read_loop(BufReader::new(stdout).lines().map_while(|l| l.ok()))
+        });
+        server.handshake()?;
+        Ok(server)
+    }
+
+    fn new(writer: Writer, child: Option<Child>) -> Arc<Self> {
+        Arc::new(Self {
+            writer: Mutex::new(writer),
             next_id: AtomicU64::new(1),
             pending: Arc::new(Mutex::new(HashMap::new())),
             subscribers: Arc::new(Mutex::new(HashMap::new())),
             child: Mutex::new(child),
             model: OnceLock::new(),
-        });
-        let reader = server.clone();
-        std::thread::spawn(move || reader.read_loop(BufReader::new(stdout)));
-        server.request(
+            alive: AtomicBool::new(true),
+        })
+    }
+
+    fn handshake(&self) -> Result<()> {
+        self.request(
             "initialize",
             json!({"clientInfo": {"name": "peekme", "version": env!("CARGO_PKG_VERSION")}}),
         )?;
-        server.notify("initialized", Value::Null)?;
-        Ok(server)
+        self.notify("initialized", Value::Null)
     }
 
-    fn read_loop(&self, stdout: impl BufRead) {
-        for line in stdout.lines() {
-            let Ok(line) = line else { break };
+    /// False once the connection or the process is gone.
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
+    }
+
+    fn read_loop(&self, messages: impl Iterator<Item = String>) {
+        for line in messages {
             let Ok(msg) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
@@ -115,6 +170,7 @@ impl AppServer {
             }
         }
         // Server gone: fail everything that is still waiting.
+        self.alive.store(false, Ordering::Relaxed);
         for (_, tx) in self.pending.lock().unwrap().drain() {
             let _ = tx.send(Err("codex app-server exited".into()));
         }
@@ -122,9 +178,13 @@ impl AppServer {
     }
 
     fn send(&self, msg: &Value) -> Result<()> {
-        let mut stdin = self.stdin.lock().unwrap();
-        writeln!(stdin, "{msg}")?;
-        stdin.flush()?;
+        match &mut *self.writer.lock().unwrap() {
+            Writer::Stdio(stdin) => {
+                writeln!(stdin, "{msg}")?;
+                stdin.flush()?;
+            }
+            Writer::Shared(ws) => ws.send_text(&msg.to_string())?,
+        }
         Ok(())
     }
 
@@ -210,8 +270,63 @@ impl AppServer {
             .clone()
     }
 
+    /// Stop our own server process, or leave the shared one (it is Codex's).
     pub fn shutdown(&self) {
-        let _ = self.child.lock().unwrap().kill();
+        if let Some(child) = self.child.lock().unwrap().as_mut() {
+            let _ = child.kill();
+        }
+        if let Writer::Shared(ws) = &*self.writer.lock().unwrap() {
+            ws.close();
+        }
+    }
+}
+
+/// Rough size of what a fork sends: the conversation text plus Codex's own
+/// instructions and tools (about 8k tokens), and how many times a normal
+/// explanation that is. `None` when it is small enough to just send.
+fn too_big_for_deep(conv: &Conversation, prompt: &str) -> Option<(usize, usize)> {
+    const OVERHEAD: usize = 8_000;
+    let chars: usize = conv.items.iter().map(|i| i.text.chars().count()).sum();
+    let tokens = chars / 4 + OVERHEAD;
+    let normal = prompt.chars().count() / 4 + OVERHEAD;
+    (tokens > DEEP_ASK_ABOVE_TOKENS).then(|| (tokens, tokens / normal))
+}
+
+/// Codex's shared app-server socket, if it exists.
+fn shared_socket() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| crate::launch::home().map(|h| h.join(".codex")))?;
+    let path = home
+        .join("app-server-control")
+        .join("app-server-control.sock");
+    path.exists().then_some(path)
+}
+
+/// The explainer connection shared by all peeks of a session, (re)started on
+/// demand: connecting is lazy, so Codex has usually started its shared server
+/// by the first Alt+P, and a lost connection is replaced on the next one.
+#[derive(Default)]
+pub struct Slot(Mutex<Option<Arc<AppServer>>>);
+
+impl Slot {
+    pub fn get(&self) -> Result<Arc<AppServer>> {
+        let mut guard = self.0.lock().unwrap();
+        if let Some(s) = guard.as_ref().filter(|s| s.is_alive()) {
+            return Ok(s.clone());
+        }
+        if let Some(old) = guard.take() {
+            old.shutdown();
+        }
+        let server = AppServer::start()?;
+        *guard = Some(server.clone());
+        Ok(server)
+    }
+
+    pub fn shutdown(&self) {
+        if let Some(s) = self.0.lock().unwrap().take() {
+            s.shutdown();
+        }
     }
 }
 
@@ -246,6 +361,14 @@ fn run(server: &AppServer, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
         lines = req.max_lines
     );
 
+    if req.deep
+        && !req.force
+        && let Some(conv) = &conv
+        && let Some((tokens, ratio)) = too_big_for_deep(conv, &built.prompt)
+    {
+        tx(Progress::TooBig { tokens, ratio });
+        return Ok(());
+    }
     let deep_thread = conv.as_ref().filter(|_| req.deep);
     let (method, mut params, source) = match deep_thread {
         Some(conv) => {
@@ -465,6 +588,27 @@ fn conv_item(entry: &Value) -> Option<ConvItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deep_mode_asks_only_for_big_chats() {
+        let item = |n: usize| ConvItem {
+            turn: None,
+            source: Source::Agent,
+            text: "x".repeat(n),
+        };
+        let small = Conversation {
+            items: vec![item(20_000)],
+            ..Default::default()
+        };
+        assert_eq!(too_big_for_deep(&small, &"p".repeat(4_000)), None);
+        let big = Conversation {
+            items: vec![item(400_000), item(100_000)],
+            ..Default::default()
+        };
+        let (tokens, ratio) = too_big_for_deep(&big, &"p".repeat(4_000)).unwrap();
+        assert_eq!(tokens, 133_000);
+        assert_eq!(ratio, 14);
+    }
 
     #[test]
     fn conv_items_from_app_server_json() {

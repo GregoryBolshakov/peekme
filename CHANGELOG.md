@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3 (2026-09-27)
+
+- peekme uses the shared Codex server that Codex 0.157 runs in the background, instead of
+  starting its own. A session now costs a few MB instead of about 250 MB. The connection is
+  made on the first Alt+P and made again if it drops. Without the shared server, peekme starts
+  its own server as before. `PEEKME_OWN_SERVER=1` forces that.
+- Alt+P again on a long chat shows the size first. Above about 40k tokens it asks for one more
+  Alt+P before it sends the whole conversation.
+
 ## 0.1.2 (2026-09-27)
 
 - Works with Codex 0.157, which draws full screen and handles the mouse itself. peekme uses the

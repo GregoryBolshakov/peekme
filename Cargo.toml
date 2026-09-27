@@ -1,6 +1,6 @@
 [package]
 name = "peekme"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "Select text in Codex CLI output and get a short explanation right under it, inside the terminal"
 authors = ["Gregory Bolshakov"]

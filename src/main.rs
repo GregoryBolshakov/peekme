@@ -12,6 +12,7 @@ mod overlay;
 mod render;
 mod select;
 mod shadow;
+mod ws;
 
 use std::io::IsTerminal;
 
