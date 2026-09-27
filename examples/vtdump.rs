@@ -20,5 +20,25 @@ fn main() {
     term.flush_sync();
     let snap = term.snapshot();
     print!("{}", snap.rows_text(0, rows as usize));
+    if std::env::var_os("VTDUMP_INVERSE").is_some() {
+        // Print runs of reverse-video cells (how Codex highlights its own selection).
+        for (r, row) in snap.rows.iter().enumerate() {
+            let mut run = String::new();
+            for cell in row {
+                if cell
+                    .flags
+                    .contains(alacritty_terminal::term::cell::Flags::INVERSE)
+                {
+                    run.push(cell.c);
+                } else if !run.is_empty() {
+                    println!("-- inverse row {r}: {run:?}");
+                    run.clear();
+                }
+            }
+            if !run.is_empty() {
+                println!("-- inverse row {r}: {run:?}");
+            }
+        }
+    }
     println!("-- cursor {:?}", snap.cursor);
 }

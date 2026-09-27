@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use crate::explain::{self, AppServer, Progress};
-use crate::input::{self, Consumed, Kind, Token};
+use crate::input::{self, Consumed, Kind, Mouse, Token};
 use crate::jobctl;
 use crate::overlay::{self, Layout, PeekBox, Status};
 use crate::render::{self, SYNC_BEGIN, SYNC_END};
@@ -394,6 +394,16 @@ impl App {
         Ok(())
     }
 
+    /// First row of the child's live area: from its scroll regions when it draws
+    /// inline, from the position of its input box when it draws full screen.
+    fn live_top(&self, snap: &Snapshot) -> Option<usize> {
+        if self.shadow.alt_screen() {
+            select::composer_top(snap)
+        } else {
+            self.viewport_top.or_else(|| select::composer_top(snap))
+        }
+    }
+
     /// Redraw the child's live rows under the box from the shadow, only the
     /// rows that changed, and put the cursor where the child has it.
     fn refresh_strip(&mut self, out: &mut dyn Write) -> Result<()> {
@@ -404,6 +414,14 @@ impl App {
             return Ok(());
         };
         let now = self.shadow.snapshot();
+        // Full screen: if the input area grew into the box (an approval
+        // question, say), the child needs the room more than we do.
+        if self.shadow.alt_screen() && select::composer_top(&now).is_some_and(|k| k < top) {
+            return self.close(out, false);
+        }
+        let Some(open) = &mut self.open else {
+            return Ok(());
+        };
         let mut bytes = String::from(SYNC_BEGIN);
         for r in top..now.rows.len() {
             let i = r - top;
@@ -498,6 +516,19 @@ impl App {
                     self.scroll(t.kind == Kind::PageDown, out)?;
                 }
                 (Kind::Passive | Kind::Release, _) => forward.extend_from_slice(&t.bytes),
+                // With the box open: moving the mouse does nothing, the wheel
+                // scrolls the box, a click elsewhere closes it (and still goes
+                // to the child, e.g. to start a new selection).
+                (Kind::Mouse(m), true) => match m {
+                    Mouse::Motion => {}
+                    Mouse::WheelUp | Mouse::WheelDown => self.scroll(m == Mouse::WheelDown, out)?,
+                    Mouse::Press => {
+                        self.flush_forward(&mut forward, child)?;
+                        self.close(out, false)?;
+                        forward.extend_from_slice(&t.bytes);
+                    }
+                    Mouse::Release => forward.extend_from_slice(&t.bytes),
+                },
                 (_, true) => {
                     let live = self.open.as_ref().is_some_and(|o| o.strip_top.is_some());
                     // With the child's input line live under the box, typing goes
@@ -579,8 +610,16 @@ impl App {
         self.next_id += 1;
         let id = self.next_id;
 
-        let selection = self.selection.read();
-        let located = selection.as_deref().and_then(|s| select::locate(&snap, s));
+        // Codex's own selection (full-screen mode highlights it in reverse video)
+        // wins; otherwise the terminal's mouse selection (X11 PRIMARY).
+        let (selection, located) = match select::codex_selection(&snap) {
+            Some(loc) => (Some(loc.screen.selected()), Some(loc)),
+            None => {
+                let s = self.selection.read();
+                let l = s.as_deref().and_then(|s| select::locate(&snap, s));
+                (s, l)
+            }
+        };
         let mut remembered = None;
         let mut strip = None;
         let (peek, lay) = match (&selection, located) {
@@ -588,7 +627,7 @@ impl App {
                 // Keep the child's live area (input line, status) out of the box's
                 // way when we know where it starts and the selection is above it.
                 strip = self
-                    .viewport_top
+                    .live_top(&snap)
                     .filter(|&k| loc.last_row < k && k < rows && k >= rows / 3);
                 let lay = overlay::layout(strip.unwrap_or(rows), loc.first_row, loc.last_row);
                 let mut peek = PeekBox::new(sel);
@@ -1090,6 +1129,64 @@ mod tests {
 
         app.on_input(b"\r", &mut out, &mut child).unwrap();
         assert!(app.open.is_none(), "Enter closes the box");
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+        assert!(same_screen(&real.snapshot(), &app.shadow.snapshot()));
+    }
+
+    /// Codex 0.157 draws full screen, captures the mouse and highlights its own
+    /// selection in reverse video. Capture: a resumed session with "83, 6, 9"
+    /// selected by a mouse drag.
+    const CODEX_FULLSCREEN: &[u8] =
+        include_bytes!("../tests/fixtures/codex_0157_fullscreen_selection_120x40.bin");
+
+    #[test]
+    fn fullscreen_codex_selection_and_live_area() {
+        let mut app = test_app(120, 40);
+        let mut real = Shadow::new(120, 40);
+        let mut child: Vec<u8> = Vec::new();
+        let mut out: Vec<u8> = Vec::new();
+
+        app.on_output(CODEX_FULLSCREEN, &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+        assert!(app.shadow.alt_screen());
+
+        app.open_peek(&mut out).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.peek.title, "83, 6, 9", "Codex's own selection is used");
+        let top = open.strip_top.expect("input area found on the full screen");
+        assert!(top > 11 && top < 40);
+
+        // Mouse motion is ignored, the wheel scrolls the box, nothing reaches Codex.
+        app.on_input(b"\x1b[<35;40;3M\x1b[<65;40;3M", &mut out, &mut child)
+            .unwrap();
+        assert!(child.is_empty() && app.open.is_some());
+        // Typing goes to Codex; its input line updates live under the box.
+        app.on_input(b"hi", &mut out, &mut child).unwrap();
+        assert_eq!(child, b"hi");
+        let echo = format!("\x1b[?2026h\x1b[{};5Hhi\x1b[?2026l", top + 2);
+        app.on_output(echo.as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        app.tick(&mut out).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+        let now = app.shadow.snapshot();
+        let shown = real.snapshot();
+        for r in top..40 {
+            assert!(
+                same_cells(&shown.rows[r], &now.rows[r]),
+                "live row {r} not updated"
+            );
+        }
+        // A click closes the box and still reaches Codex.
+        app.on_input(b"\x1b[<0;5;5M", &mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+        assert!(child.ends_with(b"\x1b[<0;5;5M"));
         real.advance(&std::mem::take(&mut out));
         real.flush_sync();
         assert!(same_screen(&real.snapshot(), &app.shadow.snapshot()));

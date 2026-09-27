@@ -29,6 +29,45 @@ pub enum Kind {
     Release,
     /// Terminal replies, focus reports and other non-key sequences.
     Passive,
+    /// A mouse report (SGR encoding) while the child has mouse tracking on.
+    Mouse(Mouse),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mouse {
+    /// A button went down (starts a click or a drag).
+    Press,
+    /// A button went up.
+    Release,
+    /// Movement, with or without a button held.
+    Motion,
+    WheelUp,
+    WheelDown,
+}
+
+/// Classify an SGR mouse report `CSI < b ; x ; y M|m`.
+fn parse_mouse(bytes: &[u8]) -> Option<Mouse> {
+    let body = bytes.strip_prefix(b"\x1b[<")?;
+    let (fin, body) = body.split_last()?;
+    let b: u32 = std::str::from_utf8(body)
+        .ok()?
+        .split(';')
+        .next()?
+        .parse()
+        .ok()?;
+    Some(match (fin, b) {
+        (b'm', _) => Mouse::Release,
+        (b'M', b) if b & 64 != 0 => {
+            if b & 1 == 0 {
+                Mouse::WheelUp
+            } else {
+                Mouse::WheelDown
+            }
+        }
+        (b'M', b) if b & 32 != 0 => Mouse::Motion,
+        (b'M', _) => Mouse::Press,
+        _ => return None,
+    })
 }
 
 /// Identity of a physical key, used to pair presses with their releases.
@@ -221,6 +260,9 @@ fn classify(bytes: &[u8]) -> Kind {
         b"\x1b[I" | b"\x1b[O" => return Kind::Passive,
         _ => {}
     }
+    if let Some(m) = parse_mouse(bytes) {
+        return Kind::Mouse(m);
+    }
     if let Some(k) = parse_key(bytes) {
         if k.event == 3 {
             return Kind::Release;
@@ -326,6 +368,16 @@ mod tests {
         assert_eq!(kinds(b"\x1b[?2026;2$y"), vec![Kind::Passive]);
         assert_eq!(kinds(b"\x1b[?7u"), vec![Kind::Passive]);
         assert_eq!(kinds(b"\x1b[I"), vec![Kind::Passive]);
+    }
+
+    #[test]
+    fn mouse_reports() {
+        assert_eq!(kinds(b"\x1b[<0;11;12M"), vec![Kind::Mouse(Mouse::Press)]);
+        assert_eq!(kinds(b"\x1b[<32;12;12M"), vec![Kind::Mouse(Mouse::Motion)]);
+        assert_eq!(kinds(b"\x1b[<35;40;3M"), vec![Kind::Mouse(Mouse::Motion)]);
+        assert_eq!(kinds(b"\x1b[<0;19;12m"), vec![Kind::Mouse(Mouse::Release)]);
+        assert_eq!(kinds(b"\x1b[<64;5;5M"), vec![Kind::Mouse(Mouse::WheelUp)]);
+        assert_eq!(kinds(b"\x1b[<65;5;5M"), vec![Kind::Mouse(Mouse::WheelDown)]);
     }
 
     #[test]

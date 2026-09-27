@@ -35,6 +35,8 @@ The first time you run `peekme` on its own, it asks if it should do `peekme inst
 ## Use
 
 Start Codex as always. Select text with the mouse as you normally do, then press Alt+P.
+Since Codex 0.157 draws full screen, it highlights the selection itself, and peekme uses what
+Codex highlighted.
 
 | Key | When | What it does |
 |---|---|---|
@@ -59,7 +61,8 @@ Codex runs in a pseudo-terminal. Its output goes to your terminal unchanged, and
 also go to a terminal emulator in memory (`alacritty_terminal`). So peekme always knows what
 is on your screen.
 
-On Alt+P it reads your mouse selection (the X11 PRIMARY selection) and finds it on the screen.
+On Alt+P it takes the text Codex highlighted, or else your terminal's mouse selection (the X11
+PRIMARY selection), and finds it on the screen.
 Then it redraws only the rows next to the selection, with the box between them. Nothing is cleared
 and there is no switch to another screen, so there is no flicker. The Codex input line and status
 line under the box keep updating, so you can type while you read. Other Codex output that arrives
@@ -112,10 +115,11 @@ peekme, the function falls back to plain `codex`.
 
 - Only text that is on screen now. Text that scrolled up into the terminal history can't be
   selected yet.
-- The mouse selection is read on Linux with X11. On Wayland it works only through XWayland. On
-  macOS it reads the clipboard instead, and this is not tested. Over SSH there is no mouse
-  selection.
-- An explanation takes about 3 seconds to arrive.
+- When Codex draws full screen (the default since 0.157), selection works anywhere, also over
+  SSH, because peekme reads what Codex highlights. When Codex runs inline (`--no-alt-screen`),
+  peekme needs the terminal's selection, which it reads on Linux with X11 only. On Wayland it
+  works through XWayland, and on macOS it reads the clipboard, not tested.
+- An explanation takes about 2 seconds to start arriving.
 - `peekme install` is tested with bash. zsh uses the same block and should work the same way,
   but it is not tested yet. The fish setup is not tested either.
 

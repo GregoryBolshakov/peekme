@@ -123,6 +123,11 @@ impl Shadow {
         out
     }
 
+    /// Whether the child is drawing on the alternate (full-screen) buffer.
+    pub fn alt_screen(&self) -> bool {
+        self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
     pub fn rows(&self) -> usize {
         self.term.screen_lines()
     }

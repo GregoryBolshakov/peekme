@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2 (2026-09-27)
+
+- Works with Codex 0.157, which draws full screen and handles the mouse itself. peekme uses the
+  text Codex highlights when you drag. Moving the mouse no longer closes the box, the mouse
+  wheel scrolls it, and a click closes it and still reaches Codex.
+- The Codex input line stays live under the box in full screen too, and the box closes by
+  itself when Codex asks for approval.
+
 ## 0.1.1 (2026-09-27)
 
 - Text in the box is cleaned before it is drawn. The explanation, the selected text and error
