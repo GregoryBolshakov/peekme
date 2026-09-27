@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 (2026-09-27)
+
+- Text in the box is cleaned before it is drawn. The explanation, the selected text and error
+  messages can no longer send terminal control sequences, for example one that writes your
+  clipboard, or characters that reverse the order of the text.
+
 ## 0.1.0 (2026-09-26)
 
 - `peekme install` makes `codex` open with peekme. It adds a shell function `codex` and a

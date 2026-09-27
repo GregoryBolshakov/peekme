@@ -139,17 +139,21 @@ impl PeekBox {
     }
 
     fn body_lines(&self, width: usize) -> Vec<Line> {
+        let text = sanitize(&self.text);
         match &self.status {
-            Status::Message(m) => wrap(&[(Style::Plain, m.clone())], width),
+            Status::Message(m) => wrap(&[(Style::Plain, sanitize(m))], width),
             Status::Thinking if self.text.is_empty() => {
                 vec![vec![(Style::Dim, "thinking…".into())]]
             }
             Status::Error(e) => {
-                let mut l = markdown_lines(&self.text, width);
-                l.extend(wrap(&[(Style::Error, format!("error: {e}"))], width));
+                let mut l = markdown_lines(&text, width);
+                l.extend(wrap(
+                    &[(Style::Error, format!("error: {}", sanitize(e)))],
+                    width,
+                ));
                 l
             }
-            _ => markdown_lines(&self.text, width),
+            _ => markdown_lines(&text, width),
         }
     }
 
@@ -178,10 +182,13 @@ impl PeekBox {
         let right = if self.model.is_empty() {
             String::new()
         } else {
-            format!(" {} ", self.model)
+            format!(" {} ", sanitize(&self.model))
         };
         let budget = cols.saturating_sub(8 + right.width());
-        let title = format!(" peek · {} ", clip(&self.title, budget.saturating_sub(9)));
+        let title = format!(
+            " peek · {} ",
+            clip(&sanitize(&self.title), budget.saturating_sub(9))
+        );
         let fill = cols.saturating_sub(3 + title.width() + right.width());
         write!(
             out,
@@ -291,6 +298,22 @@ pub fn close_frame(snap: &Snapshot, lay: &Layout) -> String {
     render::rows(&mut out, top, &snap.rows[top..bottom]);
     render::restore_cursor(&mut out, snap);
     out
+}
+
+/// Text from the model, the selection or an error message is untrusted: it
+/// could carry terminal control sequences (an OSC 52 clipboard write, say) or
+/// bidi overrides that reorder what is shown. Keep newlines, turn tabs into
+/// spaces, and drop every other control character.
+pub fn sanitize(s: &str) -> String {
+    s.chars()
+        .filter_map(|c| match c {
+            '\n' => Some('\n'),
+            '\t' => Some(' '),
+            c if c.is_control() => None, // C0, DEL and C1 (U+0080-U+009F)
+            '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => None,
+            c => Some(c),
+        })
+        .collect()
 }
 
 fn clip(s: &str, max: usize) -> String {
@@ -485,6 +508,22 @@ mod tests {
         assert!(!l.below);
         assert_eq!(l.box_top + l.box_height, 37);
         assert_eq!(l.region, (0, 37));
+    }
+
+    #[test]
+    fn untrusted_text_cannot_reach_the_terminal_as_controls() {
+        let evil = "ok \x1b]52;c;aGVsbG8=\x07 \u{9b}31m \x1b[2J\r\x08 \u{202e}txt\tend";
+        assert_eq!(sanitize(evil), "ok ]52;c;aGVsbG8= 31m [2J txt end");
+        let mut peek = PeekBox::new(evil);
+        peek.text = evil.into();
+        peek.model = evil.into();
+        peek.status = Status::Error(evil.into());
+        let mut out = String::new();
+        let lay = layout(20, 2, 2);
+        peek.draw(&mut out, &lay, 60);
+        // Our own frame only uses CSI cursor moves and SGR; no OSC, no C1, no erase.
+        assert!(!out.contains("\x1b]") && !out.contains('\u{9b}') && !out.contains("\x1b[2J"));
+        assert!(!out.contains('\u{202e}') && !out.contains('\x07') && !out.contains('\x08'));
     }
 
     #[test]
