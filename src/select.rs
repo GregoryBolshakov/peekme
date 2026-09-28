@@ -24,8 +24,9 @@ impl SelectionSource {
     /// Only `PEEKME_SELECTION`, never the system's selection.
     pub fn without_system() -> Self {
         Self {
+            #[cfg(target_os = "linux")]
+            clipboard: None,
             system: false,
-            ..Self::new()
         }
     }
 
