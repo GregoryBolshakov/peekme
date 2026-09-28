@@ -3,9 +3,7 @@
 //!
 //!     cargo run --example vtdump -- <file> <cols> <rows> [byte-offset]
 
-#[allow(dead_code)]
-#[path = "../src/shadow.rs"]
-mod shadow;
+use peekme::shadow;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

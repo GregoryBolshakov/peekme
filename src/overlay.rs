@@ -99,6 +99,8 @@ pub struct PeekBox {
     pub status: Status,
     pub scroll: usize,
     pub waiting_updates: usize,
+    /// Who the waiting updates come from ("Codex", "Claude").
+    pub child_name: &'static str,
     /// Offer "Alt+P again" to re-explain with the whole conversation.
     pub deep_available: bool,
     /// The whole chat is big: the next Alt+P confirms sending it.
@@ -124,6 +126,7 @@ impl PeekBox {
             status: Status::Thinking,
             scroll: 0,
             waiting_updates: 0,
+            child_name: "Codex",
             deep_available: false,
             confirm_deep: false,
         }
@@ -137,6 +140,7 @@ impl PeekBox {
             status: Status::Message(text.into()),
             scroll: 0,
             waiting_updates: 0,
+            child_name: "Codex",
             deep_available: false,
             confirm_deep: false,
         }
@@ -240,7 +244,9 @@ impl PeekBox {
             _ => {}
         }
         if self.waiting_updates > 0 {
-            hints.push(format!("Codex: {} updates waiting", self.waiting_updates));
+            let n = self.waiting_updates;
+            let s = if n == 1 { "" } else { "s" };
+            hints.push(format!("{}: {n} update{s} waiting", self.child_name));
         }
         let hint = clip(&format!(" {} ", hints.join(" · ")), cols.saturating_sub(4));
         let fill = cols.saturating_sub(3 + hint.width());

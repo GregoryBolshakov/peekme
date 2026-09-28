@@ -1,16 +1,18 @@
-//! `peekme install`, `uninstall` and `doctor`: make typing `codex` open Codex
-//! with peekme, without replacing or patching Codex.
+//! `peekme install`, `uninstall` and `doctor`: make typing `codex` or `claude`
+//! open the agent with peekme, without replacing or patching it.
 //!
 //! Two layers (see the knowledge base notes on PATH managers):
-//! - a shell function `codex` in the shell's startup file. Functions win over
-//!   PATH, so nvm, mise, Homebrew or Codex's own installer changing PATH later
-//!   can't bypass it, and the user's aliases built on `codex` keep working;
-//! - a `codex` link to peekme in our own directory, put first in PATH, so
-//!   scripts that run `codex` get it too (best effort: something that edits
+//! - a shell function per agent (`codex`, `claude`) in the shell's startup
+//!   file. Functions win over PATH, so nvm, mise, Homebrew or an agent's own
+//!   installer changing PATH later can't bypass them, and the user's aliases
+//!   built on them keep working;
+//! - a link per agent to peekme in our own directory, put first in PATH, so
+//!   scripts that run the agent get it too (best effort: something that edits
 //!   PATH later can come before it; `doctor` reports that).
 //!
-//! The function calls the link by its full path, so it works even when peekme
-//! itself is not on PATH, and falls back to plain `codex` if the link is gone.
+//! A function calls its link by the full path, so it works even when peekme
+//! itself is not on PATH, and falls back to the plain agent if the link is gone.
+//! Both agents are always set up: one that is installed later just works.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -19,6 +21,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 
+use crate::agent::Agent;
 use crate::launch;
 
 pub const BEGIN: &str = "# >>> peekme >>>";
@@ -59,15 +62,27 @@ fn shell_path(dir: &Path) -> String {
     }
 }
 
+const HEADER: &str = "# Opens Codex and Claude Code with peekme when you type `codex` or `claude`. \
+                      Remove with: peekme uninstall";
+
 /// The block for bash and zsh startup files.
 pub fn posix_block(shim_dir: &Path) -> String {
     let dir = shell_path(shim_dir);
+    let functions: String = Agent::ALL
+        .iter()
+        .map(|a| {
+            let c = a.command();
+            format!(
+                "function {c} {{\n\
+                 \x20 if [ -x \"{dir}/{c}\" ]; then \"{dir}/{c}\" \"$@\"; else command {c} \"$@\"; fi\n\
+                 }}\n"
+            )
+        })
+        .collect();
     format!(
         "{BEGIN}\n\
-         # Opens Codex with peekme when you type `codex`. Remove with: peekme uninstall\n\
-         function codex {{\n\
-         \x20 if [ -x \"{dir}/codex\" ]; then \"{dir}/codex\" \"$@\"; else command codex \"$@\"; fi\n\
-         }}\n\
+         {HEADER}\n\
+         {functions}\
          case \":$PATH:\" in\n\
          \x20 *\":{dir}:\"*) ;;\n\
          \x20 *) export PATH=\"{dir}:$PATH\" ;;\n\
@@ -79,16 +94,25 @@ pub fn posix_block(shim_dir: &Path) -> String {
 /// The whole file we own in fish's conf.d.
 pub fn fish_file(shim_dir: &Path) -> String {
     let dir = shell_path(shim_dir);
+    let functions: String = Agent::ALL
+        .iter()
+        .map(|a| {
+            let (c, name) = (a.command(), a.name());
+            format!(
+                "function {c} --description '{name}, opened with peekme'\n\
+                 \x20   if test -x \"{dir}/{c}\"\n\
+                 \x20       \"{dir}/{c}\" $argv\n\
+                 \x20   else\n\
+                 \x20       command {c} $argv\n\
+                 \x20   end\n\
+                 end\n"
+            )
+        })
+        .collect();
     format!(
         "{BEGIN}\n\
-         # Opens Codex with peekme when you type `codex`. Remove with: peekme uninstall\n\
-         function codex --description 'Codex, opened with peekme'\n\
-         \x20   if test -x \"{dir}/codex\"\n\
-         \x20       \"{dir}/codex\" $argv\n\
-         \x20   else\n\
-         \x20       command codex $argv\n\
-         \x20   end\n\
-         end\n\
+         {HEADER}\n\
+         {functions}\
          if not contains \"{dir}\" $PATH\n\
          \x20   set -gx PATH \"{dir}\" $PATH\n\
          end\n\
@@ -212,16 +236,18 @@ fn tilde(p: &Path) -> String {
     }
 }
 
-/// Create or refresh the `codex` link to this binary.
+/// Create or refresh the `codex` and `claude` links to this binary.
 fn install_shim(shim_dir: &Path) -> Result<()> {
     let me = std::env::current_exe()?.canonicalize()?;
     std::fs::create_dir_all(shim_dir)?;
-    let link = shim_dir.join("codex");
-    if std::fs::symlink_metadata(&link).is_ok() {
-        std::fs::remove_file(&link)?;
+    for agent in Agent::ALL {
+        let link = shim_dir.join(agent.command());
+        if std::fs::symlink_metadata(&link).is_ok() {
+            std::fs::remove_file(&link)?;
+        }
+        std::os::unix::fs::symlink(&me, &link)
+            .with_context(|| format!("could not create {}", link.display()))?;
     }
-    std::os::unix::fs::symlink(&me, &link)
-        .with_context(|| format!("could not create {}", link.display()))?;
     Ok(())
 }
 
@@ -247,7 +273,15 @@ pub fn install() -> Result<()> {
         }
         println!("Set up {} in {}", t.shell.name(), tilde(&t.path));
     }
-    println!("\nTyping `codex` now opens Codex with peekme, in new terminals.");
+    println!();
+    for agent in Agent::ALL {
+        let (c, name) = (agent.command(), agent.name());
+        if launch::find_real(c).is_some() {
+            println!("Typing `{c}` now opens {name} with peekme, in new terminals.");
+        } else {
+            println!("{name} is not installed. Once it is, typing `{c}` opens it with peekme.");
+        }
+    }
     let current = targets.iter().find(|t| {
         std::env::var("SHELL")
             .unwrap_or_default()
@@ -258,7 +292,9 @@ pub fn install() -> Result<()> {
     if let Some(t) = current {
         println!("In this terminal, run: source {}", tilde(&t.path));
     }
-    println!("To run plain Codex once: command codex. To undo: peekme uninstall.");
+    println!(
+        "To run an agent without peekme once: command codex, command claude. To undo: peekme uninstall."
+    );
     Ok(())
 }
 
@@ -283,40 +319,52 @@ pub fn uninstall() -> Result<()> {
         }
     }
     if let Some(dir) = launch::shim_dir() {
-        let link = dir.join("codex");
-        if std::fs::symlink_metadata(&link).is_ok() {
-            std::fs::remove_file(&link)?;
-            let _ = std::fs::remove_dir(&dir);
-            println!("Removed {}", tilde(&link));
+        for agent in Agent::ALL {
+            let link = dir.join(agent.command());
+            if std::fs::symlink_metadata(&link).is_ok() {
+                std::fs::remove_file(&link)?;
+                println!("Removed {}", tilde(&link));
+            }
         }
+        let _ = std::fs::remove_dir(&dir);
     }
-    println!("Done. New terminals run plain Codex. In open ones, run: unset -f codex");
+    println!(
+        "Done. New terminals run the agents without peekme. In open ones, run: unset -f codex claude"
+    );
     Ok(())
 }
 
-/// Ask an interactive shell what `codex` means there.
-/// What an interactive shell says about `codex`: its kind, the first `codex`
-/// on PATH, and whether the function is ours.
-fn probe(shell: Shell) -> Option<(String, String, bool)> {
-    let (bin, script) = match shell {
-        Shell::Bash => (
-            "bash",
-            "echo __peekme__; echo \"K=$(type -t codex)\"; echo \"P=$(type -P codex)\"; \
-             declare -f codex | grep -q peekme && echo O=1",
+/// What `name` means in an interactive shell: its kind, the first `name` on
+/// PATH, and whether the function is ours.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct Probe {
+    kind: String,
+    path: String,
+    ours: bool,
+}
+
+/// Ask an interactive shell what each agent command means there (one shell
+/// start for all of them: it can take a second).
+fn probe(shell: Shell) -> Option<Vec<Probe>> {
+    let one = |c: &str| match shell {
+        Shell::Bash => format!(
+            "echo \"K_{c}=$(type -t {c})\"; echo \"P_{c}=$(type -P {c})\"; \
+             declare -f {c} | grep -q peekme && echo O_{c}=1; "
         ),
-        Shell::Zsh => (
-            "zsh",
-            "echo __peekme__; echo \"K=$(whence -w codex)\"; echo \"P=$(whence -p codex)\"; \
-             functions codex 2>/dev/null | grep -q peekme && echo O=1",
+        Shell::Zsh => format!(
+            "echo \"K_{c}=$(whence -w {c})\"; echo \"P_{c}=$(whence -p {c})\"; \
+             functions {c} 2>/dev/null | grep -q peekme && echo O_{c}=1; "
         ),
-        Shell::Fish => (
-            "fish",
-            "echo __peekme__; echo K=(type -t codex); echo P=(command -s codex); \
-             functions codex 2>/dev/null | string match -q '*peekme*'; and echo O=1",
+        Shell::Fish => format!(
+            "echo K_{c}=(type -t {c}); echo P_{c}=(command -s {c}); \
+             functions {c} 2>/dev/null | string match -q '*peekme*'; and echo O_{c}=1; "
         ),
     };
-    let mut child = Command::new(bin)
-        .args(["-i", "-c", script])
+    let script: String = std::iter::once("echo __peekme__; ".to_string())
+        .chain(Agent::ALL.iter().map(|a| one(a.command())))
+        .collect();
+    let mut child = Command::new(shell.name())
+        .args(["-i", "-c", &script])
         .env_remove(launch::ACTIVE_ENV)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -344,7 +392,19 @@ fn probe(shell: Shell) -> Option<(String, String, bool)> {
             .find_map(|l| l.trim().strip_prefix(key).map(|v| v.trim().to_string()))
             .unwrap_or_default()
     };
-    Some((field("K="), field("P="), field("O=") == "1"))
+    Some(
+        Agent::ALL
+            .iter()
+            .map(|a| {
+                let c = a.command();
+                Probe {
+                    kind: field(&format!("K_{c}=")),
+                    path: field(&format!("P_{c}=")),
+                    ours: field(&format!("O_{c}=")) == "1",
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Check the setup and say what, if anything, is in the way. Returns an exit code.
@@ -364,103 +424,109 @@ pub fn doctor() -> i32 {
         env!("CARGO_PKG_VERSION"),
         me.as_deref().map(tilde).unwrap_or_default()
     );
-    match launch::find_real_codex() {
-        Some(p) => line(true, format!("Codex found: {}", tilde(&p))),
-        None => line(
-            false,
-            "Codex not found on PATH. Install it first: npm i -g @openai/codex".into(),
-        ),
+    let found: Vec<bool> = Agent::ALL
+        .iter()
+        .map(|a| launch::find_real(a.command()).is_some())
+        .collect();
+    for (agent, found) in Agent::ALL.iter().zip(&found) {
+        match launch::find_real(agent.command()) {
+            Some(p) if *found => println!("ok   {} found: {}", agent.name(), tilde(&p)),
+            _ => println!(
+                "note {} not found on PATH (install: {})",
+                agent.name(),
+                agent.install_hint()
+            ),
+        }
+    }
+    if !found.contains(&true) {
+        line(false, "neither Codex nor Claude Code is installed".into());
     }
     let Some(shim_dir) = launch::shim_dir() else {
         line(false, "HOME is not set".into());
         return 1;
     };
-    let link = shim_dir.join("codex");
-    let target = std::fs::canonicalize(&link).ok();
-    match (&target, &me) {
-        (Some(t), Some(m)) if t == m => {
-            line(true, format!("{} points to this peekme", tilde(&link)))
-        }
-        (Some(t), _) => line(
-            false,
-            format!(
-                "{} points to {}. Run: peekme install",
-                tilde(&link),
-                tilde(t)
+    for agent in Agent::ALL {
+        let link = shim_dir.join(agent.command());
+        let target = std::fs::canonicalize(&link).ok();
+        match (&target, &me) {
+            (Some(t), Some(m)) if t == m => {
+                line(true, format!("{} points to this peekme", tilde(&link)))
+            }
+            (Some(t), _) => line(
+                false,
+                format!(
+                    "{} points to {}. Run: peekme install",
+                    tilde(&link),
+                    tilde(t)
+                ),
             ),
-        ),
-        (None, _) => line(
-            false,
-            format!("{} is missing. Run: peekme install", tilde(&link)),
-        ),
+            (None, _) => line(
+                false,
+                format!("{} is missing. Run: peekme install", tilde(&link)),
+            ),
+        }
     }
     let targets = targets().unwrap_or_default();
     if targets.is_empty() {
         line(false, "no bash, zsh or fish setup found".into());
     }
     for t in &targets {
+        let sh = t.shell.name();
         let has = std::fs::read_to_string(&t.path).is_ok_and(|s| s.contains(BEGIN));
         if !has {
             line(
                 false,
                 format!(
-                    "{}: no peekme block in {}. Run: peekme install",
-                    t.shell.name(),
+                    "{sh}: no peekme block in {}. Run: peekme install",
                     tilde(&t.path)
                 ),
             );
             continue;
         }
-        let Some((kind, path, ours)) = probe(t.shell) else {
-            println!(
-                "     {}: could not start an interactive {} to check",
-                t.shell.name(),
-                t.shell.name()
-            );
+        let Some(probes) = probe(t.shell) else {
+            println!("     {sh}: could not start an interactive {sh} to check");
             continue;
         };
-        let is_fn = (kind == "function" || kind.ends_with(": function")) && ours;
-        line(
-            is_fn,
+        for (agent, pr) in Agent::ALL.iter().zip(&probes) {
+            let c = agent.command();
+            let is_fn = (pr.kind == "function" || pr.kind.ends_with(": function")) && pr.ours;
             if is_fn {
-                format!("{}: typing `codex` opens peekme", t.shell.name())
+                line(true, format!("{sh}: typing `{c}` opens peekme"));
             } else {
-                let what = if kind.contains("function") {
+                let what = if pr.kind.contains("function") {
                     "another function"
-                } else if kind.contains("alias") {
+                } else if pr.kind.contains("alias") {
                     "an alias that does not lead to peekme"
                 } else {
                     "not our function"
                 };
-                format!(
-                    "{}: `codex` is {what}. Something defines codex after the peekme block in {}, \
-                     or later in your shell setup",
-                    t.shell.name(),
-                    tilde(&t.path)
-                )
-            },
-        );
-        let first_is_ours = Path::new(&path)
-            .parent()
-            .and_then(|p| p.canonicalize().ok())
-            == shim_dir.canonicalize().ok();
-        if first_is_ours {
-            println!(
-                "ok   {}: scripts that run `codex` get peekme too",
-                t.shell.name()
-            );
-        } else {
-            // Not a failure: typing codex still works, only scripts miss out.
-            println!(
-                "note {}: scripts that run `codex` get plain Codex, because {} comes first in PATH \
-                 (something adds it after the peekme block)",
-                t.shell.name(),
-                if path.is_empty() {
-                    "nothing".to_string()
-                } else {
-                    tilde(Path::new(&path))
-                }
-            );
+                line(
+                    false,
+                    format!(
+                        "{sh}: `{c}` is {what}. Something defines {c} after the peekme block in {}, \
+                         or later in your shell setup. Or the block is from an older peekme: run peekme install",
+                        tilde(&t.path)
+                    ),
+                );
+            }
+            let first_is_ours = Path::new(&pr.path)
+                .parent()
+                .and_then(|p| p.canonicalize().ok())
+                == shim_dir.canonicalize().ok();
+            if first_is_ours {
+                println!("ok   {sh}: scripts that run `{c}` get peekme too");
+            } else {
+                // Not a failure: typing it still works, only scripts miss out.
+                println!(
+                    "note {sh}: scripts that run `{c}` get it without peekme, because {} comes \
+                     first in PATH (something adds it after the peekme block)",
+                    if pr.path.is_empty() {
+                        "nothing".to_string()
+                    } else {
+                        tilde(Path::new(&pr.path))
+                    }
+                );
+            }
         }
     }
     if ok { 0 } else { 1 }
@@ -481,7 +547,7 @@ pub fn first_run_question() {
     }
     let _ = std::fs::write(&marker, b"");
     print!(
-        "Open Codex with peekme every time you type `codex`? This adds a few lines to your shell setup. [Y/n] "
+        "Open Codex and Claude Code with peekme every time you type `codex` or `claude`? This adds a few lines to your shell setup. [Y/n] "
     );
     let _ = std::io::stdout().flush();
     let mut answer = String::new();

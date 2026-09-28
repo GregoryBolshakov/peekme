@@ -4,7 +4,6 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::panic::AssertUnwindSafe;
-use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -12,13 +11,16 @@ use alacritty_terminal::term::cell::Cell;
 use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
-use crate::explain::{self, Progress};
+use crate::agent::Agent;
+use crate::explain::{self, Explainer, Progress};
 use crate::input::{self, Consumed, Kind, Mouse, Token};
 use crate::jobctl;
+use crate::osc52::Osc52;
 use crate::overlay::{self, Layout, PeekBox, Status};
-use crate::render::{self, SYNC_BEGIN, SYNC_END};
-use crate::select::{self, SelectionSource};
+use crate::render::{self, Boundary, SYNC_BEGIN, SYNC_END};
+use crate::select::{self, Located, SelectionSource};
 use crate::shadow::{Shadow, Snapshot};
+use crate::{claude, codex};
 
 enum Msg {
     Output(Vec<u8>),
@@ -53,21 +55,46 @@ struct Open {
     /// What the live rows currently show on the terminal.
     strip_shown: Vec<Vec<Cell>>,
     strip_dirty: bool,
+    /// Streamed text is drawn at most every FRAME; `dirty` marks text not shown yet.
+    drawn_at: Instant,
+    dirty: bool,
 }
+
+/// Redrawing the box for every streamed token would send ~200 KB per explanation.
+const FRAME: Duration = Duration::from_millis(33);
+
+/// A mouse selection the child reported with OSC 52 (Claude Code's full screen).
+struct AppSelection {
+    text: String,
+    /// Where the drag ended, one end of the selection.
+    cell: (usize, usize),
+}
+
+/// OSC 52 counts as a selection only this soon after a mouse release; other
+/// clipboard writes (Claude's `/copy`) are not selections.
+const SELECTION_AFTER_RELEASE: Duration = Duration::from_secs(2);
 
 /// A hotkey press waiting for the child to finish a synchronized update.
 struct PendingOpen {
     since: Instant,
 }
 
-pub fn run(program: &str, args: &[String]) -> std::result::Result<i32, Failure> {
+/// Run `program` in a pseudo-terminal with peekme. `agent` is the agent CLI
+/// it is, if any.
+pub fn run(
+    program: &str,
+    args: &[String],
+    agent: Option<Agent>,
+) -> std::result::Result<i32, Failure> {
     let setup = setup(program, args).map_err(Failure::Setup)?;
-    event_loop(setup).map_err(Failure::Runtime)
+    event_loop(setup, agent).map_err(Failure::Runtime)
 }
 
 struct Setup {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     helper_pid: Option<u32>,
+    /// The process started in the terminal: the helper, or the command itself.
+    pty_pid: Option<u32>,
     master: Box<dyn portable_pty::MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     rx: mpsc::Receiver<Msg>,
@@ -114,7 +141,8 @@ fn setup(program: &str, args: &[String]) -> Result<Setup> {
         .slave
         .spawn_command(cmd)
         .with_context(|| format!("could not start `{program}`"))?;
-    let helper_pid = exe.and(child.process_id());
+    let pty_pid = child.process_id();
+    let helper_pid = exe.and(pty_pid);
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader()?;
     let writer = pair.master.take_writer()?;
@@ -174,6 +202,7 @@ fn setup(program: &str, args: &[String]) -> Result<Setup> {
     Ok(Setup {
         child,
         helper_pid,
+        pty_pid,
         master,
         writer,
         rx,
@@ -183,10 +212,11 @@ fn setup(program: &str, args: &[String]) -> Result<Setup> {
     })
 }
 
-fn event_loop(setup: Setup) -> Result<i32> {
+fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
     let Setup {
         mut child,
         helper_pid,
+        pty_pid,
         master,
         mut writer,
         rx,
@@ -203,7 +233,17 @@ fn event_loop(setup: Setup) -> Result<i32> {
         carry: Vec::new(),
         in_paste: false,
         selection: SelectionSource::new(),
-        explainer: Some(Arc::new(explain::Slot::default())),
+        explainer: Some(match agent {
+            Some(a) => Explainer::new(a),
+            None => Explainer::for_other_program(),
+        }),
+        agent,
+        pty_pid,
+        via_helper: helper_pid.is_some(),
+        osc52: Osc52::default(),
+        app_selection: None,
+        last_release: None,
+        boundary: Boundary::default(),
         tx,
         cwd: std::env::current_dir()?.to_string_lossy().into_owned(),
         viewport_top: None,
@@ -282,8 +322,8 @@ fn event_loop(setup: Setup) -> Result<i32> {
     if app.open.is_some() && !app.degraded {
         let _ = std::panic::catch_unwind(AssertUnwindSafe(|| app.close(&mut stdout, true)));
     }
-    if let Some(slot) = &app.explainer {
-        slot.shutdown();
+    if let Some(explainer) = &app.explainer {
+        explainer.shutdown();
     }
     let status = child.wait()?;
     Ok(status.exit_code() as i32)
@@ -314,8 +354,18 @@ struct App {
     carry: Vec<u8>,
     in_paste: bool,
     selection: SelectionSource,
-    /// The explainer connection, made on the first Alt+P (None in tests).
-    explainer: Option<Arc<explain::Slot>>,
+    /// Explains through the agent's own CLI, started on the first Alt+P (None in tests).
+    explainer: Option<Explainer>,
+    agent: Option<Agent>,
+    pty_pid: Option<u32>,
+    /// The command runs as a child of the job-control helper, not in the terminal directly.
+    via_helper: bool,
+    osc52: Osc52,
+    app_selection: Option<AppSelection>,
+    /// When and where the last mouse button release went to the child.
+    last_release: Option<(Instant, (usize, usize))>,
+    /// Where the child's output stopped: a box may only be drawn between sequences.
+    boundary: Boundary,
     tx: Sender<Msg>,
     cwd: String,
     /// Where the child's live area starts, learned from its scroll regions.
@@ -345,6 +395,15 @@ impl App {
             self.viewport_top = Some(k);
         }
         self.shadow.advance(bytes);
+        if self.open.is_none() {
+            self.boundary.feed(bytes);
+        }
+        if let Some(text) = self.osc52.feed(bytes)
+            && let Some((at, cell)) = self.last_release
+            && at.elapsed() < SELECTION_AFTER_RELEASE
+        {
+            self.app_selection = Some(AppSelection { text, cell });
+        }
         match &mut self.open {
             None => {
                 // The real terminal answers the child's queries; drop the shadow's copies.
@@ -371,20 +430,33 @@ impl App {
                 }
             }
         }
-        if self.pending.is_some() && !self.shadow.in_sync_update() {
+        if self.pending.is_some() && self.can_draw() {
             self.pending = None;
             self.open_peek(out)?;
         }
         Ok(())
     }
 
+    /// The terminal is between the child's frames and escape sequences.
+    fn can_draw(&self) -> bool {
+        !self.shadow.in_sync_update() && self.boundary.at_boundary()
+    }
+
+    /// The child's input area on `snap`, per agent.
+    fn composer_top(&self, snap: &Snapshot) -> Option<usize> {
+        match self.agent {
+            Some(Agent::Claude) => claude::screen::composer_top(snap),
+            _ => codex::screen::composer_top(snap),
+        }
+    }
+
     /// First row of the child's live area: from its scroll regions when it draws
     /// inline, from the position of its input box when it draws full screen.
     fn live_top(&self, snap: &Snapshot) -> Option<usize> {
         if self.shadow.alt_screen() {
-            select::composer_top(snap)
+            self.composer_top(snap)
         } else {
-            self.viewport_top.or_else(|| select::composer_top(snap))
+            self.viewport_top.or_else(|| self.composer_top(snap))
         }
     }
 
@@ -398,9 +470,17 @@ impl App {
             return Ok(());
         };
         let now = self.shadow.snapshot();
-        // Full screen: if the input area grew into the box (an approval
-        // question, say), the child needs the room more than we do.
-        if self.shadow.alt_screen() && select::composer_top(&now).is_some_and(|k| k < top) {
+        // If the input area grew into the box (an approval question, say), the
+        // child needs the room more than we do. Claude replaces its input box
+        // with the question, so there any change of the box counts.
+        let moved = match self.agent {
+            Some(Agent::Claude) => claude::screen::composer_top(&now) != Some(top),
+            _ => {
+                self.shadow.alt_screen()
+                    && codex::screen::composer_top(&now).is_some_and(|k| k < top)
+            }
+        };
+        if moved {
             return self.close(out, false);
         }
         let Some(open) = &mut self.open else {
@@ -458,10 +538,13 @@ impl App {
             self.refresh_strip(out)?;
         }
         if let Some(p) = &self.pending
-            && (!self.shadow.in_sync_update() || p.since.elapsed() > Duration::from_millis(200))
+            && (self.can_draw() || p.since.elapsed() > Duration::from_millis(200))
         {
             self.pending = None;
             self.open_peek(out)?;
+        }
+        if self.open.as_ref().is_some_and(|o| o.dirty) {
+            self.redraw_box(out)?;
         }
         Ok(())
     }
@@ -509,10 +592,18 @@ impl App {
                     Mouse::Press => {
                         self.flush_forward(&mut forward, child)?;
                         self.close(out, false)?;
+                        self.note_mouse(m, &t.bytes);
                         forward.extend_from_slice(&t.bytes);
                     }
-                    Mouse::Release => forward.extend_from_slice(&t.bytes),
+                    Mouse::Release => {
+                        self.note_mouse(m, &t.bytes);
+                        forward.extend_from_slice(&t.bytes);
+                    }
                 },
+                (Kind::Mouse(m), false) => {
+                    self.note_mouse(m, &t.bytes);
+                    forward.extend_from_slice(&t.bytes);
+                }
                 (_, true) => {
                     let live = self.open.as_ref().is_some_and(|o| o.strip_top.is_some());
                     // With the child's input line live under the box, typing goes
@@ -568,9 +659,58 @@ impl App {
         }
     }
 
+    /// A press starts a new selection (or is a click that clears the child's);
+    /// the release is where a drag ended.
+    fn note_mouse(&mut self, m: Mouse, bytes: &[u8]) {
+        match m {
+            Mouse::Press => self.app_selection = None,
+            Mouse::Release => {
+                if let Some(cell) = input::mouse_cell(bytes) {
+                    self.last_release = Some((Instant::now(), cell));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The selection to explain and where it is on `snap`. A selection the
+    /// child draws itself wins: Claude's (reported with OSC 52, looked for
+    /// near where the drag ended) or Codex's (reverse video). Otherwise the
+    /// terminal's mouse selection (X11 PRIMARY), or `PEEKME_SELECTION`.
+    fn current_selection(&mut self, snap: &Snapshot) -> (Option<String>, Option<Located>) {
+        if let Some(s) = &self.app_selection {
+            return (
+                Some(s.text.clone()),
+                select::locate(snap, &s.text, Some(s.cell)),
+            );
+        }
+        if self.agent != Some(Agent::Claude)
+            && let Some(loc) = codex::screen::selection(snap)
+        {
+            return (Some(loc.screen.selected()), Some(loc));
+        }
+        let s = self.selection.read();
+        let l = s.as_deref().and_then(|s| select::locate(snap, s, None));
+        (s, l)
+    }
+
+    /// The agent's own process: with the job-control helper, the helper's child.
+    fn agent_pid(&self) -> Option<u32> {
+        let pid = self.pty_pid?;
+        if !self.via_helper {
+            return Some(pid);
+        }
+        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+            .ok()?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
+    }
+
     fn request_open(&mut self, out: &mut dyn Write) -> Result<()> {
-        if self.shadow.in_sync_update() {
-            // Never cut into the child's half-finished frame.
+        if !self.can_draw() {
+            // Never cut into the child's half-finished frame or escape sequence.
             self.pending = Some(PendingOpen {
                 since: Instant::now(),
             });
@@ -594,19 +734,10 @@ impl App {
         self.next_id += 1;
         let id = self.next_id;
 
-        // Codex's own selection (full-screen mode highlights it in reverse video)
-        // wins; otherwise the terminal's mouse selection (X11 PRIMARY).
-        let (selection, located) = match select::codex_selection(&snap) {
-            Some(loc) => (Some(loc.screen.selected()), Some(loc)),
-            None => {
-                let s = self.selection.read();
-                let l = s.as_deref().and_then(|s| select::locate(&snap, s));
-                (s, l)
-            }
-        };
+        let (selection, located) = self.current_selection(&snap);
         let mut remembered = None;
         let mut strip = None;
-        let (peek, lay) = match (&selection, located) {
+        let (mut peek, lay) = match (&selection, located) {
             (Some(sel), Some(loc)) => {
                 // Keep the child's live area (input line, status) out of the box's
                 // way when we know where it starts and the selection is above it.
@@ -633,6 +764,7 @@ impl App {
             }
         };
 
+        peek.child_name = self.agent.map_or("Output", Agent::short);
         let mut frame = overlay::open_frame(&snap, &lay, &peek);
         if let Some(top) = strip {
             frame.push_str(&strip_cursor(&snap, top));
@@ -651,6 +783,8 @@ impl App {
             strip_top: strip,
             strip_shown,
             strip_dirty: false,
+            drawn_at: Instant::now(),
+            dirty: false,
         });
         #[cfg(debug_assertions)]
         if panic_after_open {
@@ -669,7 +803,7 @@ impl App {
         deep: bool,
         force: bool,
     ) -> Option<String> {
-        let Some(slot) = self.explainer.clone() else {
+        let Some(explainer) = self.explainer.clone() else {
             return Some("explainer disabled".into());
         };
         let req = explain::Request {
@@ -678,16 +812,14 @@ impl App {
             max_lines,
             deep,
             force,
+            agent_pid: self.agent_pid(),
         };
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let send = |p| {
                 let _ = tx.send(Msg::Peek(id, p));
             };
-            let run = std::panic::catch_unwind(AssertUnwindSafe(|| match slot.get() {
-                Ok(server) => explain::explain(&server, req, send),
-                Err(e) => send(Progress::Failed(format!("explainer unavailable: {e:#}"))),
-            }));
+            let run = std::panic::catch_unwind(AssertUnwindSafe(|| explainer.explain(req, send)));
             if run.is_err() {
                 let _ = tx.send(Msg::Peek(id, Progress::Failed("internal error".into())));
             }
@@ -698,7 +830,8 @@ impl App {
     /// If the open box explains the current selection, re-explain it with the
     /// whole conversation in the same box. Returns false when that doesn't apply.
     fn escalate(&mut self, out: &mut dyn Write) -> Result<bool> {
-        let current = self.selection.read();
+        let snap = self.shadow.snapshot();
+        let (current, _) = self.current_selection(&snap);
         let Some(open) = &self.open else {
             return Ok(false);
         };
@@ -754,7 +887,9 @@ impl App {
             s.push_str(&overlay::close_frame(&open.snap, &open.lay));
             bytes.extend_from_slice(s.as_bytes());
         }
-        bytes.extend_from_slice(&render::strip_answered_queries(&open.held));
+        let held = render::strip_answered_queries(&open.held);
+        self.boundary.feed(&held);
+        bytes.extend_from_slice(&held);
         bytes.extend_from_slice(SYNC_END.as_bytes());
         out.write_all(&bytes)?;
         out.flush()?;
@@ -823,18 +958,32 @@ impl App {
                 open.peek.confirm_deep = true;
             }
         }
+        if open.peek.status == Status::Streaming && open.drawn_at.elapsed() < FRAME {
+            open.dirty = true;
+            return Ok(());
+        }
+        self.redraw_box(out)
+    }
+
+    fn redraw_box(&mut self, out: &mut dyn Write) -> Result<()> {
+        let Some(open) = &mut self.open else {
+            return Ok(());
+        };
         let mut frame = overlay::box_frame(&open.snap, &open.lay, &open.peek);
         if let Some(top) = open.strip_top {
             frame.push_str(&strip_cursor(&self.shadow.snapshot(), top));
         }
         out.write_all(frame.as_bytes())?;
         out.flush()?;
+        open.drawn_at = Instant::now();
+        open.dirty = false;
         Ok(())
     }
 
     fn on_resize(&mut self, cols: u16, rows: u16, out: &mut dyn Write) -> Result<()> {
         // The terminal has already reflowed the box; don't paint old-width rows
-        // back. Codex reprints its whole transcript after a resize anyway.
+        // back. Codex reprints its whole transcript after a resize, and Claude
+        // redraws its screen.
         if self.open.is_some() {
             self.close(out, true)?;
         }
@@ -1067,8 +1216,19 @@ mod tests {
     }
 
     fn test_app(cols: u16, rows: u16) -> App {
+        test_app_for(Agent::Codex, cols, rows)
+    }
+
+    fn test_app_for(agent: Agent, cols: u16, rows: u16) -> App {
         let (tx, _rx) = mpsc::channel();
         App {
+            agent: Some(agent),
+            pty_pid: None,
+            via_helper: false,
+            osc52: Osc52::default(),
+            app_selection: None,
+            last_release: None,
+            boundary: Boundary::default(),
             shadow: Shadow::new(cols, rows),
             open: None,
             pending: None,
@@ -1191,5 +1351,168 @@ mod tests {
         real.advance(&std::mem::take(&mut out));
         real.flush_sync();
         assert!(same_screen(&real.snapshot(), &app.shadow.snapshot()));
+    }
+
+    /// Real Claude Code 2.1.283 sessions at 120x40 (startup and one answer),
+    /// one per renderer. Personal data replaced with same-length text.
+    const CLAUDE: [&[u8]; 2] = [
+        include_bytes!("../tests/fixtures/claude_fullscreen_120x40.bin"),
+        include_bytes!("../tests/fixtures/claude_inline_120x40.bin"),
+    ];
+
+    #[test]
+    fn round_trip_over_real_claude_output() {
+        for capture in CLAUDE {
+            let mut base = Shadow::new(120, 40);
+            base.advance(capture);
+            base.flush_sync();
+            let snap = base.snapshot();
+            for first in (0..40).step_by(3) {
+                let last = (first + 1).min(39);
+                let mut real = Shadow::new(120, 40);
+                real.advance(capture);
+                real.flush_sync();
+                let lay = overlay::layout(40, first, last);
+                let mut peek = PeekBox::new("rebase");
+                peek.text = "Streaming **explanation** text. ".repeat(12);
+                real.advance(overlay::open_frame(&snap, &lay, &peek).as_bytes());
+                real.advance(overlay::close_frame(&snap, &lay).as_bytes());
+                assert!(
+                    same_screen(&real.snapshot(), &snap),
+                    "not restored for selection at row {first}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn real_claude_output_held_mid_stream() {
+        // Claude writes nearly everything inside synchronized frames, and
+        // peekme opens between them: cut the captures after frame ends.
+        let mut checked = 0;
+        for capture in CLAUDE {
+            let ends: Vec<usize> = capture
+                .windows(SYNC_END.len())
+                .enumerate()
+                .filter(|(_, w)| *w == SYNC_END.as_bytes())
+                .map(|(i, _)| i + SYNC_END.len())
+                .collect();
+            for k in 1..=10 {
+                let cut = ends[ends.len() * k / 11];
+                let mut shadow = Shadow::new(120, 40);
+                let mut real = Shadow::new(120, 40);
+                shadow.advance(&capture[..cut]);
+                real.advance(&capture[..cut]);
+                let mut boundary = Boundary::default();
+                boundary.feed(&capture[..cut]);
+                if shadow.in_sync_update() || !boundary.at_boundary() {
+                    continue;
+                }
+                checked += 1;
+                let snap = shadow.snapshot();
+                let lay = overlay::layout(40, 10, 11);
+                real.advance(overlay::open_frame(&snap, &lay, &PeekBox::new("x")).as_bytes());
+                shadow.advance(&capture[cut..]);
+                real.advance(overlay::close_frame(&snap, &lay).as_bytes());
+                real.advance(&render::strip_answered_queries(&capture[cut..]));
+                shadow.flush_sync();
+                real.flush_sync();
+                assert!(
+                    same_screen(&real.snapshot(), &shadow.snapshot()),
+                    "diverged when cut at {cut}"
+                );
+            }
+        }
+        assert!(
+            checked >= 12,
+            "too few cut points between frames: {checked}"
+        );
+    }
+
+    /// Claude Code full screen: a mouse drag goes to Claude, which answers the
+    /// release with OSC 52; Alt+P explains that text, located at the drag's row.
+    #[test]
+    fn claude_fullscreen_selection_and_live_area() {
+        let mut app = test_app_for(Agent::Claude, 120, 40);
+        let mut real = Shadow::new(120, 40);
+        let mut child: Vec<u8> = Vec::new();
+        let mut out: Vec<u8> = Vec::new();
+        app.on_output(CLAUDE[0], &mut out, &mut child).unwrap();
+        app.shadow.flush_sync();
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+
+        // Row 10 (1-based) holds the answer's first line; drag over part of it.
+        app.on_input(
+            b"\x1b[<0;5;10M\x1b[<32;12;10M\x1b[<0;12;10m",
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        assert!(
+            child.ends_with(b"\x1b[<0;12;10m"),
+            "the drag reaches Claude"
+        );
+        // "merge c" as Claude copies it.
+        app.on_output(b"\x1b]52;c;bWVyZ2UgYw==\x07", &mut out, &mut child)
+            .unwrap();
+        real.advance(&std::mem::take(&mut out));
+
+        app.open_peek(&mut out).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.peek.title, "merge c");
+        assert_eq!(open.lay.box_top, 10, "box right under the selected row");
+        assert_eq!(open.peek.child_name, "Claude");
+        let top = open.strip_top.expect("Claude's input box stays live");
+        assert_eq!(top, 35);
+
+        // Typing goes to Claude and shows in its input line under the box.
+        app.on_input(b"hi", &mut out, &mut child).unwrap();
+        assert!(child.ends_with(b"hi") && app.open.is_some());
+        let echo = format!("\x1b[?2026h\x1b[{};3Hhi\x1b[?2026l", top + 2);
+        app.on_output(echo.as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.tick(&mut out).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let (now, shown) = (app.shadow.snapshot(), real.snapshot());
+        for r in top..40 {
+            assert!(
+                same_cells(&shown.rows[r], &now.rows[r]),
+                "live row {r} not updated"
+            );
+        }
+
+        // Esc closes; the terminal ends where Claude's own screen is.
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+        assert!(same_screen(&real.snapshot(), &app.shadow.snapshot()));
+
+        // A click (no drag, no OSC 52) forgets the selection.
+        app.on_input(b"\x1b[<0;5;5M\x1b[<0;5;5m", &mut out, &mut child)
+            .unwrap();
+        assert!(app.app_selection.is_none());
+    }
+
+    /// Alt+P while the child's output stopped inside an escape sequence (here
+    /// its window title) waits until the sequence is complete.
+    #[test]
+    fn no_box_inside_an_escape_sequence() {
+        let mut app = test_app_for(Agent::Claude, 120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(CLAUDE[0], &mut out, &mut child).unwrap();
+        app.app_selection = Some(AppSelection {
+            text: "merge".into(),
+            cell: (9, 5),
+        });
+        app.on_output(b"\x1b]0;\xe2\x97\x90 Git reb", &mut out, &mut child)
+            .unwrap();
+        app.request_open(&mut out).unwrap();
+        assert!(app.open.is_none() && app.pending.is_some());
+        app.on_output(b"ase vs merge\x07", &mut out, &mut child)
+            .unwrap();
+        assert!(app.open.is_some(), "opens once the title is complete");
     }
 }

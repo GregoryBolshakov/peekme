@@ -3,7 +3,7 @@
 //! Everything read from the user's terminal is split into whole tokens (text,
 //! CSI/OSC/DCS/SS3 sequences, Alt+key) so that replies to the child's queries
 //! are forwarded intact and are never mistaken for key presses. Keys arrive
-//! either in legacy encoding or, once Codex pushes kitty keyboard flags, as
+//! either in legacy encoding or, once the child pushes kitty keyboard flags, as
 //! `CSI code[:shifted[:base]] ; mods[:event] u`.
 
 use std::collections::HashSet;
@@ -68,6 +68,16 @@ fn parse_mouse(bytes: &[u8]) -> Option<Mouse> {
         (b'M', _) => Mouse::Press,
         _ => return None,
     })
+}
+
+/// Screen cell (0-based row, column) of an SGR mouse report.
+pub fn mouse_cell(bytes: &[u8]) -> Option<(usize, usize)> {
+    let body = bytes.strip_prefix(b"\x1b[<")?;
+    let body = std::str::from_utf8(body.get(..body.len().checked_sub(1)?)?).ok()?;
+    let mut it = body.split(';').skip(1);
+    let x: usize = it.next()?.parse().ok()?;
+    let y: usize = it.next()?.parse().ok()?;
+    Some((y.checked_sub(1)?, x.checked_sub(1)?))
 }
 
 /// Identity of a physical key, used to pair presses with their releases.
@@ -378,6 +388,8 @@ mod tests {
         assert_eq!(kinds(b"\x1b[<0;19;12m"), vec![Kind::Mouse(Mouse::Release)]);
         assert_eq!(kinds(b"\x1b[<64;5;5M"), vec![Kind::Mouse(Mouse::WheelUp)]);
         assert_eq!(kinds(b"\x1b[<65;5;5M"), vec![Kind::Mouse(Mouse::WheelDown)]);
+        assert_eq!(mouse_cell(b"\x1b[<0;96;10m"), Some((9, 95)));
+        assert_eq!(mouse_cell(b"\x1b[<0;0;10m"), None);
     }
 
     #[test]

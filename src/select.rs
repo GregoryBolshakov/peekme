@@ -55,6 +55,12 @@ impl SelectionSource {
     }
 }
 
+impl Default for SelectionSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Collapse whitespace runs to one space; returns the text and, for each output
 /// char, the index of the input char it came from.
 pub fn normalize(chars: &[char]) -> (Vec<char>, Vec<usize>) {
@@ -89,8 +95,10 @@ pub struct Located {
     pub screen: crate::context::ScreenSel,
 }
 
-/// Find the selection on screen, preferring the occurrence nearest the bottom.
-pub fn locate(snap: &Snapshot, selection: &str) -> Option<Located> {
+/// Find the selection on screen. With a `hint` (the cell where a mouse drag
+/// ended) the occurrence touching that row wins; otherwise the one nearest
+/// the bottom, which is what the user most likely just read.
+pub fn locate(snap: &Snapshot, selection: &str, hint: Option<(usize, usize)>) -> Option<Located> {
     let (screen, pos) = snap.text_with_positions();
     let (norm_screen, map) = normalize(&screen);
     let sel: Vec<char> = selection.chars().collect();
@@ -98,20 +106,33 @@ pub fn locate(snap: &Snapshot, selection: &str) -> Option<Located> {
     if norm_sel.is_empty() {
         return None;
     }
-    let found = rfind(&norm_screen, &norm_sel)
-        .map(|s| (s, s + norm_sel.len() - 1))
-        .or_else(|| {
-            // Part of a long selection may be off screen: anchor on its visible end or start.
-            let n = norm_sel.len().min(40);
-            if norm_sel.len() <= n {
-                return None;
-            }
-            let tail = &norm_sel[norm_sel.len() - n..];
-            let head = &norm_sel[..n];
-            rfind(&norm_screen, tail)
-                .map(|s| (s, s + n - 1))
-                .or_else(|| rfind(&norm_screen, head).map(|s| (s, s + n - 1)))
-        })?;
+    let rows_of = |s: usize, len: usize| (pos[map[s]].0, pos[map[s + len - 1]].0);
+    let pick = |starts: Vec<usize>, len: usize| -> Option<(usize, usize)> {
+        let best = match hint {
+            Some((row, _)) => starts.into_iter().min_by_key(|&s| {
+                let (a, b) = rows_of(s, len);
+                // Distance from the hint row; ties go to the lower occurrence.
+                let d = if row < a {
+                    a - row
+                } else {
+                    row.saturating_sub(b)
+                };
+                (d, usize::MAX - s)
+            }),
+            None => starts.into_iter().last(),
+        }?;
+        Some((best, best + len - 1))
+    };
+    let found = pick(find_all(&norm_screen, &norm_sel), norm_sel.len()).or_else(|| {
+        // Part of a long selection may be off screen: anchor on its visible end or start.
+        let n = norm_sel.len().min(40);
+        if norm_sel.len() <= n {
+            return None;
+        }
+        let tail = &norm_sel[norm_sel.len() - n..];
+        let head = &norm_sel[..n];
+        pick(find_all(&norm_screen, tail), n).or_else(|| pick(find_all(&norm_screen, head), n))
+    })?;
     let (start, last) = (map[found.0], map[found.1]);
     Some(Located {
         first_row: pos[start].0,
@@ -124,58 +145,13 @@ pub fn locate(snap: &Snapshot, selection: &str) -> Option<Located> {
     })
 }
 
-/// The text Codex itself has selected (its full-screen transcript highlights a
-/// mouse selection in reverse video), as a located range on screen.
-pub fn codex_selection(snap: &Snapshot) -> Option<Located> {
-    use alacritty_terminal::term::cell::Flags;
-    let (screen, pos) = snap.text_with_positions();
-    let inverse = |i: usize| {
-        let (r, c) = pos[i];
-        snap.rows[r][c].flags.contains(Flags::INVERSE) && screen[i] != '\n'
-    };
-    let start = (0..screen.len()).find(|&i| inverse(i))?;
-    let end = (0..screen.len()).rfind(|&i| inverse(i))? + 1;
-    // One highlighted stretch, possibly over several rows; blanks inside it may
-    // be drawn without highlight, so only require the two ends.
-    Some(Located {
-        first_row: pos[start].0,
-        last_row: pos[end - 1].0,
-        screen: crate::context::ScreenSel {
-            text: screen,
-            start,
-            end,
-        },
-    })
-}
-
-/// First row of Codex's input area when it draws full screen: the row whose
-/// text starts with the prompt mark `›`, lowest on screen, extended up over
-/// rows with the same filled background (the input box padding).
-pub fn composer_top(snap: &Snapshot) -> Option<usize> {
-    use alacritty_terminal::vte::ansi::{Color, NamedColor};
-    let rows = snap.rows.len();
-    let prompt_row = (rows / 2..rows).rev().find(|&r| {
-        let text: String = snap.rows[r].iter().take(4).map(|c| c.c).collect();
-        text.trim_start().starts_with('›')
-    })?;
-    let bg = snap.rows[prompt_row][0].bg;
-    if bg == Color::Named(NamedColor::Background) {
-        return Some(prompt_row);
-    }
-    let mut top = prompt_row;
-    while top > rows / 2 && snap.rows[top - 1][0].bg == bg {
-        top -= 1;
-    }
-    Some(top)
-}
-
-fn rfind(hay: &[char], needle: &[char]) -> Option<usize> {
+fn find_all(hay: &[char], needle: &[char]) -> Vec<usize> {
     if needle.len() > hay.len() {
-        return None;
+        return Vec::new();
     }
     (0..=hay.len() - needle.len())
-        .rev()
-        .find(|&i| hay[i..i + needle.len()] == *needle)
+        .filter(|&i| hay[i..i + needle.len()] == *needle)
+        .collect()
 }
 
 #[cfg(test)]
@@ -184,37 +160,13 @@ mod tests {
     use crate::shadow::Shadow;
 
     fn rows(s: &Snapshot, sel: &str) -> Option<(usize, usize)> {
-        locate(s, sel).map(|l| (l.first_row, l.last_row))
-    }
-
-    #[test]
-    fn codex_reverse_video_selection() {
-        let s = snap(
-            b"line one\r\n\x1b[2;3Hpick \x1b[7mme up\x1b[0m please\r\n",
-            30,
-            4,
-        );
-        let l = codex_selection(&s).unwrap();
-        assert_eq!(l.screen.selected(), "me up");
-        assert_eq!((l.first_row, l.last_row), (1, 1));
-        let s = snap(b"nothing selected\r\n", 30, 4);
-        assert!(codex_selection(&s).is_none());
-    }
-
-    #[test]
-    fn composer_top_finds_the_input_band() {
-        let s = snap(
-            b"history\x1b[6;1H\x1b[48;2;57;57;71m      \x1b[0m\x1b[7;1H\x1b[48;2;57;57;71m\xe2\x80\xba Ask\x1b[0m\x1b[8;1H\x1b[48;2;57;57;71m      \x1b[0m\x1b[9;1Hstatus",
-            20,
-            10,
-        );
-        assert_eq!(composer_top(&s), Some(5));
+        locate(s, sel, None).map(|l| (l.first_row, l.last_row))
     }
 
     #[test]
     fn located_range_is_the_selected_text() {
         let s = snap(b"Tip: Try the Desktop app on Linux\r\n", 40, 3);
-        let l = locate(&s, "Desktop app").unwrap();
+        let l = locate(&s, "Desktop app", None).unwrap();
         assert_eq!(l.screen.selected(), "Desktop app");
     }
 
@@ -234,6 +186,15 @@ mod tests {
     }
 
     #[test]
+    fn mouse_hint_picks_the_occurrence_under_the_pointer() {
+        let s = snap(b"use ripgrep here\r\nother\r\nripgrep again\r\n", 20, 5);
+        let at = |hint| locate(&s, "ripgrep", hint).map(|l| (l.first_row, l.last_row));
+        assert_eq!(at(None), Some((2, 2)));
+        assert_eq!(at(Some((0, 10))), Some((0, 0)));
+        assert_eq!(at(Some((1, 3))), Some((2, 2)));
+    }
+
+    #[test]
     fn soft_wrapped_selection_matches() {
         // 10 columns: "0123456789abc" wraps onto the next row.
         let s = snap(b"0123456789abc\r\n", 10, 4);
@@ -242,7 +203,7 @@ mod tests {
 
     #[test]
     fn cursor_positioned_words_match() {
-        // Codex draws words with explicit cursor moves rather than spaces.
+        // TUIs draw words with explicit cursor moves rather than spaces.
         let s = snap(b"\x1b[1;1HDo\x1b[1;4Hyou\x1b[1;8Htrust", 20, 3);
         assert_eq!(rows(&s, "you trust"), Some((0, 0)));
     }

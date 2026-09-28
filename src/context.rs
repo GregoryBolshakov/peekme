@@ -4,7 +4,7 @@
 //! whole conversation is too big and too slow. So the explainer gets layers,
 //! each with its own budget, and the selection is always marked *in place*:
 //!
-//! 1. environment: one line saying this is Codex CLI in some directory (this
+//! 1. environment: one line naming the agent CLI and the directory (this
 //!    alone resolves most interface text such as tips and status lines);
 //! 2. the passage the selection sits in, found in the conversation by matching
 //!    the selection *with its on-screen neighbours* so the right occurrence is
@@ -36,6 +36,8 @@ pub enum Source {
     User,
     /// Output of the given command.
     Command(String),
+    /// Result of a tool call, described as `Tool: argument`.
+    Tool(String),
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +61,8 @@ pub struct Hit {
     pub item: usize,
     pub start: usize,
     pub end: usize,
+    /// Matched together with on-screen neighbours, not just the bare words.
+    pub anchored: bool,
 }
 
 // Budgets, in characters (roughly 4 per token).
@@ -70,9 +74,15 @@ const EARLIER_REQUEST_MAX: usize = 160;
 const MENTIONS: usize = 2;
 const MENTION_SIDE: usize = 160;
 const SEARCH_CAP: usize = 200_000;
+/// Whole-conversation text (agents without a fork): total size, ~100k
+/// tokens, and the part of each tool result kept.
+const DEEP_MAX: usize = 400_000;
+const DEEP_TOOL_MAX: usize = 1_500;
 
 pub const OPEN: char = '⟦';
 pub const CLOSE: char = '⟧';
+
+use crate::agent::Agent;
 
 /// Characters dropped before comparing screen text with conversation text:
 /// markdown markers and the glyphs a TUI draws around text.
@@ -81,6 +91,10 @@ fn dropped(c: char) -> bool {
         c,
         '`' | '*'
             | '#'
+            | '●'
+            | '⏺'
+            | '⎿'
+            | '❯'
             | '>'
             | '-'
             | '•'
@@ -195,6 +209,7 @@ pub fn find(conv: &Conversation, sel: &ScreenSel) -> Option<Hit> {
                     item: idx,
                     start: imap[s],
                     end: imap[e - 1] + 1,
+                    anchored: !bare,
                 });
             }
         }
@@ -262,6 +277,7 @@ fn source_label(src: &Source) -> String {
         Source::Agent => "the assistant's answer".into(),
         Source::User => "the user's own message".into(),
         Source::Command(cmd) => format!("the output of the command `{}`", one_line(cmd, 80)),
+        Source::Tool(call) => format!("the result of the tool call `{}`", one_line(call, 100)),
     }
 }
 
@@ -286,7 +302,7 @@ fn other_mentions(conv: &Conversation, sel_key: &[char], exclude: Option<usize>)
     let mut found = Vec::new();
     let mut total = 0;
     for (idx, item) in conv.items.iter().enumerate() {
-        if Some(idx) == exclude || matches!(item.source, Source::Command(_)) {
+        if Some(idx) == exclude || matches!(item.source, Source::Command(_) | Source::Tool(_)) {
             continue;
         }
         let chars: Vec<char> = item.text.chars().take(SEARCH_CAP).collect();
@@ -317,15 +333,25 @@ pub struct Built {
     pub label: &'static str,
 }
 
-/// Assemble the explainer's input.
-pub fn build(cwd: &str, conv: Option<&Conversation>, hit: Option<Hit>, sel: &ScreenSel) -> Built {
+fn ask(sel: &ScreenSel) -> String {
     let selected = one_line(&sel.selected(), 300);
-    let mut p = String::new();
-    p.push_str(
-        "<environment>\nThe user is working in Codex CLI, OpenAI's coding agent for the terminal, ",
-    );
-    p.push_str(&format!("in the directory {cwd}. Text on their screen is the assistant's answers, the user's messages, "));
-    p.push_str("command output, or the Codex CLI interface itself (tips, status lines, prompts).\n</environment>\n\n");
+    format!(
+        "\nExplain {OPEN}{selected}{CLOSE} as it is used in the passage. If the passage or the conversation shows \
+         which specific thing it refers to (a product, file, function, command, setting, concept), name it \
+         concretely. Do not summarize the passage. If the context does not settle what it refers to, give the \
+         most likely reading and say that it is a guess.\n"
+    )
+}
+
+/// Assemble the explainer's input.
+pub fn build(
+    agent: Agent,
+    cwd: &str,
+    conv: Option<&Conversation>,
+    hit: Option<Hit>,
+    sel: &ScreenSel,
+) -> Built {
+    let mut p = agent.environment(cwd);
 
     if let Some(conv) = conv {
         let current = hit.and_then(|h| request_for(conv, h.item));
@@ -369,10 +395,22 @@ pub fn build(cwd: &str, conv: Option<&Conversation>, hit: Option<Hit>, sel: &Scr
             ));
             p.push_str(&marked_window(&chars, h.start, h.end, PASSAGE_SIDE));
             p.push_str("\n</passage>\n");
+            if !h.anchored {
+                // Only the bare words matched: this may be another use of them.
+                // (A transcript can also miss a message the screen shows.)
+                p.push_str("\n<screen note=\"what the terminal shows around the selection; if it differs from the passage above, this is where the selection is\">\n");
+                p.push_str(&marked_window(
+                    &sel.text,
+                    sel.start,
+                    sel.end,
+                    SCREEN_SIDE / 2,
+                ));
+                p.push_str("\n</screen>\n");
+            }
             "conversation"
         }
         _ => {
-            p.push_str("<passage source=\"the terminal screen; this text was not found in the conversation, so it is probably Codex CLI interface text or tool output\">\n");
+            p.push_str(&format!("<passage source=\"the terminal screen; this text was not found in the conversation, so it is probably {} interface text or tool output\">\n", agent.name()));
             p.push_str(&marked_window(&sel.text, sel.start, sel.end, SCREEN_SIDE));
             p.push_str("\n</passage>\n");
             "screen"
@@ -390,13 +428,77 @@ pub fn build(cwd: &str, conv: Option<&Conversation>, hit: Option<Hit>, sel: &Scr
         }
     }
 
-    p.push_str(&format!(
-        "\nExplain {OPEN}{selected}{CLOSE} as it is used in the passage. If the passage or the conversation shows \
-         which specific thing it refers to (a product, file, function, command, setting, concept), name it \
-         concretely. Do not summarize the passage. If the context does not settle what it refers to, give the \
-         most likely reading and say that it is a guess.\n"
-    ));
+    p.push_str(&ask(sel));
     Built { prompt: p, label }
+}
+
+/// The whole conversation up to the end of the selection's turn, as text,
+/// with the selection marked in place, for agents that can't fork their
+/// session cheaply. Tool results are clipped and the oldest items are dropped
+/// first to stay within the budget.
+pub fn build_deep(
+    agent: Agent,
+    cwd: &str,
+    conv: &Conversation,
+    hit: Option<Hit>,
+    sel: &ScreenSel,
+) -> Built {
+    let end = match hit {
+        Some(h) => conv.items[h.item + 1..]
+            .iter()
+            .position(|it| it.source == Source::User)
+            .map_or(conv.items.len(), |n| h.item + 1 + n),
+        None => conv.items.len(),
+    };
+    let parts: Vec<String> = conv.items[..end]
+        .iter()
+        .enumerate()
+        .map(|(idx, item)| {
+            let body = match (&item.source, hit) {
+                (_, Some(h)) if h.item == idx => {
+                    let chars: Vec<char> = item.text.chars().collect();
+                    marked_window(&chars, h.start, h.end, chars.len())
+                }
+                (Source::Tool(_) | Source::Command(_), _) => truncate(&item.text, DEEP_TOOL_MAX),
+                _ => item.text.trim().to_string(),
+            };
+            let who = match &item.source {
+                Source::User => "user".to_string(),
+                Source::Agent => "assistant".to_string(),
+                Source::Tool(call) | Source::Command(call) => {
+                    format!("result of `{}`", one_line(call, 100))
+                }
+            };
+            format!("[{who}]\n{body}\n\n")
+        })
+        .collect();
+    let mut total: usize = parts.iter().map(|s| s.chars().count()).sum();
+    let mut first = 0;
+    while total > DEEP_MAX && first + 1 < parts.len() {
+        total -= parts[first].chars().count();
+        first += 1;
+    }
+
+    let mut p = agent.environment(cwd);
+    match &conv.title {
+        Some(t) => p.push_str(&format!("<conversation title=\"{}\">\n", one_line(t, 100))),
+        None => p.push_str("<conversation>\n"),
+    }
+    if first > 0 {
+        p.push_str(&format!("({first} earlier items omitted)\n\n"));
+    }
+    parts[first..].iter().for_each(|s| p.push_str(s));
+    p.push_str("</conversation>\n");
+    if hit.is_none() {
+        p.push_str("\n<passage source=\"the terminal screen; this text was not found in the conversation\">\n");
+        p.push_str(&marked_window(&sel.text, sel.start, sel.end, SCREEN_SIDE));
+        p.push_str("\n</passage>\n");
+    }
+    p.push_str(&ask(sel));
+    Built {
+        prompt: p,
+        label: "whole conversation",
+    }
 }
 
 #[cfg(test)]
@@ -489,7 +591,7 @@ mod tests {
             items: vec![item("1", Source::User, "fix the build")],
         };
         assert_eq!(find(&conv, &s), None);
-        let b = build("/home/u/proj", Some(&conv), None, &s);
+        let b = build(Agent::Codex, "/home/u/proj", Some(&conv), None, &s);
         assert_eq!(b.label, "screen");
         assert!(b.prompt.contains("Codex CLI, OpenAI's coding agent"));
         assert!(
@@ -499,6 +601,73 @@ mod tests {
         );
         assert!(b.prompt.contains("run 'chatgpt'"));
         assert!(b.prompt.contains("fix the build"));
+    }
+
+    #[test]
+    fn deep_prompt_has_everything_up_to_the_turn_and_marks_the_selection() {
+        let conv = Conversation {
+            id: "t".into(),
+            title: Some("design".into()),
+            items: vec![
+                item("1", Source::User, "first question"),
+                item("1", Source::Tool("Bash: ls".into()), &"x".repeat(5000)),
+                item(
+                    "1",
+                    Source::Agent,
+                    "The shadow emulator mirrors the screen.",
+                ),
+                item("2", Source::User, "a later question"),
+                item("2", Source::Agent, "later answer"),
+            ],
+        };
+        let s = screen("The shadow emulator mirrors the screen.", "shadow emulator");
+        let hit = find(&conv, &s).unwrap();
+        let b = build_deep(Agent::Claude, "/p", &conv, Some(hit), &s);
+        assert_eq!(b.label, "whole conversation");
+        assert!(b.prompt.contains("Claude Code, Anthropic's coding agent"));
+        assert!(b.prompt.contains("[user]\nfirst question"));
+        assert!(b.prompt.contains("[result of `Bash: ls`]"));
+        assert!(
+            !b.prompt.contains(&"x".repeat(1600)),
+            "tool output is clipped"
+        );
+        assert!(b.prompt.contains("The ⟦shadow emulator⟧ mirrors"));
+        assert!(
+            !b.prompt.contains("a later question"),
+            "stops at the selection's turn"
+        );
+    }
+
+    #[test]
+    fn bare_word_match_adds_the_screen() {
+        let conv = Conversation {
+            id: "t".into(),
+            title: None,
+            items: vec![
+                item("1", Source::User, "q"),
+                item("1", Source::Agent, "A shadow emulator keeps a copy."),
+            ],
+        };
+        let s = screen("A shadow emulator keeps a copy.", "shadow emulator");
+        let hit = find(&conv, &s).unwrap();
+        assert!(hit.anchored);
+        assert!(
+            !build(Agent::Claude, "/p", Some(&conv), Some(hit), &s)
+                .prompt
+                .contains("<screen")
+        );
+        // A screen line the transcript lacks: only the bare words match.
+        let other = screen(
+            "Unrecorded: the shadow emulator was fast.",
+            "shadow emulator",
+        );
+        let bare = find(&conv, &other).unwrap();
+        assert!(!bare.anchored);
+        let b = build(Agent::Claude, "/p", Some(&conv), Some(bare), &other);
+        assert!(
+            b.prompt
+                .contains("Unrecorded: the ⟦shadow emulator⟧ was fast.")
+        );
     }
 
     #[test]
@@ -532,7 +701,7 @@ mod tests {
         );
         let hit = find(&conv, &s).unwrap();
         assert_eq!(hit.item, 3);
-        let b = build("/p", Some(&conv), Some(hit), &s);
+        let b = build(Agent::Codex, "/p", Some(&conv), Some(hit), &s);
         assert_eq!(b.label, "conversation");
         assert!(b.prompt.contains("The ⟦shadow emulator⟧ keeps a copy"));
         assert!(b.prompt.contains("- what is a shadow emulator?"));

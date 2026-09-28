@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.0 (2026-09-28)
+
+- peekme works with Claude Code too. Type `claude` as always, select text, press Alt+P.
+  `peekme install` now hooks `claude` next to `codex`. If you installed 0.1, run
+  `peekme install` once more.
+- Claude Code explanations come from `claude -p` on Haiku with your Claude Code login. The
+  session is not saved. The context comes from the running session's transcript, and Alt+P
+  again sends the whole conversation (after asking, when it is big).
+- In Claude Code's full screen mode peekme reads the selection from the OSC 52 copy Claude sends
+  when you release the mouse. In the classic mode it reads the X11 PRIMARY selection.
+- Claude's input line stays live under the box, as with Codex. Ctrl+Z works with Claude too.
+- The box is never drawn in the middle of an escape sequence from the agent. Before, if the
+  agent's output stopped inside one (a window title, say), part of it could show as text.
+- While an explanation streams in, the box is redrawn at most about 30 times a second. This
+  sends much less to the terminal.
+- `peekme doctor` checks both agents. Plain `peekme` runs Codex, or Claude Code when only that
+  is installed.
+
 ## 0.1.3 (2026-09-27)
 
 - peekme uses the shared Codex server that Codex 0.157 runs in the background, instead of

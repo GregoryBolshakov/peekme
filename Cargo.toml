@@ -1,13 +1,13 @@
 [package]
 name = "peekme"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2024"
-description = "Select text in Codex CLI output and get a short explanation right under it, inside the terminal"
+description = "Select text in Codex CLI or Claude Code output and get a short explanation right under it, inside the terminal"
 authors = ["Gregory Bolshakov"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/GregoryBolshakov/peekme"
 readme = "README.md"
-keywords = ["codex", "terminal", "cli", "explain", "tui"]
+keywords = ["codex", "claude", "terminal", "cli", "explain"]
 categories = ["command-line-utilities"]
 
 [dependencies]

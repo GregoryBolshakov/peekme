@@ -1,48 +1,56 @@
 //! Development helper: run one explanation for a selection inside some screen
 //! text, without a terminal. Prints the prompt sent and the streamed answer.
 //!
-//!     cargo run --example peek_text -- "<screen text>" "<selection>" [--deep]
+//!     cargo run --example peek_text -- "<screen text>" "<selection>" [--deep] [--claude [--pid PID]]
+//!
+//! Codex by default. With `--claude`, Claude Code; `--pid` is the process id of
+//! a running interactive `claude`, whose transcript then gives the context.
 
-#[path = "../src/context.rs"]
-mod context;
-#[path = "../src/explain.rs"]
-mod explain;
-#[allow(dead_code)]
-#[path = "../src/launch.rs"]
-mod launch;
-#[path = "../src/ws.rs"]
-mod ws;
+use peekme::agent::Agent;
+use peekme::context;
+use peekme::explain::{Explainer, Progress, Request};
 
-fn main() -> anyhow::Result<()> {
+fn main() {
     let args: Vec<String> = std::env::args().collect();
     let (text, selected) = (&args[1], &args[2]);
-    let deep = args.iter().any(|a| a == "--deep");
+    let has = |f: &str| args.iter().any(|a| a == f);
+    let agent = if has("--claude") {
+        Agent::Claude
+    } else {
+        Agent::Codex
+    };
+    let agent_pid = args
+        .iter()
+        .position(|a| a == "--pid")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|p| p.parse().ok());
     let chars: Vec<char> = text.chars().collect();
     let sel: Vec<char> = selected.chars().collect();
     let start = (0..=chars.len() - sel.len())
         .rev()
         .find(|&i| chars[i..i + sel.len()] == *sel)
         .expect("selection not in text");
-    let screen = context::ScreenSel {
-        text: chars,
-        start,
-        end: start + sel.len(),
+    let req = Request {
+        screen: context::ScreenSel {
+            text: chars,
+            start,
+            end: start + sel.len(),
+        },
+        cwd: std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+        max_lines: 10,
+        deep: has("--deep"),
+        force: true,
+        agent_pid,
     };
-    let cwd = std::env::current_dir()?.to_string_lossy().into_owned();
     // SAFETY: single-threaded at this point.
     unsafe { std::env::set_var("PEEKME_DEBUG_PROMPT", "1") };
     let t0 = std::time::Instant::now();
-    let slot = explain::Slot::default();
-    let server = slot.get()?;
-    let req = explain::Request {
-        screen,
-        cwd,
-        max_lines: 10,
-        deep,
-        force: true,
-    };
-    explain::explain(&server, req, |p| match p {
-        explain::Progress::Started { model, source } => {
+    let explainer = Explainer::new(agent);
+    explainer.explain(req, |p| match p {
+        Progress::Started { model, source } => {
             let prompt =
                 std::fs::read_to_string(std::env::temp_dir().join("peekme-last-prompt.txt"))
                     .unwrap_or_default();
@@ -52,15 +60,10 @@ fn main() -> anyhow::Result<()> {
                 t0.elapsed().as_secs_f32()
             );
         }
-        explain::Progress::Delta(d) => print!("{d}"),
-        explain::Progress::Done => {
-            println!("\n===== done in {:.1}s =====", t0.elapsed().as_secs_f32())
-        }
-        explain::Progress::Failed(e) => println!("\n===== failed: {e} ====="),
-        explain::Progress::TooBig { tokens, ratio } => {
-            println!("too big: {tokens} tokens ({ratio}x)")
-        }
+        Progress::Delta(d) => print!("{d}"),
+        Progress::Done => println!("\n===== done in {:.1}s =====", t0.elapsed().as_secs_f32()),
+        Progress::Failed(e) => println!("\n===== failed: {e} ====="),
+        Progress::TooBig { tokens, ratio } => println!("too big: {tokens} tokens ({ratio}x)"),
     });
-    slot.shutdown();
-    Ok(())
+    explainer.shutdown();
 }

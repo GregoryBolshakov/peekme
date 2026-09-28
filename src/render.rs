@@ -172,9 +172,101 @@ pub fn strip_answered_queries(buf: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Tracks whether a byte stream stopped between two escape sequences and
+/// characters, or inside one. Our own frames may only be written at a
+/// boundary: an OSC cut in two by a box frame would print the rest of the
+/// window title as text.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Boundary {
+    #[default]
+    Ground,
+    /// Continuation bytes still owed by a UTF-8 character.
+    Utf8(u8),
+    Esc,
+    EscIntermediate,
+    Csi,
+    /// OSC, DCS, APC, PM or SOS body, ended by BEL or ST.
+    Str,
+    StrEsc,
+}
+
+impl Boundary {
+    pub fn feed(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            *self = self.step(b);
+        }
+    }
+
+    pub fn at_boundary(&self) -> bool {
+        *self == Boundary::Ground
+    }
+
+    fn step(self, b: u8) -> Boundary {
+        use Boundary::*;
+        match self {
+            Str => match b {
+                0x07 => Ground,
+                0x1b => StrEsc,
+                _ => Str,
+            },
+            StrEsc if b == b'\\' => Ground,
+            _ if b == 0x1b => Esc,
+            // CAN and SUB cancel any sequence.
+            _ if b == 0x18 || b == 0x1a => Ground,
+            Ground | StrEsc | Utf8(_) => match b {
+                0xc0..=0xdf => Utf8(1),
+                0xe0..=0xef => Utf8(2),
+                0xf0..=0xf7 => Utf8(3),
+                0x80..=0xbf => match self {
+                    Utf8(n) if n > 1 => Utf8(n - 1),
+                    _ => Ground,
+                },
+                _ => Ground,
+            },
+            Esc => match b {
+                b'[' => Csi,
+                b']' | b'P' | b'_' | b'^' | b'X' => Str,
+                0x20..=0x2f => EscIntermediate,
+                _ => Ground,
+            },
+            EscIntermediate => match b {
+                0x20..=0x2f => EscIntermediate,
+                _ => Ground,
+            },
+            Csi => match b {
+                0x40..=0x7e => Ground,
+                _ => Csi,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boundary_tracks_sequences_and_utf8() {
+        let cases: &[(&[u8], bool)] = &[
+            (b"plain", true),
+            (b"\x1b", false),
+            (b"\x1b[38;2;1", false),
+            (b"\x1b[38;2;1;2;3m", true),
+            (b"\x1b]0;title", false),
+            (b"\x1b]0;title\x07", true),
+            (b"\x1b]8;;http://x\x1b\\", true),
+            (b"\x1b]52;c;aGk\x1b", false),
+            (b"\x1b(B", true),
+            (b"\x1b(", false),
+            (b"\xe2\x97", false),
+            (b"\xe2\x97\x90", true),
+        ];
+        for (bytes, ok) in cases {
+            let mut b = Boundary::default();
+            b.feed(bytes);
+            assert_eq!(b.at_boundary(), *ok, "{:?}", String::from_utf8_lossy(bytes));
+        }
+    }
 
     #[test]
     fn strips_only_queries() {
