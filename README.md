@@ -24,6 +24,9 @@ cargo install peekme                          # builds it with Rust
 peekme install
 ```
 
+npm 12 may say that it skipped an install script of peekme. That is fine: peekme then downloads
+its binary the first time it runs.
+
 Without npm, Homebrew or Rust, the script from the
 [latest release](https://github.com/GregoryBolshakov/peekme/releases/latest) puts peekme in
 `~/.local/bin`:
