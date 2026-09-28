@@ -103,8 +103,11 @@ pub fn helper_main(args: &[String]) -> ! {
 /// restored, and come back in raw mode once the user resumes it.
 pub fn suspend_self() {
     let _ = crossterm::terminal::disable_raw_mode();
+    // The whole process group, not just us: when a launcher started peekme
+    // (npm's `run-peekme.js` waits in Node), the shell only sees the job as
+    // stopped once the launcher stops too. `fg` continues the whole group.
     unsafe {
-        libc::raise(libc::SIGTSTP);
+        libc::kill(0, libc::SIGTSTP);
     }
     // Execution continues here after `fg` (SIGCONT).
     let _ = crossterm::terminal::enable_raw_mode();

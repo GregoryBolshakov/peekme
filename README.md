@@ -10,16 +10,29 @@ room, like Peek in VS Code. Esc closes it and the screen is exactly as before.
 The explanation comes from a small, fast model and it knows the conversation. If you select
 "its split panes" in an answer that recommends Kitty, it tells you it is about Kitty.
 
-Status: 0.2.0. Tested on Linux with X11 and bash, with Codex 0.157 and Claude Code 2.1.283.
+Status: 0.2.1. Tested on Linux with X11 and bash, with Codex 0.157 and Claude Code 2.1.283.
 
 ## Install
 
-You need Rust and Codex CLI or Claude Code (logged in). Both is fine too.
+You need Codex CLI or Claude Code (logged in). Both is fine too. Then install peekme in one of
+these ways and run `peekme install`:
 
 ```
-cargo install peekme
+npm i -g peekme                               # you have npm already if you installed an agent with it
+brew install gregorybolshakov/tap/peekme      # Homebrew, on macOS or Linux
+cargo install peekme                          # builds it with Rust
 peekme install
 ```
+
+Without npm, Homebrew or Rust, the script from the
+[latest release](https://github.com/GregoryBolshakov/peekme/releases/latest) puts peekme in
+`~/.local/bin`:
+
+```
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GregoryBolshakov/peekme/releases/latest/download/peekme-installer.sh | sh
+```
+
+Ready binaries are there too, for Linux and macOS on x86_64 and ARM. macOS is not tested yet.
 
 After this, `codex` and `claude` open with peekme in every new terminal. You keep typing
 `codex` or `claude`, and your aliases and scripts that call them keep working. `peekme install`

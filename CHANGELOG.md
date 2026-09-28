@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1 (2026-09-28)
+
+- You don't need Rust any more. peekme can be installed with npm (`npm i -g peekme`), with
+  Homebrew (`brew install gregorybolshakov/tap/peekme`) or with a shell script. Each release has
+  ready binaries for Linux and macOS, on x86_64 and ARM.
+- Ctrl+Z works when peekme was started through another program, like the npm launcher. Before,
+  the terminal could wait forever.
+
 ## 0.2.0 (2026-09-28)
 
 - peekme works with Claude Code too. Type `claude` as always, select text, press Alt+P.

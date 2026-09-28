@@ -1,11 +1,12 @@
 [package]
 name = "peekme"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Select text in Codex CLI or Claude Code output and get a short explanation right under it, inside the terminal"
 authors = ["Gregory Bolshakov"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/GregoryBolshakov/peekme"
+homepage = "https://github.com/GregoryBolshakov/peekme"
 readme = "README.md"
 keywords = ["codex", "claude", "terminal", "cli", "explain"]
 categories = ["command-line-utilities"]
@@ -23,4 +24,9 @@ signal-hook = "0.3"
 unicode-width = "0.2"
 
 [profile.release]
+lto = "thin"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
 lto = "thin"
