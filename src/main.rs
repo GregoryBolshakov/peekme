@@ -8,8 +8,9 @@ use std::io::IsTerminal;
 
 const HELP: &str = "\
 peekme {version}
-Select text in Codex CLI or Claude Code output with the mouse, press Alt+P,
-and an explanation from a smaller model opens right next to it. Esc closes it.
+Select text in Codex CLI or Claude Code output with the mouse, press Alt+P
+(Option+P on a Mac), and an explanation from a smaller model opens right next
+to it. Esc closes it.
 
 USAGE:
     peekme                     run codex (or claude, if only that is installed)
@@ -99,6 +100,8 @@ fn main() {
     // A panic is logged, never printed over the child's screen. The loop in
     // `app` catches panics in the peek code and keeps passing the agent through.
     std::panic::set_hook(Box::new(|info| log(&format!("panic: {info}"))));
+
+    peekme::input::set_mac_keyboard(peekme::input::detect_mac_keyboard());
 
     if crossterm::terminal::enable_raw_mode().is_err() {
         exec(&program, &rest);

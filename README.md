@@ -1,7 +1,7 @@
 # peekme
 
 Peek me. Pick me. Select text in [Codex CLI](https://github.com/openai/codex) or
-[Claude Code](https://github.com/anthropics/claude-code) output, press **Alt+P**, and a short
+[Claude Code](https://github.com/anthropics/claude-code) output, press **Alt+P** (**Option+P** on a Mac), and a short
 explanation opens right next to that text, inside the terminal. The other lines move to make
 room, like Peek in VS Code. Esc closes it and the screen is exactly as before.
 
@@ -10,7 +10,7 @@ room, like Peek in VS Code. Esc closes it and the screen is exactly as before.
 The explanation comes from a small, fast model and it knows the conversation. If you select
 "its split panes" in an answer that recommends Kitty, it tells you it is about Kitty.
 
-Status: 0.2.1. Tested on Linux with X11 and bash, with Codex 0.157 and Claude Code 2.1.283.
+Status: 0.2.2. Tested on Linux with X11 and bash, with Codex 0.157 and Claude Code 2.1.283.
 
 ## Install
 
@@ -61,12 +61,23 @@ Alt+P. When the agent draws full screen (Codex since 0.157, Claude Code with
 
 | Key | When | What it does |
 |---|---|---|
-| Alt+P | any time | explain the selected text |
+| Alt+P (Mac: Option+P) | any time | explain the selected text |
 | Alt+P again | box is open, same selection | explain again using the whole conversation |
 | PgUp / PgDn, mouse wheel | box is open | scroll a long explanation |
 | Esc | box is open | close the box |
 | typing | box is open | goes to the agent's input line, the box stays open |
 | Enter | box is open | sends your message and closes the box |
+
+### On a Mac
+
+Option+P works as it is, with no terminal setting. A Mac terminal sends Option+P as the
+character `π`, and peekme takes that as the shortcut, the same way Claude Code does. So while
+peekme runs, Option+P does not type `π`. Pasting `π` still works. If your terminal is set to use
+Option as Meta, Option+P works too.
+
+When the agent draws full screen, peekme gets the selection from the agent. Otherwise (Claude
+Code's classic screen) it reads the clipboard: iTerm2 copies a selection there by itself, in
+Terminal press Cmd+C after you select.
 
 In Claude Code, Alt+P opens the model picker. With peekme it explains the selection instead.
 `/model` still opens the model picker.
@@ -166,7 +177,7 @@ To use peekme with another program, run `peekme -- COMMAND`.
 - In full screen mode selection works anywhere, also over SSH, because peekme reads the
   selection from the agent. Otherwise peekme needs the terminal's selection, which it reads on
   Linux with X11 only. On Wayland it works through XWayland, and on macOS it reads the
-  clipboard, not tested.
+  clipboard (see [On a Mac](#on-a-mac)).
 - Claude Code full screen: if `copyOnSelect` is off, Claude does not report the selection. Then
   only a Shift+drag selection works (read from X11 PRIMARY).
 - An explanation takes about 1 to 2 seconds to start arriving.

@@ -700,12 +700,17 @@ impl App {
         if !self.via_helper {
             return Some(pid);
         }
-        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
-            .ok()?
-            .split_whitespace()
-            .next()?
-            .parse()
+        // Linux has /proc; macOS has no /proc, but pgrep works on both.
+        let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
             .ok()
+            .or_else(|| {
+                let out = std::process::Command::new("pgrep")
+                    .args(["-P", &pid.to_string()])
+                    .output()
+                    .ok()?;
+                Some(String::from_utf8_lossy(&out.stdout).into_owned())
+            })?;
+        children.split_whitespace().next()?.parse().ok()
     }
 
     fn request_open(&mut self, out: &mut dyn Write) -> Result<()> {

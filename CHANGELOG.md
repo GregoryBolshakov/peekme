@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.2 (2026-09-28)
+
+- Option+P works on a Mac as it is. Mac terminals send Option+P as `π`, and peekme now takes
+  that as the shortcut, like Claude Code does. Before, you had to set Option to act as Meta in
+  the terminal. Also over SSH from Terminal or iTerm2.
+- On macOS peekme finds the running Claude Code session exactly. Before, it took the newest
+  session in the directory, which is wrong when two run there.
+
 ## 0.2.1 (2026-09-28)
 
 - You don't need Rust any more. peekme can be installed with npm (`npm i -g peekme`), with
