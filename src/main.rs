@@ -101,8 +101,6 @@ fn main() {
     // `app` catches panics in the peek code and keeps passing the agent through.
     std::panic::set_hook(Box::new(|info| log(&format!("panic: {info}"))));
 
-    peekme::input::set_mac_keyboard(peekme::input::detect_mac_keyboard());
-
     if crossterm::terminal::enable_raw_mode().is_err() {
         exec(&program, &rest);
     }

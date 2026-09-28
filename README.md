@@ -10,7 +10,7 @@ room, like Peek in VS Code. Esc closes it and the screen is exactly as before.
 The explanation comes from a small, fast model and it knows the conversation. If you select
 "its split panes" in an answer that recommends Kitty, it tells you it is about Kitty.
 
-Status: 0.2.2. Tested on Linux with X11 and bash, with Codex 0.157 and Claude Code 2.1.283.
+Status: 0.2.3. Tested on Linux with X11 and bash, with Codex 0.157 and Claude Code 2.1.283.
 
 ## Install
 
@@ -70,14 +70,15 @@ Alt+P. When the agent draws full screen (Codex since 0.157, Claude Code with
 
 ### On a Mac
 
-Option+P works as it is, with no terminal setting. A Mac terminal sends Option+P as the
-character `π`, and peekme takes that as the shortcut, the same way Claude Code does. So while
-peekme runs, Option+P does not type `π`. Pasting `π` still works. If your terminal is set to use
-Option as Meta, Option+P works too.
+Option+P works as it is, with no terminal setting, also over SSH and inside tmux. A Mac
+terminal sends Option+P as the character `π`. When something is selected, peekme takes `π` as
+the shortcut. When nothing is selected, `π` is typed as usual, so you never lose the letter. If
+you type Greek, `π` stays a letter. If your terminal sends Option as Meta, Option+P works too.
 
 When the agent draws full screen, peekme gets the selection from the agent. Otherwise (Claude
 Code's classic screen) it reads the clipboard: iTerm2 copies a selection there by itself, in
-Terminal press Cmd+C after you select.
+Terminal press Cmd+C after you select. Over SSH only the agent's own selection can be read, so
+use the full screen mode there (Codex uses it by default, Claude Code with `"tui": "fullscreen"`).
 
 In Claude Code, Alt+P opens the model picker. With peekme it explains the selection instead.
 `/model` still opens the model picker.

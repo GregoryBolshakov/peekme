@@ -244,6 +244,7 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         app_selection: None,
         last_release: None,
         boundary: Boundary::default(),
+        greek_typed: false,
         tx,
         cwd: std::env::current_dir()?.to_string_lossy().into_owned(),
         viewport_top: None,
@@ -366,6 +367,8 @@ struct App {
     last_release: Option<(Instant, (usize, usize))>,
     /// Where the child's output stopped: a box may only be drawn between sequences.
     boundary: Boundary,
+    /// The user typed Greek letters: `π` is a letter for them, never the hotkey.
+    greek_typed: bool,
     tx: Sender<Msg>,
     cwd: String,
     /// Where the child's live area starts, learned from its scroll regions.
@@ -550,9 +553,25 @@ impl App {
     }
 
     fn on_input(&mut self, bytes: &[u8], out: &mut dyn Write, child: &mut dyn Write) -> Result<()> {
+        let mut pasting = self.in_paste;
         let tokens = input::tokenize(bytes, &mut self.carry, &mut self.in_paste);
         let mut forward: Vec<u8> = Vec::new();
-        for t in tokens {
+        for mut t in tokens {
+            match t.bytes.as_slice() {
+                b"\x1b[200~" => pasting = true,
+                b"\x1b[201~" => pasting = false,
+                _ => {}
+            }
+            if t.kind == Kind::Key && !pasting && types_greek(&t.bytes) {
+                self.greek_typed = true;
+            }
+            if t.kind == Kind::OptionP {
+                t.kind = if self.option_p_is_hotkey() {
+                    Kind::Hotkey
+                } else {
+                    Kind::Key
+                };
+            }
             self.sniff_colors(&t);
             if matches!(t.bytes.as_slice(), b"\x1b[I" | b"\x1b[O") {
                 self.consumed.clear();
@@ -659,6 +678,21 @@ impl App {
         }
     }
 
+    /// Whether `π` (Option+P on a Mac) means "explain": when a box is open or
+    /// a selection is on screen. Otherwise it is typed, so nobody loses the
+    /// letter, and never once the user types Greek. Nothing else can tell a
+    /// Mac keyboard apart: over SSH and in tmux the environment says nothing.
+    fn option_p_is_hotkey(&mut self) -> bool {
+        if self.greek_typed {
+            return false;
+        }
+        if self.open.is_some() {
+            return true;
+        }
+        let snap = self.shadow.snapshot();
+        self.current_selection(&snap).1.is_some()
+    }
+
     /// A press starts a new selection (or is a click that clears the child's);
     /// the release is where a drag ended.
     fn note_mouse(&mut self, m: Mouse, bytes: &[u8]) {
@@ -678,6 +712,15 @@ impl App {
     /// near where the drag ended) or Codex's (reverse video). Otherwise the
     /// terminal's mouse selection (X11 PRIMARY), or `PEEKME_SELECTION`.
     fn current_selection(&mut self, snap: &Snapshot) -> (Option<String>, Option<Located>) {
+        let (text, located) = self.any_selection(snap);
+        // Blank cells selected (a drag over an empty line) is no selection.
+        match text {
+            Some(t) if !t.trim().is_empty() => (Some(t), located),
+            _ => (None, None),
+        }
+    }
+
+    fn any_selection(&mut self, snap: &Snapshot) -> (Option<String>, Option<Located>) {
         if let Some(s) = &self.app_selection {
             return (
                 Some(s.text.clone()),
@@ -1045,6 +1088,13 @@ fn viewport_top(bytes: &[u8], rows: usize) -> Option<usize> {
     found
 }
 
+/// Typed text with Greek letters other than `π`.
+fn types_greek(bytes: &[u8]) -> bool {
+    String::from_utf8_lossy(bytes).chars().any(|c| {
+        matches!(c, '\u{0370}'..='\u{03ff}' | '\u{1f00}'..='\u{1fff}') && c != input::MAC_OPTION_P
+    })
+}
+
 /// Where to show a one-line message: just above the cursor's row.
 fn message_layout(snap: &Snapshot) -> Layout {
     let rows = snap.rows.len();
@@ -1234,6 +1284,7 @@ mod tests {
             app_selection: None,
             last_release: None,
             boundary: Boundary::default(),
+            greek_typed: false,
             shadow: Shadow::new(cols, rows),
             open: None,
             pending: None,
@@ -1519,5 +1570,41 @@ mod tests {
         app.on_output(b"ase vs merge\x07", &mut out, &mut child)
             .unwrap();
         assert!(app.open.is_some(), "opens once the title is complete");
+    }
+
+    /// Option+P on a Mac arrives as `π`, also over SSH and in tmux, where
+    /// nothing says it came from a Mac. It explains a selection and is typed
+    /// otherwise.
+    #[test]
+    fn option_p_explains_a_selection_and_types_otherwise() {
+        let mut app = test_app_for(Agent::Claude, 120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(CLAUDE[0], &mut out, &mut child).unwrap();
+        app.shadow.flush_sync();
+
+        // Nothing selected: π is typed.
+        app.selection = SelectionSource::without_system();
+        app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
+        assert!(app.open.is_none(), "no box without a selection");
+        assert_eq!(child, "π".as_bytes());
+        child.clear();
+
+        // A drag Claude reported: π explains it and never reaches Claude.
+        app.on_input(b"\x1b[<0;5;10M\x1b[<0;12;10m", &mut out, &mut child)
+            .unwrap();
+        app.on_output(b"\x1b]52;c;bWVyZ2UgYw==\x07", &mut out, &mut child)
+            .unwrap();
+        child.clear();
+        app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
+        assert!(app.open.is_some(), "π opened the box");
+        assert!(child.is_empty(), "π did not reach Claude");
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+
+        // Someone typing Greek keeps the letter, selection or not.
+        app.on_input("αβ".as_bytes(), &mut out, &mut child).unwrap();
+        child.clear();
+        app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+        assert_eq!(child, "π".as_bytes());
     }
 }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.3 (2026-09-28)
+
+- Option+P works on a Mac also over SSH and inside tmux. 0.2.2 found out from the environment
+  that the keyboard is a Mac's, and over SSH or in tmux it could not. Now `π` explains whenever
+  something is selected, and is typed as usual when nothing is.
+- Alt+P arrives correctly when tmux sends keys in its extended format (`extended-keys`).
+- Selecting only empty space no longer opens a box.
+
 ## 0.2.2 (2026-09-28)
 
 - Option+P works on a Mac as it is. Mac terminals send Option+P as `π`, and peekme now takes

@@ -7,7 +7,6 @@
 //! `CSI code[:shifted[:base]] ; mods[:event] u`.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// One complete input unit.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +19,9 @@ pub struct Token {
 pub enum Kind {
     /// The peek hotkey (Alt+P), press or repeat.
     Hotkey,
+    /// `π`, which is what Option+P types on a Mac unless the terminal sends
+    /// Option as Alt. The app decides whether it is the hotkey or a letter.
+    OptionP,
     /// Escape key press.
     Esc,
     PageUp,
@@ -85,29 +87,10 @@ pub fn mouse_cell(bytes: &[u8]) -> Option<(usize, usize)> {
 pub type KeyId = (u8, u32);
 
 /// What Option+P types on a Mac keyboard when the terminal does not treat
-/// Option as Alt (the default in Terminal, iTerm2 and most others).
+/// Option as Alt (the default in Terminal, iTerm2 and most others). It
+/// arrives the same way over SSH and through tmux, where nothing tells a Mac
+/// keyboard apart from others.
 pub const MAC_OPTION_P: char = 'π';
-
-static MAC_KEYBOARD: AtomicBool = AtomicBool::new(false);
-
-/// Take `π` as the hotkey too (Option+P on a Mac), so the shortcut works
-/// without changing any terminal setting. Claude Code reads Option+P the same way.
-pub fn set_mac_keyboard(on: bool) {
-    MAC_KEYBOARD.store(on, Ordering::Relaxed);
-}
-
-fn mac_keyboard() -> bool {
-    MAC_KEYBOARD.load(Ordering::Relaxed)
-}
-
-/// Whether the keys come from a Mac: peekme runs on macOS, or the terminal is
-/// one that only exists on macOS (seen over SSH too). The same test as Claude Code's.
-pub fn detect_mac_keyboard() -> bool {
-    let var = |k: &str| std::env::var(k).unwrap_or_default();
-    cfg!(target_os = "macos")
-        || var("LC_TERMINAL") == "iTerm2"
-        || matches!(var("TERM_PROGRAM").as_str(), "Apple_Terminal" | "iTerm.app")
-}
 
 /// Splits a chunk into tokens. An incomplete trailing escape sequence is
 /// returned in `carry` so the caller can prepend it to the next read.
@@ -127,7 +110,7 @@ pub fn tokenize(input: &[u8], carry: &mut Vec<u8>, in_paste: &mut bool) -> Vec<T
             return;
         };
         let text = &data[s..end];
-        if in_paste || !mac_keyboard() {
+        if in_paste {
             out.push(Token {
                 bytes: text.to_vec(),
                 kind: Kind::Key,
@@ -147,7 +130,7 @@ pub fn tokenize(input: &[u8], carry: &mut Vec<u8>, in_paste: &mut bool) -> Vec<T
             }
             out.push(Token {
                 bytes: pi.to_vec(),
-                kind: Kind::Hotkey,
+                kind: Kind::OptionP,
             });
             rest = &rest[at + pi.len()..];
         }
@@ -289,6 +272,20 @@ pub fn parse_key(bytes: &[u8]) -> Option<KeyEvent> {
     if body.starts_with(['?', '>', '<', '=']) {
         return None;
     }
+    // xterm's modifyOtherKeys form, also what tmux sends with extended-keys:
+    // `CSI 27 ; mods ; code ~`. Same meaning as kitty's `CSI code ; mods u`.
+    if fin == b'~'
+        && let ["27", mods, code] = body.split(';').collect::<Vec<_>>()[..]
+    {
+        let code: u32 = code.parse().ok()?;
+        let raw: u32 = mods.parse().ok()?;
+        return Some(KeyEvent {
+            id: (b'u', code),
+            base: None,
+            mods: raw.saturating_sub(1) & !(64 | 128),
+            event: 1,
+        });
+    }
     let mut groups = body.split(';');
     let key_group = groups.next()?;
     let mut key_parts = key_group.split(':');
@@ -338,11 +335,10 @@ fn classify(bytes: &[u8]) -> Kind {
         let is_p = k.id == (b'u', 112) || k.base == Some(112);
         // Kitty keyboard protocol on a Mac without Option-as-Alt: the key code
         // is the composed character.
-        let is_mac_option_p =
-            mac_keyboard() && k.id == (b'u', MAC_OPTION_P as u32) && k.mods & !SHIFT_LOCKS == 0;
+        let is_mac_option_p = k.id == (b'u', MAC_OPTION_P as u32) && k.mods & !SHIFT_LOCKS == 0;
         return match (k.id, k.mods) {
             _ if is_p && k.id.0 == b'u' && k.mods == ALT => Kind::Hotkey,
-            _ if is_mac_option_p => Kind::Hotkey,
+            _ if is_mac_option_p => Kind::OptionP,
             ((b'u', 27), 0) => Kind::Esc,
             ((b'~', 5), 0) => Kind::PageUp,
             ((b'~', 6), 0) => Kind::PageDown,
@@ -476,12 +472,9 @@ mod tests {
     }
 
     #[test]
-    fn mac_option_p_without_settings() {
-        // Off (Linux keyboard): a typed π is just text.
-        assert_eq!(kinds("π".as_bytes()), vec![Kind::Key]);
-        set_mac_keyboard(true);
-        assert_eq!(kinds("π".as_bytes()), vec![Kind::Hotkey]);
-        // Inside a run of typed text it is split out; the rest stays text.
+    fn mac_option_p_and_tmux_keys() {
+        // π is reported for the app to decide on, wherever it comes from.
+        assert_eq!(kinds("π".as_bytes()), vec![Kind::OptionP]);
         let mut carry = Vec::new();
         let mut paste = false;
         let t = tokenize("abπcd".as_bytes(), &mut carry, &mut paste);
@@ -490,12 +483,12 @@ mod tests {
             got,
             vec![
                 (&b"ab"[..], Kind::Key),
-                ("π".as_bytes(), Kind::Hotkey),
+                ("π".as_bytes(), Kind::OptionP),
                 (&b"cd"[..], Kind::Key)
             ]
         );
         // Kitty keyboard protocol reports the composed character as the key.
-        assert_eq!(kinds(b"\x1b[960u"), vec![Kind::Hotkey]);
+        assert_eq!(kinds(b"\x1b[960u"), vec![Kind::OptionP]);
         assert_eq!(
             kinds(b"\x1b[960;5u"),
             vec![Kind::Key],
@@ -506,9 +499,10 @@ mod tests {
             kinds("\x1b[200~π\x1b[201~".as_bytes()),
             vec![Kind::Key, Kind::Key, Kind::Key]
         );
-        // Alt+P keeps working for terminals set to Option as Meta.
-        assert_eq!(kinds(b"\x1bp"), vec![Kind::Hotkey]);
-        set_mac_keyboard(false);
+        // tmux extended-keys / xterm modifyOtherKeys: Alt+P, and π.
+        assert_eq!(kinds(b"\x1b[27;3;112~"), vec![Kind::Hotkey]);
+        assert_eq!(kinds(b"\x1b[27;1;960~"), vec![Kind::OptionP]);
+        assert_eq!(kinds(b"\x1b[27;5;112~"), vec![Kind::Key], "Ctrl+P");
     }
 
     #[test]

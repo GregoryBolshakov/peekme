@@ -8,6 +8,8 @@ use crate::shadow::Snapshot;
 pub struct SelectionSource {
     #[cfg(target_os = "linux")]
     clipboard: Option<arboard::Clipboard>,
+    /// Read the system's selection (off in tests, which must not see the desktop's).
+    system: bool,
 }
 
 impl SelectionSource {
@@ -15,12 +17,24 @@ impl SelectionSource {
         Self {
             #[cfg(target_os = "linux")]
             clipboard: None,
+            system: true,
+        }
+    }
+
+    /// Only `PEEKME_SELECTION`, never the system's selection.
+    pub fn without_system() -> Self {
+        Self {
+            system: false,
+            ..Self::new()
         }
     }
 
     pub fn read(&mut self) -> Option<String> {
         if let Ok(s) = std::env::var("PEEKME_SELECTION") {
             return Some(s).filter(|s| !s.trim().is_empty());
+        }
+        if !self.system {
+            return None;
         }
         self.read_system()
     }
