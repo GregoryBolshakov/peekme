@@ -10,6 +10,9 @@ pub struct SelectionSource {
     clipboard: Option<arboard::Clipboard>,
     /// Read the system's selection (off in tests, which must not see the desktop's).
     system: bool,
+    /// A fixed selection, for tests (they must not change the process environment:
+    /// tests run in parallel threads, and that is not safe on macOS).
+    fixed: Option<String>,
 }
 
 impl SelectionSource {
@@ -18,6 +21,7 @@ impl SelectionSource {
             #[cfg(target_os = "linux")]
             clipboard: None,
             system: true,
+            fixed: None,
         }
     }
 
@@ -27,10 +31,22 @@ impl SelectionSource {
             #[cfg(target_os = "linux")]
             clipboard: None,
             system: false,
+            fixed: None,
+        }
+    }
+
+    /// Always this text, never the system's selection or the environment.
+    pub fn fixed(text: &str) -> Self {
+        Self {
+            fixed: Some(text.to_string()),
+            ..Self::without_system()
         }
     }
 
     pub fn read(&mut self) -> Option<String> {
+        if let Some(s) = &self.fixed {
+            return Some(s.clone());
+        }
         if let Ok(s) = std::env::var("PEEKME_SELECTION") {
             return Some(s).filter(|s| !s.trim().is_empty());
         }

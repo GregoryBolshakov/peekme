@@ -1292,7 +1292,7 @@ mod tests {
             consumed: Consumed::default(),
             carry: Vec::new(),
             in_paste: false,
-            selection: SelectionSource::new(),
+            selection: SelectionSource::without_system(),
             explainer: None,
             tx,
             cwd: "/tmp".into(),
@@ -1307,9 +1307,8 @@ mod tests {
     /// emulated terminal must end up identical to the child's own screen.
     #[test]
     fn live_strip_round_trip() {
-        // SAFETY: only this test reads the variable.
-        unsafe { std::env::set_var("PEEKME_SELECTION", "Collaboration mode") };
         let mut app = test_app(120, 40);
+        app.selection = SelectionSource::fixed("Collaboration mode");
         let mut real = Shadow::new(120, 40);
         let mut child: Vec<u8> = Vec::new();
         let mut out: Vec<u8> = Vec::new();
