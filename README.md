@@ -34,46 +34,21 @@ GitHub Copilot CLI:
 
 ## Install
 
-You need Claude Code, Codex CLI or GitHub Copilot CLI (logged in). More than one is fine too. Then install peekme in one of
-these ways and run `peekme install`:
-
 ```
-npm i -g peekme                               # you have npm already if you installed an agent with it
-brew install gregorybolshakov/tap/peekme      # Homebrew, on macOS or Linux
-cargo install peekme                          # builds it with Rust
+npm i -g peekme
 peekme install
 ```
 
-npm 12 may say that it skipped an install script of peekme. That is fine: peekme then downloads
-its binary the first time it runs.
+Open a new terminal. Now `claude`, `codex` and `copilot` open with peekme, and you type them as
+always. That's all.
 
-Without npm, Homebrew or Rust, the script from the
-[latest release](https://github.com/GregoryBolshakov/peekme/releases/latest) puts peekme in
-`~/.local/bin`:
+peekme has no account of its own. The explanation uses the login of the agent you are in.
 
-```
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GregoryBolshakov/peekme/releases/latest/download/peekme-installer.sh | sh
-```
+Don't have npm? Use one of these instead of the first line:
 
-Ready binaries are there too, for Linux and macOS on x86_64 and ARM.
-
-After this, `claude`, `codex` and `copilot` open with peekme in every new terminal. You keep
-typing them as always, and your aliases and scripts that call them keep working. `peekme install`
-adds a short, marked block to your `~/.bashrc` or `~/.zshrc` (for fish, a file in
-`~/.config/fish/conf.d`). If you install one of the agents later, it gets peekme too.
-
-```
-peekme doctor      # check the setup, and see what is in the way if something is
-peekme uninstall   # remove the block, your files are as before
-command claude     # run plain Claude Code once
-command codex      # run plain Codex once
-command copilot    # run plain Copilot CLI once
-```
-
-The first time you run `peekme` on its own, it asks if it should do `peekme install` for you.
-
-When you update peekme and the new version knows more agents, it adds them to your shell setup by
-itself the next time it starts, and says so once. They work in new terminals.
+- Homebrew: `brew install gregorybolshakov/tap/peekme`
+- Rust: `cargo install peekme`
+- Neither: `curl -LsSf https://github.com/GregoryBolshakov/peekme/releases/latest/download/peekme-installer.sh | sh`
 
 ## Use
 
@@ -188,6 +163,12 @@ more.
 
 ### How `claude`, `codex` and `copilot` get peekme
 
+```
+peekme doctor      # check the setup, and see what is in the way if something is
+peekme uninstall   # remove it, your files are as before
+command claude     # run plain Claude Code once (same for codex, copilot)
+```
+
 `peekme install` does two things:
 
 1. It defines shell functions `claude`, `codex` and `copilot` in your shell setup. A function wins over
@@ -199,6 +180,15 @@ more.
 
 Both find the real agent on PATH themselves, so updating the agent changes nothing. If you
 remove peekme, the functions fall back to the plain agents.
+
+The block in `~/.bashrc` or `~/.zshrc` (for fish, a file in `~/.config/fish/conf.d`) is short
+and marked. It covers all three agents, so an agent you install later gets peekme too. When a new
+peekme version knows more agents, it adds them to your setup the next time it starts and says
+so once.
+
+npm 12 may say that it skipped an install script of peekme. That is fine: peekme then downloads
+its binary the first time it runs. Ready binaries for Linux and macOS (x86_64 and ARM) are on the
+[latest release](https://github.com/GregoryBolshakov/peekme/releases/latest) page.
 
 To use peekme with another program, run `peekme -- COMMAND`.
 
