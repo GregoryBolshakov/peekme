@@ -11,6 +11,7 @@ pub mod app;
 pub mod claude;
 pub mod codex;
 pub mod context;
+pub mod copilot;
 pub mod explain;
 pub mod input;
 pub mod install;

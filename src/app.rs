@@ -448,7 +448,8 @@ impl App {
     /// The child's input area on `snap`, per agent.
     fn composer_top(&self, snap: &Snapshot) -> Option<usize> {
         match self.agent {
-            Some(Agent::Claude) => claude::screen::composer_top(snap),
+            // Copilot draws its input box like Claude Code: `❯` between two rules.
+            Some(Agent::Claude | Agent::Copilot) => claude::screen::composer_top(snap),
             _ => codex::screen::composer_top(snap),
         }
     }
@@ -477,7 +478,7 @@ impl App {
         // child needs the room more than we do. Claude replaces its input box
         // with the question, so there any change of the box counts.
         let moved = match self.agent {
-            Some(Agent::Claude) => claude::screen::composer_top(&now) != Some(top),
+            Some(Agent::Claude | Agent::Copilot) => claude::screen::composer_top(&now) != Some(top),
             _ => {
                 self.shadow.alt_screen()
                     && codex::screen::composer_top(&now).is_some_and(|k| k < top)
@@ -727,7 +728,9 @@ impl App {
                 select::locate(snap, &s.text, Some(s.cell)),
             );
         }
-        if self.agent != Some(Agent::Claude)
+        // Reverse video means "selected" in Codex only; other TUIs use it for
+        // tabs and menus.
+        if matches!(self.agent, Some(Agent::Codex) | None)
             && let Some(loc) = codex::screen::selection(snap)
         {
             return (Some(loc.screen.selected()), Some(loc));
@@ -743,17 +746,7 @@ impl App {
         if !self.via_helper {
             return Some(pid);
         }
-        // Linux has /proc; macOS has no /proc, but pgrep works on both.
-        let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
-            .ok()
-            .or_else(|| {
-                let out = std::process::Command::new("pgrep")
-                    .args(["-P", &pid.to_string()])
-                    .output()
-                    .ok()?;
-                Some(String::from_utf8_lossy(&out.stdout).into_owned())
-            })?;
-        children.split_whitespace().next()?.parse().ok()
+        crate::launch::children(pid).first().copied()
     }
 
     fn request_open(&mut self, out: &mut dyn Write) -> Result<()> {
@@ -1605,5 +1598,90 @@ mod tests {
         app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
         assert!(app.open.is_none());
         assert_eq!(child, "π".as_bytes());
+    }
+
+    /// Real GitHub Copilot CLI 1.0.89 at 120x40: startup, one question and its
+    /// answer. It draws full screen without synchronized frames.
+    const COPILOT: &[u8] = include_bytes!("../tests/fixtures/copilot_fullscreen_120x40.bin");
+
+    #[test]
+    fn round_trip_over_real_copilot_output() {
+        let mut base = Shadow::new(120, 40);
+        base.advance(COPILOT);
+        let snap = base.snapshot();
+        for first in (0..40).step_by(3) {
+            let mut real = Shadow::new(120, 40);
+            real.advance(COPILOT);
+            let lay = overlay::layout(40, first, (first + 1).min(39));
+            let mut peek = PeekBox::new("rebase");
+            peek.text = "Streaming **explanation** text. ".repeat(12);
+            real.advance(overlay::open_frame(&snap, &lay, &peek).as_bytes());
+            real.advance(overlay::close_frame(&snap, &lay).as_bytes());
+            assert!(same_screen(&real.snapshot(), &snap), "row {first}");
+        }
+        // Output that arrives while the box is open, cut wherever the stream
+        // is between escape sequences (no frames to wait for here).
+        let mut checked = 0;
+        for k in 1..=12 {
+            let cut = COPILOT.len() * k / 13;
+            let mut boundary = Boundary::default();
+            boundary.feed(&COPILOT[..cut]);
+            if !boundary.at_boundary() {
+                continue;
+            }
+            checked += 1;
+            let (mut shadow, mut real) = (Shadow::new(120, 40), Shadow::new(120, 40));
+            shadow.advance(&COPILOT[..cut]);
+            real.advance(&COPILOT[..cut]);
+            let snap = shadow.snapshot();
+            let lay = overlay::layout(40, 10, 11);
+            real.advance(overlay::open_frame(&snap, &lay, &PeekBox::new("x")).as_bytes());
+            shadow.advance(&COPILOT[cut..]);
+            real.advance(overlay::close_frame(&snap, &lay).as_bytes());
+            real.advance(&render::strip_answered_queries(&COPILOT[cut..]));
+            assert!(
+                same_screen(&real.snapshot(), &shadow.snapshot()),
+                "cut {cut}"
+            );
+        }
+        assert!(checked >= 4, "cut points at a boundary: {checked}");
+    }
+
+    /// Copilot reports a drag with OSC 52 `p!;..;`; Alt+P explains it at the
+    /// drag's row, with Copilot's input box live under the box.
+    #[test]
+    fn copilot_selection_and_live_area() {
+        let mut app = test_app_for(Agent::Copilot, 120, 40);
+        let mut real = Shadow::new(120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(COPILOT, &mut out, &mut child).unwrap();
+        real.advance(&std::mem::take(&mut out));
+
+        // Row 22 (1-based) holds "git merge combines two branches".
+        app.on_input(b"\x1b[<0;5;22M\x1b[<0;30;22m", &mut out, &mut child)
+            .unwrap();
+        // "merge  combines two" as Copilot copies it.
+        app.on_output(
+            b"\x1b]52;p!;bWVyZ2UgIGNvbWJpbmVzIHR3bw==;\x07",
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        real.advance(&std::mem::take(&mut out));
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let open = app.open.as_ref().expect("box open");
+        assert_eq!(open.peek.title, "merge combines two");
+        assert_eq!(open.lay.box_top, 22, "right under the selected row");
+        assert_eq!(open.peek.child_name, "Copilot");
+        let top = open.strip_top.expect("Copilot's input box stays live");
+        assert_eq!(top, 36);
+
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        assert!(same_screen(&real.snapshot(), &app.shadow.snapshot()));
+        // Copilot's reverse-video tabs are not a selection.
+        app.app_selection = None;
+        assert!(app.current_selection(&app.shadow.snapshot()).0.is_none());
     }
 }

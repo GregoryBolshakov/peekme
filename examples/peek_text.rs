@@ -1,10 +1,11 @@
 //! Development helper: run one explanation for a selection inside some screen
 //! text, without a terminal. Prints the prompt sent and the streamed answer.
 //!
-//!     cargo run --example peek_text -- "<screen text>" "<selection>" [--deep] [--claude [--pid PID]]
+//!     cargo run --example peek_text -- "<screen text>" "<selection>" [--deep] [--claude|--copilot] [--pid PID]
 //!
-//! Codex by default. With `--claude`, Claude Code; `--pid` is the process id of
-//! a running interactive `claude`, whose transcript then gives the context.
+//! Codex by default. With `--claude` or `--copilot`, that agent; `--pid` is the
+//! process id of a running interactive session, whose transcript then gives the
+//! context.
 
 use peekme::agent::Agent;
 use peekme::context;
@@ -16,6 +17,8 @@ fn main() {
     let has = |f: &str| args.iter().any(|a| a == f);
     let agent = if has("--claude") {
         Agent::Claude
+    } else if has("--copilot") {
+        Agent::Copilot
     } else {
         Agent::Codex
     };

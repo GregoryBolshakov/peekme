@@ -61,7 +61,11 @@ impl Osc52 {
 /// `<targets>;<base64>` to text. A `?` payload is a query, not a write.
 fn decode(body: &[u8]) -> Option<String> {
     let semi = body.iter().position(|&b| b == b';')?;
-    let data = &body[semi + 1..];
+    // `c;<b64>`, and Copilot's `p!;<b64>;` with a closing `;`.
+    let data = body[semi + 1..]
+        .split(|&b| b == b';')
+        .next()
+        .unwrap_or_default();
     if data == b"?" {
         return None;
     }
@@ -103,6 +107,18 @@ mod tests {
         let mut s = Osc52::default();
         let got = s.feed(b"\x1b[?2026h..\x1b]52;c;IGluIGZpbGVz4oCUYSBtb2Q=\x07\x1b[?2026l");
         assert_eq!(got.as_deref(), Some(" in files—a mod"));
+    }
+
+    #[test]
+    fn reads_copilot_selection() {
+        // Captured from GitHub Copilot CLI 1.0.89 after a drag over its banner.
+        let mut s = Osc52::default();
+        let got = s.feed(b"\x1b]52;p!;Q29waWxvdCB2MS4wLjg5IHU=;\x07");
+        assert_eq!(got.as_deref(), Some("Copilot v1.0.89 u"));
+        // Inside tmux it comes wrapped in DCS passthrough, with the ESC doubled.
+        let mut s = Osc52::default();
+        let got = s.feed(b"\x1bPtmux;\x1b\x1b]52;p!;Q29waWxvdCB2MS4wLjg5IHU=;\x07\x1b\\");
+        assert_eq!(got.as_deref(), Some("Copilot v1.0.89 u"));
     }
 
     #[test]

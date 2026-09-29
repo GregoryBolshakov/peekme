@@ -62,12 +62,18 @@ fn shell_path(dir: &Path) -> String {
     }
 }
 
-const HEADER: &str = "# Opens Codex and Claude Code with peekme when you type `codex` or `claude`. \
-                      Remove with: peekme uninstall";
+fn header() -> String {
+    format!(
+        "# Opens {} with peekme when you type {}. Remove with: peekme uninstall",
+        Agent::all_names(),
+        Agent::all_commands("or")
+    )
+}
 
 /// The block for bash and zsh startup files.
 pub fn posix_block(shim_dir: &Path) -> String {
     let dir = shell_path(shim_dir);
+    let header = header();
     let functions: String = Agent::ALL
         .iter()
         .map(|a| {
@@ -81,7 +87,7 @@ pub fn posix_block(shim_dir: &Path) -> String {
         .collect();
     format!(
         "{BEGIN}\n\
-         {HEADER}\n\
+         {header}\n\
          {functions}\
          case \":$PATH:\" in\n\
          \x20 *\":{dir}:\"*) ;;\n\
@@ -94,6 +100,7 @@ pub fn posix_block(shim_dir: &Path) -> String {
 /// The whole file we own in fish's conf.d.
 pub fn fish_file(shim_dir: &Path) -> String {
     let dir = shell_path(shim_dir);
+    let header = header();
     let functions: String = Agent::ALL
         .iter()
         .map(|a| {
@@ -111,7 +118,7 @@ pub fn fish_file(shim_dir: &Path) -> String {
         .collect();
     format!(
         "{BEGIN}\n\
-         {HEADER}\n\
+         {header}\n\
          {functions}\
          if not contains \"{dir}\" $PATH\n\
          \x20   set -gx PATH \"{dir}\" $PATH\n\
@@ -292,8 +299,13 @@ pub fn install() -> Result<()> {
     if let Some(t) = current {
         println!("In this terminal, run: source {}", tilde(&t.path));
     }
+    let plain: Vec<String> = Agent::ALL
+        .iter()
+        .map(|a| format!("command {}", a.command()))
+        .collect();
     println!(
-        "To run an agent without peekme once: command codex, command claude. To undo: peekme uninstall."
+        "To run an agent without peekme once: {}. To undo: peekme uninstall.",
+        plain.join(", ")
     );
     Ok(())
 }
@@ -328,8 +340,10 @@ pub fn uninstall() -> Result<()> {
         }
         let _ = std::fs::remove_dir(&dir);
     }
+    let names: Vec<&str> = Agent::ALL.iter().map(|a| a.command()).collect();
     println!(
-        "Done. New terminals run the agents without peekme. In open ones, run: unset -f codex claude"
+        "Done. New terminals run the agents without peekme. In open ones, run: unset -f {}",
+        names.join(" ")
     );
     Ok(())
 }
@@ -439,7 +453,10 @@ pub fn doctor() -> i32 {
         }
     }
     if !found.contains(&true) {
-        line(false, "neither Codex nor Claude Code is installed".into());
+        line(
+            false,
+            format!("none of {} is installed", Agent::all_names()),
+        );
     }
     let Some(shim_dir) = launch::shim_dir() else {
         line(false, "HOME is not set".into());
@@ -547,7 +564,9 @@ pub fn first_run_question() {
     }
     let _ = std::fs::write(&marker, b"");
     print!(
-        "Open Codex and Claude Code with peekme every time you type `codex` or `claude`? This adds a few lines to your shell setup. [Y/n] "
+        "Open {} with peekme every time you type {}? This adds a few lines to your shell setup. [Y/n] ",
+        Agent::all_names(),
+        Agent::all_commands("or")
     );
     let _ = std::io::stdout().flush();
     let mut answer = String::new();

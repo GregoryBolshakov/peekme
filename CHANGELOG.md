@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0 (2026-09-28)
+
+- peekme works with GitHub Copilot CLI too. Type `copilot` as always, select text, press Alt+P.
+  Run `peekme install` once more so that `copilot` gets peekme.
+- Copilot explanations come from Copilot CLI's own headless server with your Copilot login.
+  Each one is a short session without tools, and peekme deletes it afterwards, so it does not
+  show in your session list. The context comes from the running session's log.
+- peekme reads Copilot's selection from the OSC 52 copy it sends when you release the mouse,
+  also over SSH and in tmux. Copilot's input line stays live under the box.
+
 ## 0.2.3 (2026-09-28)
 
 - Option+P works on a Mac also over SSH and inside tmux. 0.2.2 found out from the environment

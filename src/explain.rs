@@ -7,6 +7,7 @@ use crate::agent::Agent;
 use crate::claude::explain::Pool;
 use crate::codex::explain::{self as codex, Slot};
 use crate::context::ScreenSel;
+use crate::copilot::explain as copilot;
 
 /// Streamed progress of one explanation.
 #[derive(Debug)]
@@ -52,6 +53,8 @@ pub enum Explainer {
     Codex(Arc<Slot>),
     /// `claude -p`, one process per explanation.
     Claude(Arc<Pool>),
+    /// Copilot CLI's headless server, one session per explanation.
+    Copilot(Arc<copilot::Slot>),
 }
 
 impl Explainer {
@@ -59,19 +62,16 @@ impl Explainer {
         match agent {
             Agent::Codex => Explainer::Codex(Arc::default()),
             Agent::Claude => Explainer::Claude(Arc::default()),
+            Agent::Copilot => Explainer::Copilot(Arc::default()),
         }
     }
 
-    /// For a program that is not an agent: whichever agent is installed,
-    /// Codex first.
+    /// For a program that is not an agent: the first agent that is installed.
     pub fn for_other_program() -> Self {
-        let codex = crate::launch::find_real("codex").is_some();
-        let claude = crate::launch::find_real("claude").is_some();
-        Self::new(if claude && !codex {
-            Agent::Claude
-        } else {
-            Agent::Codex
-        })
+        let installed = Agent::ALL
+            .into_iter()
+            .find(|a| crate::launch::find_real(a.command()).is_some());
+        Self::new(installed.unwrap_or(Agent::Codex))
     }
 
     /// Run one explanation, reporting progress on `tx`. Blocks; call from a thread.
@@ -82,6 +82,7 @@ impl Explainer {
                 Err(e) => tx(Progress::Failed(format!("explainer unavailable: {e:#}"))),
             },
             Explainer::Claude(pool) => crate::claude::explain::explain(pool, req, tx),
+            Explainer::Copilot(slot) => copilot::explain(slot, req, tx),
         }
     }
 
@@ -89,6 +90,7 @@ impl Explainer {
         match self {
             Explainer::Codex(slot) => slot.shutdown(),
             Explainer::Claude(pool) => pool.shutdown(),
+            Explainer::Copilot(slot) => slot.shutdown(),
         }
     }
 }

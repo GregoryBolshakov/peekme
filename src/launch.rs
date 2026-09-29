@@ -63,6 +63,37 @@ fn find_real_in(
     None
 }
 
+/// Direct children of a process. Linux has /proc; macOS has no /proc, but
+/// pgrep works on both.
+pub fn children(pid: u32) -> Vec<u32> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+        .ok()
+        .or_else(|| {
+            let out = std::process::Command::new("pgrep")
+                .args(["-P", &pid.to_string()])
+                .output()
+                .ok()?;
+            Some(String::from_utf8_lossy(&out.stdout).into_owned())
+        })
+        .unwrap_or_default();
+    text.split_whitespace()
+        .filter_map(|p| p.parse().ok())
+        .collect()
+}
+
+/// A process and everything below it (an npm launcher starts the real binary
+/// as its child, for example).
+pub fn process_tree(pid: u32) -> Vec<u32> {
+    let mut all = vec![pid];
+    let mut i = 0;
+    while i < all.len() && all.len() < 256 {
+        let kids = children(all[i]);
+        all.extend(kids);
+        i += 1;
+    }
+    all
+}
+
 fn is_executable(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     p.metadata()

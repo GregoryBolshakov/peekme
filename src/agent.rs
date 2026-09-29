@@ -8,16 +8,18 @@ use std::path::Path;
 pub enum Agent {
     Codex,
     Claude,
+    Copilot,
 }
 
 impl Agent {
-    pub const ALL: [Agent; 2] = [Agent::Codex, Agent::Claude];
+    pub const ALL: [Agent; 3] = [Agent::Codex, Agent::Claude, Agent::Copilot];
 
     /// The command users type.
     pub fn command(self) -> &'static str {
         match self {
             Agent::Codex => "codex",
             Agent::Claude => "claude",
+            Agent::Copilot => "copilot",
         }
     }
 
@@ -26,6 +28,7 @@ impl Agent {
         match self {
             Agent::Codex => "Codex",
             Agent::Claude => "Claude Code",
+            Agent::Copilot => "GitHub Copilot CLI",
         }
     }
 
@@ -34,6 +37,7 @@ impl Agent {
         match self {
             Agent::Codex => "Codex",
             Agent::Claude => "Claude",
+            Agent::Copilot => "Copilot",
         }
     }
 
@@ -41,7 +45,23 @@ impl Agent {
         match self {
             Agent::Codex => "npm i -g @openai/codex",
             Agent::Claude => "npm i -g @anthropic-ai/claude-code",
+            Agent::Copilot => "npm i -g @github/copilot",
         }
+    }
+
+    /// "Codex, Claude Code and GitHub Copilot CLI", for messages.
+    pub fn all_names() -> String {
+        list(Agent::ALL.iter().map(|a| a.name().to_string()).collect())
+    }
+
+    /// "`codex`, `claude` or `copilot`", for messages.
+    pub fn all_commands(last: &str) -> String {
+        let mut v: Vec<String> = Agent::ALL
+            .iter()
+            .map(|a| format!("`{}`", a.command()))
+            .collect();
+        let tail = v.pop().unwrap_or_default();
+        format!("{} {last} {tail}", v.join(", "))
     }
 
     /// The agent a program path runs, by its file name.
@@ -56,6 +76,7 @@ impl Agent {
         match self {
             Agent::Codex => crate::codex::cli::is_interactive(args),
             Agent::Claude => crate::claude::cli::is_interactive(args),
+            Agent::Copilot => crate::copilot::cli::is_interactive(args),
         }
     }
 
@@ -70,12 +91,25 @@ impl Agent {
                 "Claude Code, Anthropic's coding agent for the terminal",
                 "tool calls and their output, or the Claude Code interface itself",
             ),
+            Agent::Copilot => (
+                "GitHub Copilot CLI, GitHub's coding agent for the terminal",
+                "tool calls and their output, or the Copilot CLI interface itself",
+            ),
         };
         format!(
             "<environment>\nThe user is working in {who}, in the directory {cwd}. Text on their \
              screen is the assistant's answers, the user's messages, {what} (tips, status lines, \
              prompts).\n</environment>\n\n"
         )
+    }
+}
+
+fn list(mut v: Vec<String>) -> String {
+    let last = v.pop().unwrap_or_default();
+    if v.is_empty() {
+        last
+    } else {
+        format!("{} and {last}", v.join(", "))
     }
 }
 
@@ -87,6 +121,12 @@ mod tests {
     fn agent_from_program() {
         assert_eq!(Agent::from_program("codex"), Some(Agent::Codex));
         assert_eq!(Agent::from_program("/usr/bin/claude"), Some(Agent::Claude));
+        assert_eq!(Agent::from_program("copilot"), Some(Agent::Copilot));
         assert_eq!(Agent::from_program("htop"), None);
+        assert_eq!(
+            Agent::all_names(),
+            "Codex, Claude Code and GitHub Copilot CLI"
+        );
+        assert_eq!(Agent::all_commands("or"), "`codex`, `claude` or `copilot`");
     }
 }

@@ -1,0 +1,161 @@
+[>4;2m[?u[?2026$p[?1049h[?2004h[?1004h[?1003h[?1006h[?25l[?12$p[?1007$p]10;?\]11;?\]4;0;?\]4;1;?\]4;2;?\]4;3;?\]4;4;?\]4;5;?\]4;6;?\]4;7;?\]4;8;?\]4;9;?\]4;10;?\]4;11;?\]4;12;?\]4;13;?\]4;14;?\]4;15;?\[>q[H[2J[?25l[22;0t]0;GitHub Copilot[H[2J [1;97;44m[Current][m  Sessions  [2m Issues [m [2m Pull requests [m  Gists[?996n
+
+[2;90m╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│[116C│
+│[m [34m ╭─╮╭─╮[5;38H[2;90m│[m  [1;34mGetting started[62C[0;2;90m│
+│[m [34m ╰─╯╰─╯[m  Copilot v1.0.89 uses AI.  [2;90m│[m  Use the tabs above to explore your sessions and pull requests[16C[2;90m│
+│[m [35m █ [96m▘▝[35m █[m  Check for mistakes.[7C[2;90m│[m  /init — Initialize Copilot instructions for this repository[18C[2;90m│
+│[m [35m  ▔▔▔▔ [8;38H[2;90m│[m  /model — Switch models across providers, or use Auto[25C[2;90m│
+│[116C│
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯[12B[0;90m╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│[m [1mConfirm folder trust[97C[0;90m│
+│[m [90m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[m [90m│
+│[m [90m╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮[m [90m│
+│[m [90m│[m /tmp/claude-1000/-home-someone-Documents-Projects-claude-inline-tool/3711864a-e9bc-4a88-8048-98d9f9a39ee6/scratc [90m│[m [90m│
+│[m [90m│[m hpad/cpwork[102C[90m│[m [90m│
+│[m [90m╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯[m [90m│
+│[118C│
+│[m Copilot can read files in this folder and, with your permission, edit them or run code and shell commands. It will   [90m│
+│[m remember your permissions for the rest of this session.[62C[90m│
+│[118C│
+│[m Do you trust the files in this folder?[79C[90m│
+│[118C│
+│[m [97;44m❯ 1. Yes[39m                                                                                                            [m [90m│
+│[m   2. Yes, and remember this folder for future sessions[63C[90m│
+│[m   3. No (Esc)[104C[90m│
+│[118C│
+│[m [1m↑/↓[m to navigate · [1menter[m to select · [1mesc[m to cancel[68C[90m│
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[?7l╯[?7h[m[12;2H[34m●[m Tip: /cwd
+   └ Change working directory or show current directory[7;6H[96m╴╶[35m [m[96m  [35m [m[96m╴╶[35m [m[96m▘▝[35m [m[96m╴╶[35m [m[96m  [35m [m[96m╴╶[35m [m[96m▘▝[35m [m[96m╴╶[35m [m[96m  [35m [m[96m╴╶[35m [m[96m▘▝[35m [m[5;6H[34m─╮╭╮
+[5C─╯╰╯
+[4C[35m█ [96m▘▝[35m▐
+[4C ▔[m[14B[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+ /tmp/claude-1000/-home-someone-Documents-Projects-claude-inline-tool/.../cpwork[36;101HSession: 0 AIC used 
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[m❯[K
+[2m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[m [1m←[m open sidebar · [1m/[m commands · [1m?[m help · [1mtab[m next tab                                              GitHub Copilot • Auto[?7l [?7h[38;3H[?25h[?25l[23A[34m●[m MCP Servers reloaded: 1 server connected[38;3H[?25h[?25l[5;6H[34m╮╭─╮
+[5C╯╰─╯
+[4C[35m [96m▘▝[35m █
+[4C▔▔[m[38;3H[?25h[?25l[16;38r[38;1H
+[1;40r[37;3HIn about 8 lines explain how git rebase differs from git merge. Use one short bullet list and inline code. No
+  tools.
+
+ [1m@[m files · [1m#[m issues                                 [38;9H[?25h[?25l[16;37r[16;1HM[1;40r[38;1H❯[K
+
+ [94m●[m [94mW[34morking[m [1mesc[m edit prompt[38;3H[?25h]0;In about 8 lines explain how git rebase differs from git merge. Use one short bullet list and inline code. No tools. - GitHub Copilot[?25l[21A❯ In about 8 lines explain how git rebase differs from git merge. Use one short bullet list and inline code. No 19:41
+   tools.[38;3H[?25h[?25l
+
+ [94m◉[m [34mWo[94mrk[m[38;3H[?25h[?25l
+
+ [34m◎[m [94mW[34morki[94mng[m[38;3H[?25h[?25l
+
+ [34m○[m [34mWo[94mrk[34ming[m[38;3H[?25h[?25l[40;86HGitHub Copilot • Auto → gpt-6-luna[38;3H[?25h[?25l
+
+ [34m◎[m [34mWorki[94mng[m[38;3H[?25h[?25l
+
+ [34m◉[6Cng[m[38;3H[?25h[?25l
+
+ [94m●[m [2A[?25h[?25l
+
+ [94m◉[m [2A[?25h[?25l
+
+ [94m◎[m [94mW[34mo[m[38;3H[?25h[?25l
+
+ [34m○[m [34mWo[94mrk[m[38;3H[?25h]0;Explain Git Rebase vs Merge - GitHub Copilot[?25l
+
+ [34m◎[m [94mW[34morki[94mng[m[38;3H[?25h[?25l
+
+ [34m◉[m [34mWo[94mrk[34ming[m[38;3H[?25h[?25l
+
+ [34m●[m [34mWorki[94mng[m[38;3H[?25h[?25l
+
+ [94m◉[6C[34mng[m[38;3H[?25h[?25l
+
+ [94m◎[m [2A[?25h[?25l
+
+ [94m○[m [2A[?25h[?25l
+
+ [34m◎[m [94mW[34mo[m[38;3H[?25h[?25l
+
+ [34m◉[m [34mWo[94mrk[m[38;3H[?25h[?25l
+
+ [34m●[m [94mW[34morki[94mng[m[38;3H[?25h[?25l
+
+ [34m◉[m [34mWo[94mrk[34ming[m[38;3H[?25h[?25l
+
+ [94m◎[m [34mWorki[94mng[m[38;3H[?25h[?25l
+
+ [94m○[6C[34mng[m[38;3H[?25h[?25l
+
+ [94m◎[m [2A[?25h[?25l
+
+ [34m◉[m [2A[?25h[?25l
+
+ [34m●[m [94mW[34mo[m[38;3H[?25h[?25l
+
+ [34m◉[m [34mWo[94mrk[m[38;3H[?25h[?25l
+
+ [34m◎[m [94mW[34morki[94mng[m[38;3H[?25h[?25l[5;6H[34m─╮╭╮
+[5C─╯╰╯
+[4C[35m█ [96m▘▝[35m▐
+[4C ▔[40;2H[94m○[m [34mWo[94mrk[34ming[m[38;3H[?25h[?25l
+
+ [94m◎[m [34mWorki[94mng[m[38;3H[?25h[?25l
+
+ [94m◉[6C[34mng[m[38;3H[?25h[?25l
+
+ [34m●[m [2A[?25h[?25l[40;12H· 37 B [1mesc[m interrupt[38;3H[?25h[?25l[40;14H42 [38;3H[?25h[?25l[18A❯ [3mThinking…[40;2H[0;34m◉[m [2A[?25h[?25l[40;14H51 [38;3H[?25h[?25l
+
+ [34m◎[m [94mW[40;15H[m4[38;3H[?25h[?25l[18A[K[40;14H66 [38;3H[?25h[?25l[18A❯ [3mThinking…[40;2H[0;34m○[m [34mWo[94mrk[6C[m87[38;3H[?25h[?25l[40;14H107 B [1mesc[m interrupt[38;3H[?25h[?25l[40;15H31 [38;3H[?25h[?25l
+
+ [94m◎[m [94mW[34morki[94mng[m · 155[38;3H[?25h[?25l[40;15H72 [38;3H[?25h[?25l
+
+ [94m◉[m [34mWo[94mrk[34ming[m · 191[38;3H[?25h[?25l[40;14H206 [38;3H[?25h[?25l[40;15H29 [38;3H[?25h[?25l
+
+ [94m●[m [34mWorki[94mng[m · 258[38;3H[?25h[?25l[40;15H84 [38;3H[?25h[?25l[40;14H316 [38;3H[?25h[?25l
+
+ [34m◉[6Cng[m · 337[38;3H[?25h[?25l[40;15H60 [38;3H[?25h[?25l[40;15H85 [38;3H[?25h[?25l
+
+ [34m◎[40;15H[m93[38;3H[?25h[?25l[40;14H424 [38;3H[?25h[?25l[5;6H[34m╮╭─╮
+[5C╯╰─╯
+[4C[35m [96m▘▝[35m █
+[4C▔▔[40;2H[34m○[40;15H[m46[38;3H[?25h[?25l[40;15H74 [38;3H[?25h[?25l[40;15H87 [38;3H[?25h[?25l[16A[34m●[m • `git[40;2H[34m◎[m [94mW[40;14H[m541[38;3H[?25h[?25l[22;6H[37m git merge [m combi[40;15H92 [38;3H[?25h[?25l[22;23Hnes two branch[40;14H660 [38;3H[?25h[?25l[22;37Hes with a merge commit, preserving both his[40;2H[94m◉[m [34mWo[94mrk[6C[m719[38;3H[?25h[?25l[22;80Htories.
+   • [37m git rebase [m repla[40;15H74 [38;3H[?25h[?25l[23;24Hys your branch’s commits on to[40;14H856 [38;3H[?25h[?25l[23;54Hp of another branch.
+   • Merge kee[40;2H[94m●[m [94mW[34morki[94mng[m · 914[38;3H[?25h[?25l[24;15Hps existing commit IDs; rebase creates new commit IDs for replayed commi[40;15H89 [38;3H[?25h[?25l[24;87Hts.
+   • A merge usually adds a branch joi[40;2H[94m◉[m [34mWo[94mrk[34ming[m · 1.0 KiB [1mesc[m interrupt[38;3H[?25h[?25l[25;39Hn to the history.
+   • A rebase produces[40;16H1 [38;3H[?25h[?25l[26;24Ha more linear history.
+   • Both can require resolving conflicts; rebase m[38;3H[?25h[?25l[27;52Hay ask you to resolve them comm[40;2H[34m◎[m [34mWorki[94mng[m[38;3H[?25h[?25l[27;83Hit by commit.
+   • Merge is ge[38;3H[?25h[?25l[28;17Hnerally safe for shared[38;3H[?25h[?25l[28;41Hbranches; rebasing sh[36;98HSession: 0.18[4B [1m←[m open sidebar · [1m/[m commands · [1m?[m help · [1mtab[m next tab[38;3H[?25h[?25l[20;6H[3mought for 1s[28;62H[mared commits can disrupt collaborators.
+   • Use [37m git merge [m to preserve history; use [37m git rebase [m to tidy your own branch before integrating it.[38;3H[?25h[?25l[5;6H[34m─╮╭╮
+[5C─╯╰╯
+[4C[35m█ [96m▘▝[35m▐
+[4C ▔[m[38;3H[?25h[?25l[5;6H[34m╮╭─╮
+[5C╯╰─╯
+[4C[35m [96m▘▝[35m █
+[4C▔▔[m[38;3H[?25h[?25l[5;6H[34m─╮╭╮
+[5C─╯╰╯
+[4C[35m█ [96m▘▝[35m▐
+[4C ▔[m[38;3H[?25h[?25l[5;6H[34m╮╭─╮
+[5C╯╰─╯
+[4C[35m [96m▘▝[35m █
+[4C▔▔[m[38;3H[?25h[?25l[5;6H[34m─╮╭╮
+[5C─╯╰╯
+[4C[35m█ [96m▘▝[35m▐
+[4C ▔[m[38;3H[?25h[?25l[5;6H[34m╮╭─╮
+[5C╯╰─╯
+[4C[35m [96m▘▝[35m █
+[4C▔▔[m[38;3H[?25h
