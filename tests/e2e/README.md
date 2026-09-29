@@ -40,3 +40,11 @@ on PATH. Run `real_agents.py` from a directory Claude Code already trusts.
 `.github/workflows/macos-e2e.yml` runs on a GitHub macOS runner. It opens
 Terminal and iTerm2, in their default settings and with Option as Meta, and
 drives them with real key and mouse events.
+
+`.github/workflows/macos-codex.yml` does the same with the real Codex CLI
+(`tests/e2e/macos/real_codex.py`): Terminal, SSH to the runner itself, tmux with
+the mouse on and off. Codex asks tmux whether it handles the mouse, and with the
+mouse off it leaves the mouse to the terminal, so peekme can't see the
+selection. The Linux tests can't show this: Codex only looks for tmux in system
+folders, and the Linux harness sends mouse reports even when nothing asked for
+them. Codex is logged in with a dummy API key, so nothing reaches a model.
