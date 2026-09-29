@@ -25,6 +25,7 @@ import run  # noqa: E402
 # screen without a model call.
 READY = "Ask Codex"
 WORD = "Collaboration"
+WORD2 = "Permissions"
 
 
 def setup_codex(work):
@@ -80,8 +81,20 @@ class Window:
         time.sleep(3)
 
     def run(self, argv):
-        with open(self.fifo, "w") as f:
-            f.write(argv[-1] if argv[:2] == ["/bin/sh", "-c"] else " ".join(map(shlex.quote, argv)))
+        """Hand a command to the window; False if its loop is not listening."""
+        line = argv[-1] if argv[:2] == ["/bin/sh", "-c"] else " ".join(map(shlex.quote, argv))
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            try:
+                fd = os.open(self.fifo, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError:  # no reader yet
+                time.sleep(0.5)
+                continue
+            os.write(fd, line.encode())
+            os.close(fd)
+            return True
+        run.screenshot(os.path.join(self.dir, "not-listening.png"))
+        return False
 
     def close(self):
         try:
@@ -97,7 +110,8 @@ def calibrate(env, win):
     case = dict(layers="direct", mouse="off", agent="codex", profile="n/a", n=900, extkeys="off")
     paths = {"events": os.path.join(win.dir, "events.jsonl"), "agent": os.path.join(win.dir, "agent.jsonl")}
     argv, _ = m.build_command(env, case, paths)
-    win.run(argv)
+    if not win.run(argv):
+        return None
     if not m.wait(lambda: any(e["kind"] == "start" for e in m.jsonl(paths["agent"])), 25):
         run.screenshot(os.path.join(win.dir, "no-start.png"))
         return None
@@ -135,7 +149,8 @@ def run_case(env, win, case, px, out):
             f.write("\n".join(pane(env, sock)))
 
     try:
-        win.run(argv)
+        if not check(win.run(argv), "the window does not take commands"):
+            return name, fails
         if not check(m.wait(lambda: any(READY in l for l in pane(env, sock)), 60, 0.5),
                      "Codex never started"):
             save("no-start")
@@ -163,24 +178,41 @@ def run_case(env, win, case, px, out):
         if not check(row is not None, f"{WORD!r} never showed"):
             save("no-start")
             return name, fails
-        col = lines[row].index(WORD)
-        # capture-pane counts from 0, px from 1.
-        (x1, y1), (x2, y2) = px(col + 1, row + 1), px(col + len(WORD), row + 1)
-        run.sh("cliclick", "-w", "80", f"dd:{x1},{y1}", f"m:{(x1 + x2) // 2},{y1}", f"du:{x2},{y2}")
-        time.sleep(1.0)
-        save("selected")
-        run.option_p()
-        opened = m.wait(lambda: events("open"), 8)
-        if check(opened, "Option+P did not open a box"):
-            sel = (opened[-1].get("selection") or "").strip()
-            check(opened[-1].get("found") and sel and sel in lines[row],
-                  f"box on the wrong selection: {sel!r}")
-        time.sleep(0.6)
-        save("box")
-        check(not any("π" in l for l in pane(env, sock)), "π reached Codex")
-        run.keystroke("key code 53")  # Esc
-        check(m.wait(lambda: events("close"), 5), "Esc did not close the box")
-        time.sleep(1.0)
+        opened_before = 0
+
+        def explain(word, tag):
+            """Drag over `word`, Option+P: a box on it, and π never reaches Codex."""
+            nonlocal opened_before
+            r = next((i for i, l in enumerate(lines) if word in l), None)
+            if not check(r is not None, f"{word!r} not on screen"):
+                return None
+            c = lines[r].index(word)
+            # capture-pane counts from 0, px from 1.
+            (x1, y1), (x2, y2) = px(c + 1, r + 1), px(c + len(word), r + 1)
+            run.sh("cliclick", "-w", "80", f"dd:{x1},{y1}", f"m:{(x1 + x2) // 2},{y1}", f"du:{x2},{y2}")
+            time.sleep(1.0)
+            save(f"{tag}-selected")
+            run.option_p()
+            opened = m.wait(lambda: events("open")[opened_before:], 8)
+            if check(opened, f"{tag}: Option+P did not open a box"):
+                sel = (opened[-1].get("selection") or "").strip()
+                check(opened[-1].get("found") and sel and sel in word,
+                      f"{tag}: box on {sel!r}, not on {word!r} (source {opened[-1].get('source')})")
+            opened_before = len(events("open"))
+            time.sleep(0.6)
+            save(f"{tag}-box")
+            check(not any("π" in l for l in pane(env, sock)), f"{tag}: π reached Codex")
+            run.keystroke("key code 53")  # Esc
+            check(m.wait(lambda: len(events("close")) >= opened_before, 5), f"{tag}: Esc did not close the box")
+            time.sleep(1.0)
+            return r, c
+
+        first = explain(WORD, "first")
+        lines = pane(env, sock)
+        explain(WORD2, "second")
+        if first is None:
+            return name, fails
+        row, col = first
         # Nothing selected: π is typed (default), or the "select text" hint opens (meta).
         cx, cy = px(col + len(WORD) + 8, row + 1)
         run.sh("cliclick", f"c:{cx},{cy}")
@@ -189,7 +221,8 @@ def run_case(env, win, case, px, out):
         run.option_p()
         time.sleep(1.5)
         if case["option"] == "default":
-            check(len(events("open")) == n, "π with nothing selected opened a box")
+            last_p = (events("option_p") or [{}])[-1]
+            check(len(events("open")) == n, f"π with nothing selected opened a box ({last_p})")
             check(any("π" in l for l in pane(env, sock)), "π with nothing selected was not typed")
         else:
             later = events("open")[n:]

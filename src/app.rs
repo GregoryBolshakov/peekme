@@ -291,6 +291,7 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         via_helper: helper_pid.is_some(),
         osc52: Osc52::default(),
         app_selection: None,
+        selection_source: "",
         last_release: None,
         tmux_baseline: None,
         boundary: Boundary::default(),
@@ -413,6 +414,8 @@ struct App {
     via_helper: bool,
     osc52: Osc52,
     app_selection: Option<AppSelection>,
+    /// Where the last selection lookup found its text (for the event log).
+    selection_source: &'static str,
     /// When and where the last mouse button release went to the child.
     last_release: Option<(Instant, (usize, usize))>,
     /// Inside tmux: tmux's newest paste buffer when the last mouse release went
@@ -632,7 +635,14 @@ impl App {
             }
             if t.kind == Kind::OptionP {
                 let hotkey = self.option_p_is_hotkey();
-                crate::event("option_p", serde_json::json!({"hotkey": hotkey}));
+                crate::event(
+                    "option_p",
+                    serde_json::json!({
+                        "hotkey": hotkey,
+                        "source": self.selection_source,
+                        "mouse": self.shadow.mouse_mode(),
+                    }),
+                );
                 t.kind = if hotkey { Kind::Hotkey } else { Kind::Key };
             }
             self.sniff_colors(&t);
@@ -803,7 +813,9 @@ impl App {
         snap: &Snapshot,
         tmux_age: std::time::Duration,
     ) -> (Option<String>, Option<Located>) {
+        self.selection_source = "none";
         if let Some(s) = &self.app_selection {
+            self.selection_source = "osc52";
             return (
                 Some(s.text.clone()),
                 select::locate(snap, &s.text, Some(s.cell)),
@@ -816,6 +828,7 @@ impl App {
         {
             let hint = self.last_release.map(|(_, cell)| cell);
             if let Some(loc) = select::locate(snap, &text, hint) {
+                self.selection_source = "tmux";
                 return (Some(text), Some(loc));
             }
         }
@@ -824,9 +837,13 @@ impl App {
         if matches!(self.agent, Some(Agent::Codex) | None)
             && let Some(loc) = codex::screen::selection(snap)
         {
+            self.selection_source = "reverse";
             return (Some(loc.screen.selected()), Some(loc));
         }
         let s = self.selection.read();
+        if s.is_some() {
+            self.selection_source = "system";
+        }
         let l = s.as_deref().and_then(|s| select::locate(snap, s, None));
         (s, l)
     }
@@ -913,6 +930,7 @@ impl App {
             serde_json::json!({
                 "selection": selection,
                 "found": remembered.is_some(),
+                "source": self.selection_source,
                 "box_top": lay.box_top,
                 "live_input": strip,
             }),
@@ -1388,6 +1406,7 @@ mod tests {
             via_helper: false,
             osc52: Osc52::default(),
             app_selection: None,
+            selection_source: "",
             last_release: None,
             tmux_baseline: None,
             known_from: 0,

@@ -123,6 +123,12 @@ impl Shadow {
         out
     }
 
+    /// Whether the child asked for mouse reports (so a drag reaches it rather
+    /// than making the terminal's own selection).
+    pub fn mouse_mode(&self) -> bool {
+        self.term.mode().intersects(TermMode::MOUSE_MODE)
+    }
+
     /// Whether the child is drawing on the alternate (full-screen) buffer.
     pub fn alt_screen(&self) -> bool {
         self.term.mode().contains(TermMode::ALT_SCREEN)
