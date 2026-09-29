@@ -128,6 +128,11 @@ impl Shadow {
         self.term.mode().contains(TermMode::ALT_SCREEN)
     }
 
+    /// Lines that scrolled off the top into history so far.
+    pub fn history_size(&self) -> usize {
+        self.term.grid().history_size()
+    }
+
     pub fn rows(&self) -> usize {
         self.term.screen_lines()
     }

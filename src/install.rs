@@ -293,7 +293,9 @@ pub fn refresh() -> Option<String> {
             Shell::Fish => fish_file(&shim_dir),
             _ => upsert_block(&old, &posix_block(&shim_dir)),
         };
-        if new != old && write_file(&t.path, &new).is_ok() {
+        // The same lines in another order (0.3.3 lists Claude first) are not
+        // worth touching the user's file for.
+        if !same_lines(&old, &new) && write_file(&t.path, &new).is_ok() {
             rewrote = true;
         }
     }
@@ -306,6 +308,17 @@ pub fn refresh() -> Option<String> {
         )),
         (true, true) => Some("peekme: updated your shell setup.".into()),
     }
+}
+
+/// Whether two versions of a startup file differ only in the order of their
+/// lines and in comments.
+fn same_lines(a: &str, b: &str) -> bool {
+    fn sorted(s: &str) -> Vec<&str> {
+        let mut v: Vec<&str> = s.lines().filter(|l| !l.starts_with('#')).collect();
+        v.sort_unstable();
+        v
+    }
+    sorted(a) == sorted(b)
 }
 
 pub fn install() -> Result<()> {
@@ -656,6 +669,28 @@ mod tests {
                 assert_eq!(back, format!("{original}\n"));
             }
         }
+    }
+
+    #[test]
+    fn reordered_block_is_left_alone() {
+        let dir = Path::new("/home/u/.local/share/peekme/bin");
+        let new = format!("export A=1\n{}", posix_block(dir));
+        // What 0.3.2 wrote: Codex first, in the header and in the functions.
+        let (head, rest) = new.split_once("function claude").unwrap();
+        let (claude, rest) = rest.split_once("function codex").unwrap();
+        let (codex, rest) = rest.split_once("function copilot").unwrap();
+        let old =
+            format!("{head}function codex{codex}function claude{claude}function copilot{rest}")
+                .replace(
+                    &header(),
+                    "# Opens Codex, Claude Code and GitHub Copilot CLI with peekme",
+                );
+        assert_ne!(old, new);
+        assert!(same_lines(&old, &new));
+        // A block without copilot still gets updated.
+        let (without, _) = old.split_once("function copilot").unwrap();
+        let without = format!("{without}{}", &rest[rest.find("case").unwrap()..]);
+        assert!(!same_lines(&without, &new));
     }
 
     #[test]

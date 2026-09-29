@@ -101,6 +101,47 @@ struct Setup {
     tx: Sender<Msg>,
     cols: u16,
     rows: u16,
+    /// Where the cursor was when peekme started (0-based row, col).
+    start: (u16, u16),
+}
+
+/// Ask the terminal where the cursor is (`CSI 6n`), waiting at most 1 s
+/// (a slow SSH link can take a few hundred ms).
+/// An agent that draws relative to where it starts (Claude Code's classic
+/// screen) never tells us; without this the shadow would be rows off.
+fn cursor_position() -> Option<(u16, u16)> {
+    let mut out = std::io::stdout();
+    out.write_all(b"\x1b[6n").ok()?;
+    out.flush().ok()?;
+    let deadline = Instant::now() + Duration::from_millis(1000);
+    let mut reply = Vec::new();
+    // Read the descriptor itself, one byte at a time: Rust's stdin is
+    // buffered, and whatever it read ahead would reach the child later.
+    while Instant::now() < deadline && !reply.ends_with(b"R") {
+        let mut fds = libc::pollfd {
+            fd: 0,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let left = deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis() as i32;
+        if unsafe { libc::poll(&mut fds, 1, left.max(1)) } <= 0 {
+            break;
+        }
+        let mut b = [0u8; 1];
+        if unsafe { libc::read(0, b.as_mut_ptr().cast(), 1) } != 1 {
+            break;
+        }
+        reply.push(b[0]);
+    }
+    let text = String::from_utf8_lossy(&reply);
+    let body = text.rsplit("\x1b[").next()?.strip_suffix('R')?;
+    let (r, c) = body.split_once(';')?;
+    Some((
+        r.parse::<u16>().ok()?.saturating_sub(1),
+        c.parse::<u16>().ok()?.saturating_sub(1),
+    ))
 }
 
 fn setup(program: &str, args: &[String]) -> Result<Setup> {
@@ -113,6 +154,10 @@ fn setup(program: &str, args: &[String]) -> Result<Setup> {
         Ok((c, r)) if c > 0 && r > 0 => (c, r),
         _ => (80, 24),
     };
+    // Before the child starts, so nothing else answers on stdin.
+    let asked = cursor_position();
+    crate::event("start", serde_json::json!({"cursor": asked}));
+    let start = asked.unwrap_or((0, 0));
     let pty = native_pty_system();
     let pair = pty
         .openpty(PtySize {
@@ -209,6 +254,7 @@ fn setup(program: &str, args: &[String]) -> Result<Setup> {
         tx,
         cols,
         rows,
+        start,
     })
 }
 
@@ -223,9 +269,15 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         tx,
         cols,
         rows,
+        start,
     } = setup;
     let mut app = App {
-        shadow: Shadow::new(cols, rows),
+        shadow: {
+            let mut s = Shadow::new(cols, rows);
+            s.advance(format!("\x1b[{};{}H", start.0 + 1, start.1 + 1).as_bytes());
+            s
+        },
+        known_from: start.0 as usize,
         open: None,
         pending: None,
         next_id: 0,
@@ -368,6 +420,9 @@ struct App {
     tmux_baseline: Option<String>,
     /// Where the child's output stopped: a box may only be drawn between sequences.
     boundary: Boundary,
+    /// First row peekme knows at startup; rows above it hold output from before
+    /// the child started. It moves up as the screen scrolls.
+    known_from: usize,
     /// The user typed Greek letters: `π` is a letter for them, never the hotkey.
     greek_typed: bool,
     tx: Sender<Msg>,
@@ -439,6 +494,14 @@ impl App {
             self.open_peek(out)?;
         }
         Ok(())
+    }
+
+    /// First screen row whose content the shadow really knows.
+    fn known_top(&self) -> usize {
+        if self.shadow.alt_screen() {
+            return 0;
+        }
+        self.known_from.saturating_sub(self.shadow.history_size())
     }
 
     /// The terminal is between the child's frames and escape sequences.
@@ -813,7 +876,12 @@ impl App {
                 strip = self
                     .live_top(&snap)
                     .filter(|&k| loc.last_row < k && k < rows && k >= rows / 3);
-                let lay = overlay::layout(strip.unwrap_or(rows), loc.first_row, loc.last_row);
+                let lay = overlay::layout_within(
+                    self.known_top(),
+                    strip.unwrap_or(rows),
+                    loc.first_row,
+                    loc.last_row,
+                );
                 let mut peek = PeekBox::new(sel);
                 let max_lines = lay.box_height.saturating_sub(2).clamp(3, 12);
                 if let Some(e) = self.start_explain(id, loc.screen.clone(), max_lines, false, false)
@@ -825,11 +893,17 @@ impl App {
             }
             (None, _) => {
                 let msg = "Select some text with the mouse first, then press Alt+P.";
-                (PeekBox::message(msg), message_layout(&snap))
+                (
+                    PeekBox::message(msg),
+                    message_layout(&snap, self.known_top()),
+                )
             }
             (Some(_), None) => {
                 let msg = "The selected text isn't on screen (only visible text can be peeked in this version).";
-                (PeekBox::message(msg), message_layout(&snap))
+                (
+                    PeekBox::message(msg),
+                    message_layout(&snap, self.known_top()),
+                )
             }
         };
 
@@ -1128,10 +1202,10 @@ fn types_greek(bytes: &[u8]) -> bool {
 }
 
 /// Where to show a one-line message: just above the cursor's row.
-fn message_layout(snap: &Snapshot) -> Layout {
+fn message_layout(snap: &Snapshot, known_top: usize) -> Layout {
     let rows = snap.rows.len();
     let h = 3.min(rows);
-    let top = snap.cursor.0.saturating_sub(h);
+    let top = snap.cursor.0.saturating_sub(h).max(known_top).min(rows - h);
     Layout {
         box_top: top,
         box_height: h,
@@ -1316,6 +1390,7 @@ mod tests {
             app_selection: None,
             last_release: None,
             tmux_baseline: None,
+            known_from: 0,
             boundary: Boundary::default(),
             greek_typed: false,
             shadow: Shadow::new(cols, rows),

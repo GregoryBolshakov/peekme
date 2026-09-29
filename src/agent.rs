@@ -6,19 +6,19 @@ use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Agent {
-    Codex,
     Claude,
+    Codex,
     Copilot,
 }
 
 impl Agent {
-    pub const ALL: [Agent; 3] = [Agent::Codex, Agent::Claude, Agent::Copilot];
+    pub const ALL: [Agent; 3] = [Agent::Claude, Agent::Codex, Agent::Copilot];
 
     /// The command users type.
     pub fn command(self) -> &'static str {
         match self {
-            Agent::Codex => "codex",
             Agent::Claude => "claude",
+            Agent::Codex => "codex",
             Agent::Copilot => "copilot",
         }
     }
@@ -26,8 +26,8 @@ impl Agent {
     /// Product name, for messages.
     pub fn name(self) -> &'static str {
         match self {
-            Agent::Codex => "Codex",
             Agent::Claude => "Claude Code",
+            Agent::Codex => "Codex",
             Agent::Copilot => "GitHub Copilot CLI",
         }
     }
@@ -35,26 +35,26 @@ impl Agent {
     /// Short name, for "Claude: 3 updates waiting".
     pub fn short(self) -> &'static str {
         match self {
-            Agent::Codex => "Codex",
             Agent::Claude => "Claude",
+            Agent::Codex => "Codex",
             Agent::Copilot => "Copilot",
         }
     }
 
     pub fn install_hint(self) -> &'static str {
         match self {
-            Agent::Codex => "npm i -g @openai/codex",
             Agent::Claude => "npm i -g @anthropic-ai/claude-code",
+            Agent::Codex => "npm i -g @openai/codex",
             Agent::Copilot => "npm i -g @github/copilot",
         }
     }
 
-    /// "Codex, Claude Code and GitHub Copilot CLI", for messages.
+    /// "Claude Code, Codex and GitHub Copilot CLI", for messages.
     pub fn all_names() -> String {
         list(Agent::ALL.iter().map(|a| a.name().to_string()).collect())
     }
 
-    /// "`codex`, `claude` or `copilot`", for messages.
+    /// "`claude`, `codex` or `copilot`", for messages.
     pub fn all_commands(last: &str) -> String {
         let mut v: Vec<String> = Agent::ALL
             .iter()
@@ -74,8 +74,8 @@ impl Agent {
     /// peeking helps. Everything else runs the agent directly.
     pub fn is_interactive(self, args: &[String]) -> bool {
         match self {
-            Agent::Codex => crate::codex::cli::is_interactive(args),
             Agent::Claude => crate::claude::cli::is_interactive(args),
+            Agent::Codex => crate::codex::cli::is_interactive(args),
             Agent::Copilot => crate::copilot::cli::is_interactive(args),
         }
     }
@@ -125,8 +125,8 @@ mod tests {
         assert_eq!(Agent::from_program("htop"), None);
         assert_eq!(
             Agent::all_names(),
-            "Codex, Claude Code and GitHub Copilot CLI"
+            "Claude Code, Codex and GitHub Copilot CLI"
         );
-        assert_eq!(Agent::all_commands("or"), "`codex`, `claude` or `copilot`");
+        assert_eq!(Agent::all_commands("or"), "`claude`, `codex` or `copilot`");
     }
 }

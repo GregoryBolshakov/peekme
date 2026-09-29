@@ -1,23 +1,40 @@
 # peekme
 
-Peek me. Pick me. Select text in [Codex CLI](https://github.com/openai/codex),
-[Claude Code](https://github.com/anthropics/claude-code) or
+Pick me. Select text in [Claude Code](https://github.com/anthropics/claude-code),
+[Codex CLI](https://github.com/openai/codex) or
 [GitHub Copilot CLI](https://github.com/github/copilot-cli) output, press **Alt+P** (**Option+P** on a Mac), and a short
 explanation opens right next to that text, inside the terminal. The other lines move to make
 room, like Peek in VS Code. Esc closes it and the screen is exactly as before.
 
-![peekme demo: type codex, ask a question, select "noisy commits" in the answer, press Alt+P, read the explanation, press Esc](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo.gif)
+![peekme in Claude Code: ask about detached HEAD, select "git switch -" in the answer, press Alt+P, read the explanation, press Esc](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-claude.gif)
 
 The explanation comes from a small, fast model and it knows the conversation. If you select
 "its split panes" in an answer that recommends Kitty, it tells you it is about Kitty.
 
-Status: 0.3.2. Tested with Codex 0.157, Claude Code 2.1.283 and Copilot CLI 1.0.89 on Linux, also
+Status: 0.3.2. Tested with Claude Code 2.1.284, Codex 0.159 and Copilot CLI 1.0.89 on Linux, also
 inside tmux and over SSH. On macOS it is tested in Terminal and iTerm2 with a stand-in agent, also
 inside tmux and over SSH.
 
+## One peekme for all your agents
+
+Many developers have more than one agent CLI and switch between them during the day. peekme
+works the same way in each of them. You install it once, and the key and the box are the same
+everywhere. Claude Code, Codex CLI
+and GitHub Copilot CLI work today, and more agents are planned. If one agent gets its own way to
+explain a selection some day, it will work in that agent only. peekme keeps working in all of
+them.
+
+Codex CLI:
+
+![peekme in Codex CLI: select "noisy commits" in the answer, press Alt+P, read the explanation, press Esc](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo.gif)
+
+GitHub Copilot CLI:
+
+![peekme in GitHub Copilot CLI: ask about set -euo pipefail, select "pipefail" in the answer, press Alt+P, read the explanation, press Esc](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-copilot.gif)
+
 ## Install
 
-You need Codex CLI, Claude Code or GitHub Copilot CLI (logged in). More than one is fine too. Then install peekme in one of
+You need Claude Code, Codex CLI or GitHub Copilot CLI (logged in). More than one is fine too. Then install peekme in one of
 these ways and run `peekme install`:
 
 ```
@@ -40,7 +57,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GregoryBolshakov/peekme
 
 Ready binaries are there too, for Linux and macOS on x86_64 and ARM.
 
-After this, `codex`, `claude` and `copilot` open with peekme in every new terminal. You keep
+After this, `claude`, `codex` and `copilot` open with peekme in every new terminal. You keep
 typing them as always, and your aliases and scripts that call them keep working. `peekme install`
 adds a short, marked block to your `~/.bashrc` or `~/.zshrc` (for fish, a file in
 `~/.config/fish/conf.d`). If you install one of the agents later, it gets peekme too.
@@ -48,8 +65,8 @@ adds a short, marked block to your `~/.bashrc` or `~/.zshrc` (for fish, a file i
 ```
 peekme doctor      # check the setup, and see what is in the way if something is
 peekme uninstall   # remove the block, your files are as before
-command codex      # run plain Codex once
 command claude     # run plain Claude Code once
+command codex      # run plain Codex once
 command copilot    # run plain Copilot CLI once
 ```
 
@@ -60,9 +77,9 @@ itself the next time it starts, and says so once. They work in new terminals.
 
 ## Use
 
-Start Codex, Claude Code or Copilot CLI as always. Select text with the mouse as you normally
-do, then press Alt+P. When the agent draws full screen (Codex since 0.157, Copilot CLI, Claude
-Code with `"tui": "fullscreen"`), it makes the selection itself, and peekme uses that selection.
+Start Claude Code, Codex or Copilot CLI as always. Select text with the mouse as you normally
+do, then press Alt+P. When the agent draws full screen (Claude Code with `"tui": "fullscreen"`,
+Codex since 0.157, Copilot CLI), it makes the selection itself, and peekme uses that selection.
 
 | Key | When | What it does |
 |---|---|---|
@@ -83,20 +100,20 @@ you type Greek, `π` stays a letter. If your terminal sends Option as Meta, Opti
 When the agent draws full screen, peekme gets the selection from the agent. Otherwise (Claude
 Code's classic screen) it reads the clipboard: iTerm2 copies a selection there by itself, in
 Terminal press Cmd+C after you select. Over SSH only the agent's own selection can be read, so
-use the full screen mode there (Codex and Copilot CLI use it by default, Claude Code with
-`"tui": "fullscreen"`).
+use the full screen mode there (Claude Code with `"tui": "fullscreen"`, Codex and Copilot CLI
+by default).
 
 In Claude Code, Alt+P opens the model picker. With peekme it explains the selection instead.
 `/model` still opens the model picker.
 
 No API key is needed. peekme asks the agent's own CLI, with your existing login:
 
-- Codex: its `app-server`, on a temporary thread that is not saved. Since Codex 0.157 a shared
-  Codex server runs in the background, and peekme uses it, so it adds only a few MB of memory.
-  Without that server it starts its own `codex app-server`, which takes about 250 MB.
 - Claude Code: `claude -p` on Haiku, without tools and without saving the session, so nothing
   appears in `/resume`. After the first explanation one `claude -p` waits in the background for
   the next one, so it starts in about half a second. It takes about 210 MB.
+- Codex: its `app-server`, on a temporary thread that is not saved. Since Codex 0.157 a shared
+  Codex server runs in the background, and peekme uses it, so it adds only a few MB of memory.
+  Without that server it starts its own `codex app-server`, which takes about 250 MB.
 - Copilot CLI: its headless server (`copilot --headless`, the one the Copilot SDK uses), started
   on the first explanation. Each explanation is a short session without tools, and peekme
   deletes it afterwards, so nothing appears in your session list. The model is Copilot's Auto
@@ -104,9 +121,9 @@ No API key is needed. peekme asks the agent's own CLI, with your existing login:
 
 It does use your plan, a little for each explanation. Nothing starts before the first Alt+P.
 
-Only the interactive screen gets peekme: `codex`, `codex "prompt"`, `codex resume`,
-`codex fork`, `claude`, `claude "prompt"`, `claude --resume`, `claude -c`, and `copilot`,
-`copilot -i "prompt"`, `copilot --resume`. Commands like `codex exec`, `claude -p`, `copilot -p`
+Only the interactive screen gets peekme: `claude`, `claude "prompt"`, `claude --resume`,
+`claude -c`, `codex`, `codex "prompt"`, `codex resume`, `codex fork`, and `copilot`,
+`copilot -i "prompt"`, `copilot --resume`. Commands like `claude -p`, `codex exec`, `copilot -p`
 or `copilot login`, and anything with output going to a pipe or a file, run the agent directly.
 
 ## How it works
@@ -117,10 +134,11 @@ what is on your screen.
 
 On Alt+P it takes the selection and finds it on the screen:
 
-- Codex full screen: the text Codex highlighted.
-- Claude Code and Copilot CLI full screen: the agent copies the selection with an OSC 52 escape
-  sequence when you release the mouse. peekme reads the text from that sequence as it passes through, and knows
+- Claude Code full screen: Claude copies the selection with an OSC 52 escape sequence when you
+  release the mouse. peekme reads the text from that sequence as it passes through, and knows
   where the drag ended. This also works over SSH.
+- Codex full screen: the text Codex highlighted.
+- Copilot CLI: the same OSC 52 sequence as Claude Code.
 - Otherwise: your terminal's mouse selection (the X11 PRIMARY selection).
 
 Then it redraws only the rows next to the selection, with the box between them. Nothing is
@@ -130,7 +148,7 @@ that arrives while the box is open is kept aside.
 
 On Esc it draws those rows again from a copy taken when the box opened. After that it sends the
 kept output, so the terminal ends in the same state as if the box never existed. Tests check
-this cell by cell on real Codex, Claude Code and Copilot CLI output.
+this cell by cell on real Claude Code, Codex and Copilot CLI output.
 
 ### What the model gets
 
@@ -146,8 +164,8 @@ slow. So the model gets small parts, each with a size limit:
 3. Your request that this text answers, and one line for each of your earlier requests.
 4. The first places in the conversation where the same words were used before.
 
-The conversation comes from Codex's app-server, from Claude Code's session transcript in
-`~/.claude/projects`, or from Copilot CLI's session log in `~/.copilot/session-state`. peekme
+The conversation comes from Claude Code's session transcript in `~/.claude/projects`, from
+Codex's app-server, or from Copilot CLI's session log in `~/.copilot/session-state`. peekme
 knows which session, because the agent registers its process id there.
 
 Usually this is 1 to 7 KB of text. When it is not enough, press Alt+P again and the model gets
@@ -159,23 +177,23 @@ more.
 
 | Variable | Meaning |
 |---|---|
+| `PEEKME_CLAUDE_MODEL` | model for Claude Code explanations. Default is `haiku` |
+| `PEEKME_CLAUDE_BIN` | claude binary to use for explanations. Default is `claude` |
 | `PEEKME_MODEL` | model for Codex explanations. Default is the model your account lists as fast |
 | `PEEKME_CODEX_BIN` | codex binary to use for explanations. Default is `codex` |
 | `PEEKME_OWN_SERVER` | set to 1 to start peekme's own `codex app-server` instead of using the shared one |
-| `PEEKME_CLAUDE_MODEL` | model for Claude Code explanations. Default is `haiku` |
-| `PEEKME_CLAUDE_BIN` | claude binary to use for explanations. Default is `claude` |
 | `PEEKME_COPILOT_MODEL` | model for Copilot CLI explanations. Default is Copilot's Auto |
 | `PEEKME_COPILOT_BIN` | copilot binary to use for explanations. Default is `copilot` |
 | `PEEKME_SELECTION` | use this text instead of the mouse selection, for testing |
 
-### How `codex`, `claude` and `copilot` get peekme
+### How `claude`, `codex` and `copilot` get peekme
 
 `peekme install` does two things:
 
-1. It defines shell functions `codex`, `claude` and `copilot` in your shell setup. A function wins over
+1. It defines shell functions `claude`, `codex` and `copilot` in your shell setup. A function wins over
    anything on PATH, so it keeps working when nvm, mise, Homebrew or an agent's installer
    change PATH later. Aliases that call them go through it too.
-2. It puts `codex`, `claude` and `copilot` links to peekme in `~/.local/share/peekme/bin` at the front of
+2. It puts `claude`, `codex` and `copilot` links to peekme in `~/.local/share/peekme/bin` at the front of
    PATH, so scripts that run them also get peekme. If some tool puts its own directory in front
    of it later, only scripts lose peekme, and `peekme doctor` tells you which directory it is.
 
@@ -218,7 +236,7 @@ shows if your terminal flickers when a program switches screens. `explain_probe.
 explanation request to `codex app-server` and prints timings. `copilot_probe.py` does the same
 with Copilot CLI's headless server.
 
-Each agent has its own folder in `src/` (`codex/`, `claude/`, `copilot/`): how its selection is read, where
+Each agent has its own folder in `src/` (`claude/`, `codex/`, `copilot/`): how its selection is read, where
 its conversation comes from, and which model explains. The rest is shared.
 
 ## License

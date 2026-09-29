@@ -11,6 +11,7 @@ cargo build --release --bins --examples
 python3 tests/e2e/matrix.py           # fake agents, 84 cases, about a minute
 python3 tests/e2e/real_agents.py      # real claude, codex, copilot, 34 cases
 python3 tests/e2e/upgrade.py          # a setup from an older version gets the new agents
+python3 tests/e2e/inline_start.py     # an agent started under shell output, box in the right rows
 ```
 
 Layers: direct, tmux, ssh, ssh+tmux, tmux+ssh+tmux. tmux runs with

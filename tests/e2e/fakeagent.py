@@ -10,6 +10,8 @@ reports it the way the real one does:
     claude   OSC 52 `c` (clipboard), frames wrapped in ?2026
     copilot  OSC 52 `p!;<b64>;`, no ?2026 frames, modifyOtherKeys 2 requested
     codex    the selection drawn in reverse video, frames wrapped in ?2026
+    classic  like Claude Code's classic screen: main screen, no mouse, and only
+             relative cursor moves from wherever the cursor was at start
 
 Inside tmux ($TMUX set) Claude Code and Codex copy with `tmux load-buffer -w -`
 instead of OSC 52, and Copilot wraps its OSC 52 in tmux passthrough. So does
@@ -50,7 +52,19 @@ class Agent:
         kw["t"] = round(time.time(), 3)
         self.log.write(json.dumps(kw, ensure_ascii=False) + "\n")
 
+    def draw_classic(self, first=False):
+        # Everything relative to the cursor, like Ink: print once, then redraw
+        # the input line by moving up to it and back down.
+        if first:
+            rule = "─" * self.cols
+            text = "\r\n".join(["fakeagent (classic)", ""] + LINES + ["", rule, "❯ ", rule, "  fake status line"])
+            self.out(text)
+        else:
+            self.out(f"\x1b[2A\r\x1b[K❯ {self.buf}\x1b[2B\r")
+
     def draw(self):
+        if self.style == "classic":
+            return self.draw_classic()
         sync = self.style != "copilot"
         s = "\x1b[?2026h" if sync else ""
         s += "\x1b[?25l\x1b[H\x1b[2J"
@@ -152,20 +166,24 @@ class Agent:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--style", choices=["claude", "copilot", "codex"], default="claude")
+    ap.add_argument("--style", choices=["claude", "copilot", "codex", "classic"], default="claude")
     ap.add_argument("--log", required=True)
     args = ap.parse_args()
     agent = Agent(args.style, args.log)
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
     tty.setraw(fd)
-    modes = "\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?2004h"
+    modes = "\x1b[?2004h" if args.style == "classic" else \
+        "\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?2004h"
     if args.style == "copilot":
         modes += "\x1b[>4;2m"
     agent.out(modes)
     signal.signal(signal.SIGWINCH, lambda *_: (agent.resize(), agent.draw()))
     agent.record(kind="start", style=args.style, cols=agent.cols, rows=agent.rows)
-    agent.draw()
+    if args.style == "classic":
+        agent.draw_classic(first=True)
+    else:
+        agent.draw()
     try:
         while True:
             try:
@@ -178,7 +196,8 @@ def main():
             if not data or not agent.input(data):
                 break
     finally:
-        agent.out("\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[?1049l")
+        if args.style != "classic":
+            agent.out("\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[?1049l")
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
         agent.record(kind="exit")
 

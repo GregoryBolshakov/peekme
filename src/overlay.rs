@@ -21,9 +21,16 @@ pub struct Layout {
 }
 
 pub fn layout(rows: usize, sel_first: usize, sel_last: usize) -> Layout {
-    let want = (rows * 2 / 5).clamp(5, 14);
+    layout_within(0, rows, sel_first, sel_last)
+}
+
+/// Like `layout`, using only rows `top..rows`: the rows above `top` hold
+/// output from before the child started (the shell prompt, say) that peekme
+/// has never seen, so it must not paint over them.
+pub fn layout_within(top: usize, rows: usize, sel_first: usize, sel_last: usize) -> Layout {
+    let want = ((rows - top.min(rows)) * 2 / 5).clamp(5, 14);
     let space_below = rows.saturating_sub(sel_last + 1);
-    let space_above = sel_first;
+    let space_above = sel_first.saturating_sub(top);
     if space_below >= want || (space_below >= 4 && space_below >= space_above) {
         let h = want.min(space_below);
         Layout {
@@ -37,16 +44,17 @@ pub fn layout(rows: usize, sel_first: usize, sel_last: usize) -> Layout {
         Layout {
             box_top: sel_first - h,
             box_height: h,
-            region: (0, sel_first),
+            region: (top, sel_first),
             below: false,
         }
     } else {
-        // Tiny screen: cover the top rows.
-        let h = want.min(rows);
+        // Tiny screen: cover the top rows we know.
+        let top = top.min(rows.saturating_sub(1));
+        let h = want.min(rows - top);
         Layout {
-            box_top: 0,
+            box_top: top,
             box_height: h,
-            region: (0, h),
+            region: (top, top + h),
             below: true,
         }
     }
@@ -511,6 +519,16 @@ fn push(line: &mut Line, style: Style, text: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layout_keeps_out_of_rows_it_never_saw() {
+        // The child started on row 20; rows above hold the user's shell output.
+        let l = layout_within(20, 40, 35, 36);
+        assert!(!l.below);
+        assert!(l.region.0 >= 20 && l.box_top >= 20, "{l:?}");
+        let l = layout_within(20, 40, 22, 38);
+        assert!(l.box_top >= 20 && l.region.0 >= 20, "{l:?}");
+    }
 
     #[test]
     fn layout_prefers_below_then_above() {

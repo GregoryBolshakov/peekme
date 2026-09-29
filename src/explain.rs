@@ -84,7 +84,7 @@ impl Explainer {
         let installed = Agent::ALL
             .into_iter()
             .find(|a| crate::launch::find_real(a.command()).is_some());
-        Self::new(installed.unwrap_or(Agent::Codex))
+        Self::new(installed.unwrap_or(Agent::Claude))
     }
 
     /// Run one explanation, reporting progress on `tx`. Blocks; call from a thread.

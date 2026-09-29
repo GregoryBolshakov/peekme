@@ -8,28 +8,28 @@ use std::io::IsTerminal;
 
 const HELP: &str = "\
 peekme {version}
-Select text in Codex CLI, Claude Code or GitHub Copilot CLI output with the
+Select text in Claude Code, Codex CLI or GitHub Copilot CLI output with the
 mouse, press Alt+P (Option+P on a Mac), and an explanation from a smaller
 model opens right next to it. Esc closes it.
 
 USAGE:
-    peekme                     run codex (or the first of claude, copilot installed)
-    peekme codex [ARGS...]     run codex with peekme
+    peekme                     run the first installed of claude, codex, copilot
     peekme claude [ARGS...]    run claude with peekme
+    peekme codex [ARGS...]     run codex with peekme
     peekme copilot [ARGS...]   run copilot with peekme
-    peekme install             make typing `codex`, `claude`, `copilot` open them with peekme
+    peekme install             make typing `claude`, `codex`, `copilot` open them with peekme
     peekme uninstall           undo `peekme install`
     peekme doctor              check the setup
     peekme -- COMMAND [ARGS]   run any other command with peekme
 
-After `peekme install`, `command codex` (or claude, copilot) runs the agent
+After `peekme install`, `command claude` (or codex, copilot) runs the agent
 without peekme once.
 
 ENVIRONMENT:
-    PEEKME_MODEL         model for Codex explanations (default: the account's fast model)
-    PEEKME_CODEX_BIN     codex binary used for the explainer (default: the one on PATH)
     PEEKME_CLAUDE_MODEL  model for Claude Code explanations (default: haiku)
     PEEKME_CLAUDE_BIN    claude binary used for the explainer (default: the one on PATH)
+    PEEKME_MODEL         model for Codex explanations (default: the account's fast model)
+    PEEKME_CODEX_BIN     codex binary used for the explainer (default: the one on PATH)
     PEEKME_COPILOT_MODEL model for Copilot explanations (default: Copilot's Auto)
     PEEKME_COPILOT_BIN   copilot binary used for the explainer (default: the one on PATH)
 ";
@@ -133,12 +133,12 @@ fn main() {
     std::process::exit(code);
 }
 
-/// Plain `peekme`: Codex, as before, else the first agent that is installed.
+/// Plain `peekme`: the first agent that is installed.
 fn default_agent() -> Agent {
     Agent::ALL
         .into_iter()
         .find(|a| launch::find_real(a.command()).is_some())
-        .unwrap_or(Agent::Codex)
+        .unwrap_or(Agent::Claude)
 }
 
 fn report(r: anyhow::Result<()>) -> i32 {

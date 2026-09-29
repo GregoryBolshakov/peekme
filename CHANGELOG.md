@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Claude Code's classic screen: when `claude` started lower on the screen, under earlier shell
+  output, the box could land a few rows off and repeat lines from above it. peekme now asks the
+  terminal where the cursor is when it starts, and the box never covers the shell lines above
+  the agent.
+- Agents are listed as Claude Code, Codex, Copilot CLI everywhere. Plain `peekme` now runs the
+  first one of them that is installed, in that order. Before, it preferred Codex.
+- A shell setup from an older version that differs only in this order is left as it is.
+
 ## 0.3.2 (2026-09-28)
 
 - Updating peekme now also updates your shell setup. Before, a setup made with an older version

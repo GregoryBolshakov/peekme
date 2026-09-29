@@ -28,7 +28,7 @@ SSH layers `sshd` + `ssh` (a private sshd is started on 127.0.0.1 as this user).
 Set E2E_TMUX / E2E_SSHD to use binaries that are not on PATH, and
 E2E_LD_LIBRARY_PATH if they need extra libraries.
 """
-import argparse, base64, concurrent.futures as cf, itertools, json, os, pty, select, shlex, shutil
+import argparse, base64, concurrent.futures as cf, itertools, json, os, pty, re, select, shlex, shutil
 import signal, struct, subprocess, sys, tempfile, termios, fcntl, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -53,6 +53,9 @@ class Term:
 
     def __init__(self, argv, env, log_path):
         self.data = bytearray()
+        # The reader thread grows `data` while other threads save it: writing a
+        # bytearray that is being resized raises BufferError.
+        self.lock = threading.Lock()
         self.log_path = log_path
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
@@ -73,22 +76,37 @@ class Term:
                 break
             if not b:
                 break
-            self.data.extend(b)
+            with self.lock:
+                self.data.extend(b)
             # Answer the queries a real terminal answers (tmux waits for some).
             if b"\x1b[6n" in b:
-                os.write(self.fd, b"\x1b[1;1R")
+                # The real cursor position: peekme asks for it at start.
+                r, c = self.cursor()
+                os.write(self.fd, f"\x1b[{r + 1};{c + 1}R".encode())
             if b"\x1b[c" in b or b"\x1b[0c" in b:
                 os.write(self.fd, b"\x1b[?62;22c")
             if b"\x1b[>c" in b or b"\x1b[>0c" in b:
                 os.write(self.fd, b"\x1b[>41;354;0c")
         self.alive = False
 
+    def save(self):
+        with self.lock:
+            snapshot = bytes(self.data)
+        with open(self.log_path, "wb") as f:
+            f.write(snapshot)
+
+    def cursor(self):
+        self.save()
+        out = subprocess.run([VTDUMP, self.log_path, str(COLS), str(ROWS)],
+                             capture_output=True, text=True).stdout
+        m = re.search(r"-- cursor \((\d+), (\d+)\)", out)
+        return (int(m[1]), int(m[2])) if m else (0, 0)
+
     def send(self, b):
         os.write(self.fd, b)
 
     def screen(self):
-        with open(self.log_path, "wb") as f:
-            f.write(self.data)
+        self.save()
         out = subprocess.run([VTDUMP, self.log_path, str(COLS), str(ROWS)],
                              capture_output=True, text=True).stdout
         return out.splitlines()[:ROWS]
@@ -100,8 +118,7 @@ class Term:
             os.waitpid(self.pid, 0)
         except OSError:
             pass
-        with open(self.log_path, "wb") as f:
-            f.write(self.data)
+        self.save()
 
 
 def clean_env(**extra):
@@ -143,7 +160,7 @@ class Env:
             sys.exit("tmux not found (set E2E_TMUX)")
         self.bin = os.path.join(work, "bin")
         os.makedirs(self.bin)
-        for style in ("claude", "copilot", "codex"):
+        for style in ("claude", "copilot", "codex", "classic"):
             p = os.path.join(self.bin, style)
             with open(p, "w") as f:
                 f.write(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
@@ -199,6 +216,7 @@ def build_command(env, case, paths):
         "env", f"PATH={shlex.quote(tmux_dir)}:\"$PATH\"",
         *([f"LD_LIBRARY_PATH={shlex.quote(env.libs)}"] if env.libs else []),
         f"PEEKME_FAKE_EXPLAINER=1", f"PEEKME_EVENT_LOG={shlex.quote(paths['events'])}",
+        *[f"{k}={shlex.quote(v)}" for k, v in case.get("env", {}).items()],
         f"FAKEAGENT_LOG={shlex.quote(paths['agent'])}", "TERM_PROGRAM=", "LC_TERMINAL=",
         # Never read this desktop's own selection.
         "DISPLAY=", "WAYLAND_DISPLAY=",
