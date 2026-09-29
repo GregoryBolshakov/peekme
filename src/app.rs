@@ -648,11 +648,10 @@ impl App {
                 crate::event(
                     "option_p",
                     serde_json::json!({
-                            "hotkey": hotkey,
-                            "source": self.selection_source,
-                    "hidden": hidden,
-                            "mouse": self.shadow.mouse_mode(),
-                        }),
+                        "hotkey": hotkey,
+                        "source": self.selection_source,
+                        "mouse": self.shadow.mouse_mode(),
+                    }),
                 );
                 t.kind = if hotkey { Kind::Hotkey } else { Kind::Key };
             }
