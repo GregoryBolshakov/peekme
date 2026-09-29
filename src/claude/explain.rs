@@ -6,7 +6,7 @@
 //! the first explanation one idle process is kept ready for the next.
 
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
@@ -41,6 +41,66 @@ fn claude_bin() -> String {
     })
 }
 
+/// What Claude Code sets for the programs it runs.
+const SESSION_VARS: [&str; 11] = [
+    "CLAUDECODE",
+    "CLAUDE_PID",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_BRIDGE_SESSION_ID",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_SSE_PORT",
+];
+
+/// The settings that decide how Claude Code logs in and which provider it
+/// uses (Bedrock, Vertex, a gateway), from the files an interactive `claude`
+/// in `cwd` reads. The explainer skips all setting files (no hooks, plugins or
+/// MCP servers), so it gets these through `--settings` instead. Managed
+/// settings are read by Claude Code itself either way.
+fn login_settings(config_dir: Option<&Path>, cwd: Option<&Path>) -> Value {
+    const KEYS: [&str; 4] = [
+        "apiKeyHelper",
+        "awsAuthRefresh",
+        "awsCredentialExport",
+        "gcpAuthRefresh",
+    ];
+    let mut files = Vec::new();
+    if let Some(d) = config_dir {
+        files.push(d.join("settings.json"));
+    }
+    if let Some(c) = cwd {
+        files.push(c.join(".claude/settings.json"));
+        files.push(c.join(".claude/settings.local.json"));
+    }
+    let mut out = serde_json::Map::new();
+    let mut env = serde_json::Map::new();
+    // Later files win, as in Claude Code: user, project, local.
+    for f in files {
+        let Some(v) = std::fs::read_to_string(&f)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        else {
+            continue;
+        };
+        if let Some(e) = v.get("env").and_then(Value::as_object) {
+            env.extend(e.clone());
+        }
+        for k in KEYS {
+            if let Some(x) = v.get(k) {
+                out.insert(k.into(), x.clone());
+            }
+        }
+    }
+    if !env.is_empty() {
+        out.insert("env".into(), Value::Object(env));
+    }
+    Value::Object(out)
+}
+
 /// A started `claude -p` waiting for its one message.
 struct Worker {
     child: Child,
@@ -60,6 +120,12 @@ impl Worker {
             "",
             "--setting-sources",
             "",
+            "--settings",
+            &login_settings(
+                transcript::config_dir().as_deref(),
+                std::env::current_dir().ok().as_deref(),
+            )
+            .to_string(),
             "--strict-mcp-config",
             "--disable-slash-commands",
             "--system-prompt",
@@ -72,13 +138,11 @@ impl Worker {
             "--include-partial-messages",
         ]);
         // Set when peekme itself runs inside Claude Code; they would make
-        // the explainer believe it is a nested session. CLAUDE_CONFIG_DIR stays,
-        // so the explainer uses the same login.
-        for (k, _) in std::env::vars_os() {
-            let k = k.to_string_lossy();
-            if k == "CLAUDECODE" || k.starts_with("CLAUDE_CODE_") || k == "CLAUDE_PID" {
-                cmd.env_remove(&*k);
-            }
+        // the explainer believe it is a nested session. Everything else stays:
+        // CLAUDE_CONFIG_DIR, CLAUDE_CODE_USE_BEDROCK and the like choose the
+        // login.
+        for k in SESSION_VARS {
+            cmd.env_remove(k);
         }
         cmd.env("MAX_THINKING_TOKENS", "0")
             .current_dir(std::env::temp_dir())
@@ -295,6 +359,36 @@ fn debug_prompt_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn login_settings_come_from_user_project_and_local_files() {
+        let dir = std::env::temp_dir().join(format!("peekme-login-{}", std::process::id()));
+        let (config, project) = (dir.join("config"), dir.join("project"));
+        std::fs::create_dir_all(project.join(".claude")).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("settings.json"),
+            r#"{"env": {"CLAUDE_CODE_USE_BEDROCK": "1", "AWS_PROFILE": "work", "AWS_REGION": "us-east-1"},
+                "awsAuthRefresh": "aws sso login --profile work",
+                "hooks": {"Stop": []}, "statusLine": {"type": "command", "command": "x"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.join(".claude/settings.local.json"),
+            r#"{"env": {"AWS_REGION": "eu-west-1"}}"#,
+        )
+        .unwrap();
+        let s = login_settings(Some(&config), Some(&project));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            s,
+            json!({
+                "env": {"CLAUDE_CODE_USE_BEDROCK": "1", "AWS_PROFILE": "work", "AWS_REGION": "eu-west-1"},
+                "awsAuthRefresh": "aws sso login --profile work",
+            })
+        );
+        assert_eq!(login_settings(None, None), json!({}));
+    }
 
     #[test]
     fn short_model_names() {

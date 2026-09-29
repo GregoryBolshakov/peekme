@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Claude Code with Amazon Bedrock, Google Vertex or an API gateway: explanations failed with
+  "Could not load AWS credentials" or "Not logged in", although Claude Code itself worked. The
+  explainer did not read your Claude Code settings, so it missed the `env` block, `awsAuthRefresh`,
+  `awsCredentialExport`, `gcpAuthRefresh` and `apiKeyHelper` there. It also dropped every
+  `CLAUDE_CODE_*` variable, `CLAUDE_CODE_USE_BEDROCK` included. Now it uses the same login and
+  provider as `claude` in that directory. Hooks, plugins and MCP servers from your settings still
+  do not run for explanations.
 - Claude Code's classic screen: when `claude` started lower on the screen, under earlier shell
   output, the box could land a few rows off and repeat lines from above it. peekme now asks the
   terminal where the cursor is when it starts, and the box never covers the shell lines above
