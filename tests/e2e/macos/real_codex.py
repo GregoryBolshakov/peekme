@@ -77,8 +77,8 @@ class Window:
     runs each command line written to a FIFO. Relaunching the terminal per case
     left extra windows in front (Terminal restores sessions) that took the keys."""
 
-    def __init__(self, env, terminal, option, out):
-        self.dir = os.path.join(out, f"{terminal}-{option}_window")
+    def __init__(self, env, terminal, option, out, tag="calibrate"):
+        self.dir = os.path.join(out, f"{terminal}-{option}_window-{tag}")
         os.makedirs(self.dir, exist_ok=True)
         self.fifo = os.path.join(self.dir, "commands")
         os.mkfifo(self.fifo)
@@ -168,11 +168,6 @@ def run_case(env, win, case, px, out):
             save("no-start")
             return name, fails
         time.sleep(2)
-        if case["terminal"] == "iterm2":
-            # iTerm2 stops taking System Events keys after the calibration
-            # agent is killed, until its window is clicked (a blank cell here).
-            run.sh("cliclick", "c:{},{}".format(*px(60, 3)))
-            time.sleep(1)
         run.keystroke('keystroke "/status"')
         time.sleep(1)
         run.keystroke("key code 36")  # Return
@@ -326,6 +321,12 @@ def main():
                         n += 1
                         case = dict(terminal=terminal, option=option, layers=layer, mouse=mouse,
                                     profile="n/a", n=n)
+                        if terminal == "iterm2":
+                            # iTerm2 takes no System Events keys in a window
+                            # whose calibration agent was killed: a fresh window
+                            # per case, at the same place (same pixels).
+                            win.close()
+                            win = Window(env, terminal, option, out, tag=f"{layer}-{mouse}")
                         name, fails = run_case(env, win, case, px, out)
                         print(("ok    " if not fails else "FAIL  ") + name +
                               ("" if not fails else "  <- " + "; ".join(fails)), flush=True)
