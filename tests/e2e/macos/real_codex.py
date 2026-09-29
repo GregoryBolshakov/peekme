@@ -168,7 +168,14 @@ def run_case(env, win, case, px, out):
             save("no-start")
             return name, fails
         time.sleep(2)
-        run.keystroke('keystroke "/status"')
+        # The first keys after the calibration agent ends sometimes get lost:
+        # type again, after a click on a blank cell to give the window focus.
+        for attempt in range(3):
+            run.keystroke('keystroke "/status"')
+            if m.wait(lambda: any("/status" in l for l in pane(env, sock)), 3, 0.5):
+                break
+            run.sh("cliclick", "c:{},{}".format(*px(60, 3)))
+            time.sleep(1)
         time.sleep(1)
         run.keystroke("key code 36")  # Return
         # The first Return can land in Codex's command popup: press it again.
