@@ -61,43 +61,63 @@ def pane(env, sock):
     return r.stdout.split("\n") if r.returncode == 0 else []
 
 
-def calibrate(env, terminal, option, out):
-    """Pixel of each cell in this terminal's window, from a fake-agent run."""
-    case = dict(terminal=terminal, option=option, layers="direct", mouse="off", agent="codex",
-                profile="n/a", n=900, extkeys="off")
-    d = os.path.join(out, f"{terminal}-{option}_calibrate")
-    os.makedirs(d, exist_ok=True)
-    paths = {"events": os.path.join(d, "events.jsonl"), "agent": os.path.join(d, "agent.jsonl")}
+class Window:
+    """One terminal window for all cases of a terminal and Option setting: it
+    runs each command line written to a FIFO. Relaunching the terminal per case
+    left extra windows in front (Terminal restores sessions) that took the keys."""
+
+    def __init__(self, env, terminal, option, out):
+        self.dir = os.path.join(out, f"{terminal}-{option}_window")
+        os.makedirs(self.dir, exist_ok=True)
+        self.fifo = os.path.join(self.dir, "commands")
+        os.mkfifo(self.fifo)
+        script = os.path.join(self.dir, "run.command")
+        with open(script, "w") as f:
+            f.write(f"#!/bin/bash\nclear\nwhile true; do\n  cmd=$(cat {shlex.quote(self.fifo)})\n"
+                    '  [ "$cmd" = exit ] && exit 0\n  clear\n  /bin/sh -c "$cmd"\n  clear\ndone\n')
+        os.chmod(script, 0o755)
+        run.launch(terminal, option, script)
+        time.sleep(3)
+
+    def run(self, argv):
+        with open(self.fifo, "w") as f:
+            f.write(argv[-1] if argv[:2] == ["/bin/sh", "-c"] else " ".join(map(shlex.quote, argv)))
+
+    def close(self):
+        try:
+            fd = os.open(self.fifo, os.O_WRONLY | os.O_NONBLOCK)
+            os.write(fd, b"exit")
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def calibrate(env, win):
+    """Pixel of each cell in this window, from a fake-agent run in it."""
+    case = dict(layers="direct", mouse="off", agent="codex", profile="n/a", n=900, extkeys="off")
+    paths = {"events": os.path.join(win.dir, "events.jsonl"), "agent": os.path.join(win.dir, "agent.jsonl")}
     argv, _ = m.build_command(env, case, paths)
-    script = os.path.join(d, "run.command")
-    with open(script, "w") as f:
-        f.write("#!/bin/bash\nexec " + " ".join(shlex.quote(a) for a in argv) + "\n")
-    os.chmod(script, 0o755)
-    run.launch(terminal, option, script)
+    win.run(argv)
     if not m.wait(lambda: any(e["kind"] == "start" for e in m.jsonl(paths["agent"])), 25):
-        run.screenshot(os.path.join(d, "no-start.png"))
+        run.screenshot(os.path.join(win.dir, "no-start.png"))
         return None
     time.sleep(0.5)
     try:
         return run.calibrate(paths["agent"])
     except (TypeError, StopIteration, ZeroDivisionError):
-        run.screenshot(os.path.join(d, "no-mouse.png"))
+        run.screenshot(os.path.join(win.dir, "no-mouse.png"))
         return None
     finally:
         run.keystroke('keystroke "d" using control down')
-        time.sleep(0.5)
+        time.sleep(1)
 
 
-def run_case(env, case, px, out):
+def run_case(env, win, case, px, out):
     name = f"{case['terminal']}-{case['option']}|{case['layers']}|mouse-{case['mouse']}|codex-real"
     d = os.path.join(out, name.replace("|", "_").replace("+", "-"))
     os.makedirs(d, exist_ok=True)
     paths = {"events": os.path.join(d, "events.jsonl"), "agent": os.path.join(d, "agent.jsonl")}
     argv, socks = m.build_command(env, dict(case, agent="codex-real", extkeys="off"), paths)
-    script = os.path.join(d, "run.command")
-    with open(script, "w") as f:
-        f.write("#!/bin/bash\nexec " + " ".join(shlex.quote(a) for a in argv) + "\n")
-    os.chmod(script, 0o755)
     sock = socks[1] if case["layers"] == "ssh+tmux" else socks[0]
     fails = []
 
@@ -115,7 +135,7 @@ def run_case(env, case, px, out):
             f.write("\n".join(pane(env, sock)))
 
     try:
-        run.launch(case["terminal"], case["option"], script)
+        win.run(argv)
         if not check(m.wait(lambda: any(READY in l for l in pane(env, sock)), 60, 0.5),
                      "Codex never started"):
             save("no-start")
@@ -124,6 +144,9 @@ def run_case(env, case, px, out):
         run.keystroke('keystroke "/status"')
         time.sleep(1)
         run.keystroke("key code 36")  # Return
+        # The first Return can land in Codex's command popup: press it again.
+        if not m.wait(lambda: any(WORD in l for l in pane(env, sock)), 4, 0.5):
+            run.keystroke("key code 36")
         deadline, calm, last = time.time() + 30, None, None
         while time.time() < deadline:
             text = pane(env, sock)
@@ -176,8 +199,6 @@ def run_case(env, case, px, out):
     finally:
         with open(os.path.join(d, "events.txt"), "w") as f:
             f.write("\n".join(str(e) for e in m.jsonl(paths["events"])))
-        run.keystroke('keystroke "c" using control down')
-        time.sleep(0.3)
         for s in socks:
             run.sh(env.tmux, "-L", s, "kill-server")
     return name, fails
@@ -203,11 +224,15 @@ def main():
         run.sh("open", "-a", "Terminal")
         time.sleep(5)
         run.quit_terminals()
+    # Codex copies a selection with OSC 52 (through tmux too). iTerm2 asks
+    # first, with a banner that pushes the screen down a row.
+    run.sh("defaults", "write", "com.googlecode.iterm2", "AllowClipboardAccess", "-bool", "true")
     failed, total = [], 0
     try:
         for terminal in args.terminals.split(","):
             for option in args.options.split(","):
-                px = calibrate(env, terminal, option, out)
+                win = Window(env, terminal, option, out)
+                px = calibrate(env, win)
                 if px is None:
                     print(f"SKIP  {terminal}-{option}  <- calibration failed", flush=True)
                     failed.append(f"{terminal}-{option}")
@@ -219,11 +244,12 @@ def main():
                         n += 1
                         case = dict(terminal=terminal, option=option, layers=layer, mouse=mouse,
                                     profile="n/a", n=n)
-                        name, fails = run_case(env, case, px, out)
+                        name, fails = run_case(env, win, case, px, out)
                         print(("ok    " if not fails else "FAIL  ") + name +
                               ("" if not fails else "  <- " + "; ".join(fails)), flush=True)
                         if fails:
                             failed.append(name)
+                win.close()
     finally:
         run.quit_terminals()
         env.stop()
