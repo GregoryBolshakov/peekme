@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Codex inside tmux over SSH: Option+P typed `π` although text was selected. Codex (0.159)
+  asks tmux whether it handles the mouse, and when tmux has the mouse off, which is its default,
+  Codex leaves the mouse to the terminal. The selection is then made by your terminal on your
+  own machine, and peekme on the other side of SSH cannot see it. peekme can't change that, so
+  now the first Option+P there opens a box that says so and how to fix it: `set -g mouse on` in
+  `~/.tmux.conf`. Alt+P shows the same box. Found by driving the real Codex in Terminal and
+  iTerm2 on macOS, through SSH and tmux.
+- On a Mac reached over SSH, peekme no longer reads that Mac's clipboard as a selection. It is
+  not the clipboard of the terminal you type in.
+- Short messages in a box now show whole, not one line with PgUp/PgDn.
 - With two copies of peekme on one machine (an old one from `cargo install`, a newer one from npm
   or Homebrew), `codex` could keep starting the old copy. The old copy's `peekme install` had
   linked `codex` to itself, and the new copy only fixed links that were missing. So Codex got

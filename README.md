@@ -78,6 +78,11 @@ Terminal press Cmd+C after you select. Over SSH only the agent's own selection c
 use the full screen mode there (Claude Code with `"tui": "fullscreen"`, Codex and Copilot CLI
 by default).
 
+Inside tmux, Codex leaves the mouse to the terminal when tmux has the mouse off, which is tmux's
+default. A selection is then your terminal's own, and over SSH peekme cannot read it. Add
+`set -g mouse on` to `~/.tmux.conf` and restart Codex. peekme tells you this the first time you
+press Option+P there.
+
 In Claude Code, Alt+P opens the model picker. With peekme it explains the selection instead.
 `/model` still opens the model picker.
 

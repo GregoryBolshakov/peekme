@@ -169,8 +169,9 @@ def run_case(env, win, case, px, out):
             return name, fails
         time.sleep(2)
         if case["terminal"] == "iterm2":
-            # Keys go to the frontmost app: make sure it is iTerm2.
-            run.sh("open", "-a", "iTerm")
+            # iTerm2 stops taking System Events keys after the calibration
+            # agent is killed, until its window is clicked (a blank cell here).
+            run.sh("cliclick", "c:{},{}".format(*px(60, 3)))
             time.sleep(1)
         run.keystroke('keystroke "/status"')
         time.sleep(1)
