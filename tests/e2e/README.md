@@ -10,7 +10,7 @@ clipboard writes travel. These tests run peekme through those layers.
 cargo build --release --bins --examples
 python3 tests/e2e/matrix.py           # fake agents, 84 cases, about a minute
 python3 tests/e2e/real_agents.py      # real claude, codex, copilot, 34 cases
-python3 tests/e2e/upgrade.py          # a setup from an older version gets the new agents
+python3 tests/e2e/upgrade.py          # an older setup gets the new agents, links to an older copy move
 python3 tests/e2e/inline_start.py     # an agent started under shell output, box in the right rows
 ```
 

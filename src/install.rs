@@ -269,18 +269,7 @@ pub fn refresh() -> Option<String> {
     }
     let shim_dir = launch::shim_dir()?;
     let me = std::env::current_exe().ok()?.canonicalize().ok()?;
-    let mut added = Vec::new();
-    for agent in Agent::ALL {
-        let link = shim_dir.join(agent.command());
-        let works = std::fs::canonicalize(&link).is_ok();
-        if !works {
-            let _ = std::fs::remove_file(&link);
-            let _ = std::fs::create_dir_all(&shim_dir);
-            if std::os::unix::fs::symlink(&me, &link).is_ok() {
-                added.push(format!("`{}`", agent.command()));
-            }
-        }
-    }
+    let (added, moved) = relink(&shim_dir, &me);
     let mut rewrote = false;
     for t in targets().ok()? {
         let Ok(old) = std::fs::read_to_string(&t.path) else {
@@ -299,14 +288,100 @@ pub fn refresh() -> Option<String> {
             rewrote = true;
         }
     }
-    match (added.is_empty(), rewrote) {
-        (true, false) => None,
-        (false, _) => Some(format!(
+    let mut notes = Vec::new();
+    if !added.is_empty() {
+        notes.push(format!(
             "peekme: updated your shell setup, so {} now open with peekme too \
              (in new terminals).",
             added.join(" and ")
-        )),
-        (true, true) => Some("peekme: updated your shell setup.".into()),
+        ));
+    } else if rewrote {
+        notes.push("peekme: updated your shell setup.".into());
+    }
+    if let Some((old, _)) = moved.first() {
+        let names: Vec<String> = moved.iter().map(|(_, a)| a.clone()).collect();
+        let (who, starts) = if names.len() == 1 {
+            ("It", "starts")
+        } else {
+            ("They", "start")
+        };
+        notes.push(format!(
+            "peekme: {} started an older peekme ({old}). {who} now {starts} this one ({}).",
+            names.join(" and "),
+            env!("CARGO_PKG_VERSION")
+        ));
+    }
+    (!notes.is_empty()).then(|| notes.join("\n"))
+}
+
+/// Point the agent links at `me` where they are missing or broken, or lead to
+/// an older peekme. Two copies of peekme happen (cargo and then npm, say), and
+/// `peekme install` from the first one leaves links to it that nothing else
+/// updates: `codex` kept running the old copy after the new one was
+/// installed. Returns the agents added, and for the moved ones the old
+/// version and the agent.
+fn relink(shim_dir: &Path, me: &Path) -> (Vec<String>, Vec<(String, String)>) {
+    let mine = env!("CARGO_PKG_VERSION");
+    let mut added = Vec::new();
+    let mut moved = Vec::new();
+    for agent in Agent::ALL {
+        let link = shim_dir.join(agent.command());
+        let name = format!("`{}`", agent.command());
+        match std::fs::canonicalize(&link) {
+            Err(_) => {
+                let _ = std::fs::remove_file(&link);
+                let _ = std::fs::create_dir_all(shim_dir);
+                if std::os::unix::fs::symlink(me, &link).is_ok() {
+                    added.push(name);
+                }
+            }
+            Ok(target) if target != me => {
+                let Some(theirs) = peekme_version(&target) else {
+                    continue;
+                };
+                if newer(mine, &theirs)
+                    && std::fs::remove_file(&link).is_ok()
+                    && std::os::unix::fs::symlink(me, &link).is_ok()
+                {
+                    moved.push((theirs, name));
+                }
+            }
+            Ok(_) => {}
+        }
+    }
+    (added, moved)
+}
+
+/// The version of the peekme binary at `path`; None for anything else.
+fn peekme_version(path: &Path) -> Option<String> {
+    if path.file_name()? != "peekme" {
+        return None;
+    }
+    let out = std::process::Command::new(path)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let text = String::from_utf8(out.stdout).ok()?;
+    let v = text.trim().strip_prefix("peekme ")?;
+    Some(v.to_string())
+}
+
+/// Whether version `a` is newer than `b` (`1.2.3` or `1.2.3-beta.1`; a
+/// prerelease is older than its release).
+fn newer(a: &str, b: &str) -> bool {
+    fn key(v: &str) -> Option<(Vec<u64>, bool, &str)> {
+        let (nums, pre) = v.split_once('-').unwrap_or((v, ""));
+        let nums = nums
+            .split('.')
+            .map(|n| n.parse().ok())
+            .collect::<Option<Vec<u64>>>()?;
+        Some((nums, pre.is_empty(), pre))
+    }
+    match (key(a), key(b)) {
+        (Some(a), Some(b)) => a > b,
+        _ => false,
     }
 }
 
@@ -691,6 +766,56 @@ mod tests {
         let (without, _) = old.split_once("function copilot").unwrap();
         let without = format!("{without}{}", &rest[rest.find("case").unwrap()..]);
         assert!(!same_lines(&without, &new));
+    }
+
+    #[test]
+    fn versions_compare() {
+        assert!(newer("0.3.4", "0.3.1"));
+        assert!(newer("0.10.0", "0.9.9"));
+        assert!(newer("0.4.0-beta.1", "0.3.3"));
+        assert!(newer("0.4.0", "0.4.0-beta.1"));
+        assert!(!newer("0.3.3", "0.3.3"));
+        assert!(!newer("0.3.1", "0.3.4"));
+        assert!(!newer("0.3.4", "junk"));
+    }
+
+    #[test]
+    fn links_to_an_older_peekme_are_moved_to_this_one() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = std::env::temp_dir().join(format!("peekme-relink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let fake = |sub: &str, version: &str| {
+            let d = dir.join(sub);
+            std::fs::create_dir_all(&d).unwrap();
+            let p = d.join("peekme");
+            std::fs::write(&p, format!("#!/bin/sh\necho 'peekme {version}'\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let old = fake("cargo", "0.1.0");
+        let future = fake("future", "99.0.0");
+        let other = dir.join("other").join("codex-wrapper");
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::fs::write(&other, "").unwrap();
+        let me = fake("npm", env!("CARGO_PKG_VERSION"));
+        let shims = dir.join("bin");
+        std::fs::create_dir_all(&shims).unwrap();
+        symlink(&old, shims.join("codex")).unwrap();
+        symlink(&future, shims.join("claude")).unwrap();
+        symlink(dir.join("gone"), shims.join("copilot")).unwrap();
+
+        let (added, moved) = relink(&shims, &me);
+        assert_eq!(added, vec!["`copilot`"]);
+        assert_eq!(moved, vec![("0.1.0".to_string(), "`codex`".to_string())]);
+        let target = |a: &str| std::fs::canonicalize(shims.join(a)).unwrap();
+        assert_eq!(target("codex"), me.canonicalize().unwrap());
+        assert_eq!(target("copilot"), me.canonicalize().unwrap());
+        // A newer peekme and anything that is not peekme stay as they are.
+        assert_eq!(target("claude"), future.canonicalize().unwrap());
+        std::fs::remove_file(shims.join("codex")).unwrap();
+        symlink(&other, shims.join("codex")).unwrap();
+        assert_eq!(relink(&shims, &me), (vec![], vec![]));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

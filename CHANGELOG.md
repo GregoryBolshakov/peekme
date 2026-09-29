@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- With two copies of peekme on one machine (an old one from `cargo install`, a newer one from npm
+  or Homebrew), `codex` could keep starting the old copy. The old copy's `peekme install` had
+  linked `codex` to itself, and the new copy only fixed links that were missing. So Codex got
+  none of the later fixes, for example Option+P inside tmux over SSH, while `claude` worked. Now
+  the newer peekme moves such links to itself when it starts, and says so once.
+
 ## 0.3.3 (2026-09-29)
 
 - Claude Code with Amazon Bedrock, Google Vertex or an API gateway: explanations failed with
