@@ -76,6 +76,10 @@ impl SelectionSource {
 
     #[cfg(not(target_os = "linux"))]
     fn read_system(&mut self) -> Option<String> {
+        if std::env::var_os("SSH_CONNECTION").is_some() {
+            // This machine's clipboard, not the one of the user's terminal.
+            return None;
+        }
         // No PRIMARY selection outside X11/Wayland; the clipboard works when the
         // terminal copies on select.
         arboard::Clipboard::new()

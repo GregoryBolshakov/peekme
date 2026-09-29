@@ -296,6 +296,7 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         tmux_baseline: None,
         boundary: Boundary::default(),
         greek_typed: false,
+        told_tmux_mouse: false,
         tx,
         cwd: std::env::current_dir()?.to_string_lossy().into_owned(),
         viewport_top: None,
@@ -428,6 +429,8 @@ struct App {
     known_from: usize,
     /// The user typed Greek letters: `π` is a letter for them, never the hotkey.
     greek_typed: bool,
+    /// Told the user once that the agent leaves the mouse to the terminal in tmux.
+    told_tmux_mouse: bool,
     tx: Sender<Msg>,
     cwd: String,
     /// Where the child's live area starts, learned from its scroll regions.
@@ -634,14 +637,22 @@ impl App {
                 self.greek_typed = true;
             }
             if t.kind == Kind::OptionP {
-                let hotkey = self.option_p_is_hotkey();
+                let mut hotkey = self.option_p_is_hotkey();
+                if !hotkey && !self.greek_typed && !self.told_tmux_mouse && self.selection_hidden()
+                {
+                    // Option+P can never find a selection here: say why, once,
+                    // instead of typing π without a word.
+                    hotkey = true;
+                    self.told_tmux_mouse = true;
+                }
                 crate::event(
                     "option_p",
                     serde_json::json!({
-                        "hotkey": hotkey,
-                        "source": self.selection_source,
-                        "mouse": self.shadow.mouse_mode(),
-                    }),
+                            "hotkey": hotkey,
+                            "source": self.selection_source,
+                    "hidden": hidden,
+                            "mouse": self.shadow.mouse_mode(),
+                        }),
                 );
                 t.kind = if hotkey { Kind::Hotkey } else { Kind::Key };
             }
@@ -848,6 +859,19 @@ impl App {
         (s, l)
     }
 
+    /// The agent inside tmux leaves the mouse to the terminal, and tmux does
+    /// too (its `mouse` option is off, the default). Codex does that on
+    /// purpose. A drag is then the terminal's own selection: over SSH it lives
+    /// on the user's machine, and on a Mac it is not even in the clipboard.
+    /// peekme can never see it, so Option+P can never work there.
+    fn selection_hidden(&self) -> bool {
+        let remote = std::env::var_os("SSH_CONNECTION").is_some() || cfg!(target_os = "macos");
+        crate::tmux::inside()
+            && remote
+            && !self.shadow.mouse_mode()
+            && crate::tmux::mouse() == Some(false)
+    }
+
     /// The agent's own process: with the job-control helper, the helper's child.
     fn agent_pid(&self) -> Option<u32> {
         let pid = self.pty_pid?;
@@ -884,6 +908,7 @@ impl App {
         let id = self.next_id;
 
         let (selection, located) = self.current_selection(&snap);
+        let hidden = selection.is_none() && self.selection_hidden();
         let mut remembered = None;
         let mut strip = None;
         let (mut peek, lay) = match (&selection, located) {
@@ -909,9 +934,13 @@ impl App {
                 (peek, lay)
             }
             (None, _) => {
-                let msg = "Select some text with the mouse first, then press Alt+P.";
+                let msg = if hidden {
+                    tmux_mouse_message(self.agent)
+                } else {
+                    "Select some text with the mouse first, then press Alt+P.".to_string()
+                };
                 (
-                    PeekBox::message(msg),
+                    PeekBox::message(&msg),
                     message_layout(&snap, self.known_top()),
                 )
             }
@@ -931,6 +960,7 @@ impl App {
                 "selection": selection,
                 "found": remembered.is_some(),
                 "source": self.selection_source,
+                "hidden": hidden,
                 "box_top": lay.box_top,
                 "live_input": strip,
             }),
@@ -1212,6 +1242,17 @@ fn viewport_top(bytes: &[u8], rows: usize) -> Option<usize> {
     found
 }
 
+/// Why peekme sees no selection inside tmux with the mouse left to the terminal.
+fn tmux_mouse_message(agent: Option<Agent>) -> String {
+    let who = agent.map_or("The program", Agent::short);
+    format!(
+        "{who} leaves the mouse to the terminal here, because tmux has the mouse off. So peekme \
+         cannot see what you select. Turn it on with `tmux set -g mouse on` (and add \
+         `set -g mouse on` to ~/.tmux.conf), then restart {}.",
+        agent.map_or("it", Agent::command)
+    )
+}
+
 /// Typed text with Greek letters other than `π`.
 fn types_greek(bytes: &[u8]) -> bool {
     String::from_utf8_lossy(bytes).chars().any(|c| {
@@ -1412,6 +1453,7 @@ mod tests {
             known_from: 0,
             boundary: Boundary::default(),
             greek_typed: false,
+            told_tmux_mouse: false,
             shadow: Shadow::new(cols, rows),
             open: None,
             pending: None,

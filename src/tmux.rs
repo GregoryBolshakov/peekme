@@ -50,6 +50,24 @@ pub fn fresh_buffer(baseline: Option<&str>, max_age: Duration) -> Option<String>
     (!text.trim().is_empty()).then_some(text)
 }
 
+/// tmux's `mouse` option for this pane's session. With it off, Codex leaves
+/// the mouse to the terminal (it asks tmux at startup), so a drag becomes the
+/// terminal's own selection, which peekme cannot read over SSH.
+pub fn mouse() -> Option<bool> {
+    let mut args = vec!["display-message", "-p"];
+    let pane = std::env::var("TMUX_PANE").ok();
+    if let Some(p) = &pane {
+        args.extend(["-t", p]);
+    }
+    args.push("#{mouse}");
+    let out = Command::new(tmux_bin()).args(&args).output().ok()?;
+    match String::from_utf8_lossy(&out.stdout).trim() {
+        "1" | "on" => Some(true),
+        "0" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 fn list_buffers() -> Option<String> {
     let out = Command::new(tmux_bin())
         .args(["list-buffers", "-F", "#{buffer_created} #{buffer_name}"])

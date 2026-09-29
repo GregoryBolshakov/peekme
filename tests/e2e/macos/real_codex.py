@@ -2,7 +2,7 @@
 """The real Codex CLI in the real Terminal and iTerm2 on macOS (for a CI runner).
 
     python3 tests/e2e/macos/real_codex.py [--terminals terminal,iterm2] [--options default,meta]
-                                          [--layers tmux,ssh+tmux] [--out DIR]
+                                          [--layers ssh+tmux,tmux] [--out DIR]
 
 Like run.py, but the agent is the real `codex` (installed with npm), so what
 Codex asks of the terminal (mouse modes, kitty keyboard flags, its own
@@ -189,6 +189,32 @@ def run_case(env, win, case, px, out):
             save("no-start")
             return name, fails
         opened_before = 0
+        if case["mouse"] == "off":
+            # Codex asks tmux, sees mouse off and leaves the mouse to the
+            # terminal: the drag is Terminal's or iTerm2's own selection, which
+            # peekme cannot see over SSH. Option+P says so once, then types π.
+            r = next(i for i, l in enumerate(lines) if WORD in l)
+            c = lines[r].index(WORD)
+            (x1, y1), (x2, y2) = px(c + 1, r + 1), px(c + len(WORD), r + 1)
+            run.sh("cliclick", "-w", "80", f"dd:{x1},{y1}", f"m:{(x1 + x2) // 2},{y1}", f"du:{x2},{y2}")
+            time.sleep(1.0)
+            save("hidden-selected")
+            for i in range(2):
+                n = len(events("open"))
+                run.option_p()
+                time.sleep(1.5)
+                later = events("open")[n:]
+                save(f"hidden-{i}")
+                if i == 0 or case["option"] == "meta":
+                    if check(later and later[-1].get("hidden"), f"press {i + 1}: no box saying why"):
+                        check(any("tmux set -g mouse on" in l for l in pane(env, sock)),
+                              f"press {i + 1}: the box does not say how to fix it")
+                    run.keystroke("key code 53")
+                    time.sleep(1.0)
+                else:
+                    check(not later, "second press opened a box again")
+                    check(any("π" in l for l in pane(env, sock)), "second press did not type π")
+            return name, fails
 
         def explain(word, tag):
             """Drag over `word`, Option+P: a box on it, and π never reaches Codex."""
@@ -257,7 +283,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--terminals", default="terminal,iterm2")
     ap.add_argument("--options", default="default,meta")
-    ap.add_argument("--layers", default="tmux,ssh+tmux")
+    ap.add_argument("--layers", default="ssh+tmux")
     ap.add_argument("--out", default="macos-e2e-out")
     args = ap.parse_args()
     for tool in ("cliclick", "tmux"):
