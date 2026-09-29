@@ -1,9 +1,10 @@
 name: macOS real Codex
 
 # The real Codex CLI in the real Terminal and iTerm2, through tmux and SSH.
-# Run by hand. See tests/e2e/macos/real_codex.py.
+# Runs on release tags and by hand. See tests/e2e/macos/real_codex.py.
 on:
   push:
+    tags: ["v*"]
     branches: ["e2e-mac-codex"]
   workflow_dispatch:
     inputs:

@@ -283,7 +283,10 @@ def run_case(env, win, case, px, out):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--terminals", default="terminal,iterm2")
+    # iTerm2 starts Codex, but System Events keys do not reach it in the one
+    # window per case setup (they did when each case opened iTerm2 again with
+    # its own script). Not solved yet, so Terminal only by default.
+    ap.add_argument("--terminals", default="terminal")
     ap.add_argument("--options", default="default,meta")
     ap.add_argument("--layers", default="ssh+tmux")
     ap.add_argument("--out", default="macos-e2e-out")
