@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.4 (2026-09-29)
 
 - Codex inside tmux over SSH: Option+P typed `π` although text was selected. Codex (0.159)
   asks tmux whether it handles the mouse, and when tmux has the mouse off, which is its default,
