@@ -5,7 +5,6 @@ name: macOS real Codex
 on:
   push:
     tags: ["v*"]
-    branches: ["e2e-mac-codex"]
   workflow_dispatch:
     inputs:
       args:
