@@ -1,5 +1,7 @@
 //! What the user selected, and where it is on screen.
 
+use alacritty_terminal::term::cell::Flags;
+
 use crate::shadow::Snapshot;
 
 /// Reads the user's current mouse selection.
@@ -178,6 +180,42 @@ pub fn locate(snap: &Snapshot, selection: &str, hint: Option<(usize, usize)>) ->
             end: last + 1,
         },
     })
+}
+
+/// Every place `text` appears on screen, each as the cells it covers: per
+/// row, from its first to its last non-blank char (a wide char with its
+/// second half).
+pub fn occurrences(snap: &Snapshot, text: &str) -> Vec<Vec<(usize, usize)>> {
+    let (screen, pos) = snap.text_with_positions();
+    let (norm_screen, map) = normalize(&screen);
+    let (norm_text, _) = normalize(&text.chars().collect::<Vec<_>>());
+    if norm_text.is_empty() {
+        return Vec::new();
+    }
+    find_all(&norm_screen, &norm_text)
+        .into_iter()
+        .map(|s| {
+            let mut cells: Vec<(usize, usize)> = Vec::new();
+            for &i in &map[s..s + norm_text.len()] {
+                if screen[i].is_whitespace() {
+                    continue;
+                }
+                let (r, c) = pos[i];
+                let c = if snap.rows[r][c].flags.contains(Flags::WIDE_CHAR) {
+                    c + 1
+                } else {
+                    c
+                };
+                // Fill the gaps between words on the same row.
+                let from = match cells.last() {
+                    Some(&(lr, lc)) if lr == r => lc + 1,
+                    _ => pos[i].1,
+                };
+                cells.extend((from..=c).map(|c| (r, c)));
+            }
+            cells
+        })
+        .collect()
 }
 
 fn find_all(hay: &[char], needle: &[char]) -> Vec<usize> {

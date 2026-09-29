@@ -18,6 +18,7 @@ pub mod input;
 pub mod install;
 pub mod jobctl;
 pub mod launch;
+pub mod marks;
 pub mod osc52;
 pub mod overlay;
 pub mod render;

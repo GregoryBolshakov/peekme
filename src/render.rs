@@ -93,7 +93,7 @@ pub fn rows(out: &mut String, first: usize, rows: &[Vec<Cell>]) {
         if !continued {
             write!(out, "\x1b[{};1H", first + i + 1).unwrap();
         }
-        row_cells(out, cells);
+        self::cells(out, cells);
         continued = wraps;
     }
 }
@@ -101,10 +101,11 @@ pub fn rows(out: &mut String, first: usize, rows: &[Vec<Cell>]) {
 /// Bytes that repaint one screen row (0-based `row`) with the given cells.
 pub fn row(out: &mut String, row: usize, cells: &[Cell]) {
     write!(out, "\x1b[{};1H", row + 1).unwrap();
-    row_cells(out, cells);
+    self::cells(out, cells);
 }
 
-fn row_cells(out: &mut String, cells: &[Cell]) {
+/// Bytes for `cells` from the cursor on, ending with the pen reset.
+pub fn cells(out: &mut String, cells: &[Cell]) {
     let mut last = String::new();
     for cell in cells {
         if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {

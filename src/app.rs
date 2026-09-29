@@ -15,6 +15,7 @@ use crate::agent::Agent;
 use crate::explain::{self, Explainer, Progress};
 use crate::input::{self, Consumed, Kind, Mouse, Token};
 use crate::jobctl;
+use crate::marks::{self, Marks, Place};
 use crate::osc52::Osc52;
 use crate::overlay::{self, Layout, PeekBox, Status};
 use crate::render::{self, Boundary, SYNC_BEGIN, SYNC_END};
@@ -44,6 +45,8 @@ struct Open {
     /// The selection this box explains, for escalating to the full conversation.
     selection: Option<(String, crate::context::ScreenSel)>,
     deep: bool,
+    /// Where the selection is, to mark it once the answer is complete.
+    mark: Option<(Place, Vec<(usize, usize)>)>,
     snap: Snapshot,
     lay: Layout,
     peek: PeekBox,
@@ -302,6 +305,9 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         viewport_top: None,
         degraded: false,
         size: (cols, rows),
+        marks: Marks::default(),
+        marks_stale: false,
+        marks_all: false,
     };
     let mut stdout = std::io::stdout().lock();
     if crate::tmux::inside() {
@@ -444,6 +450,12 @@ struct App {
     /// Set after a panic in the peek code: from then on, pass everything through.
     degraded: bool,
     size: (u16, u16),
+    /// Selections that got an answer, drawn with a dotted underline.
+    marks: Marks,
+    /// The child wrote something since the marks were last drawn.
+    marks_stale: bool,
+    /// peekme repainted rows itself (closing a box): draw every mark again.
+    marks_all: bool,
 }
 
 impl App {
@@ -466,6 +478,7 @@ impl App {
             self.viewport_top = Some(k);
         }
         self.shadow.advance(bytes);
+        self.marks_stale = !self.marks.is_empty();
         if self.open.is_none() {
             self.boundary.feed(bytes);
         }
@@ -626,6 +639,51 @@ impl App {
         if self.open.as_ref().is_some_and(|o| o.dirty) {
             self.redraw_box(out)?;
         }
+        // Ticks come when the child has been quiet for a moment, so the marks
+        // aren't drawn into the middle of its frame.
+        if (self.marks_stale || self.marks_all)
+            && self.open.is_none()
+            && self.pending.is_none()
+            && self.can_draw()
+        {
+            self.draw_marks(out)?;
+        }
+        Ok(())
+    }
+
+    /// Draw the underline again under marks whose rows the child wrote over.
+    fn draw_marks(&mut self, out: &mut dyn Write) -> Result<()> {
+        let damaged = self.shadow.take_damage();
+        let all = std::mem::take(&mut self.marks_all);
+        self.marks_stale = false;
+        let snap = self.shadow.snapshot();
+        let placed =
+            self.marks
+                .visible(&snap, self.shadow.history_size(), self.shadow.alt_screen());
+        let known = self.known_top();
+        let mut s = String::new();
+        for cells in placed {
+            let touched = all
+                || damaged
+                    .as_ref()
+                    .is_none_or(|rows| cells.iter().any(|(r, _)| rows.contains(r)));
+            if touched && cells.iter().all(|&(r, _)| r >= known) {
+                marks::draw(&mut s, &snap, &cells);
+            }
+        }
+        if s.is_empty() {
+            return Ok(());
+        }
+        crate::event(
+            "marks",
+            serde_json::json!({"all": all, "damaged": damaged, "bytes": s.len()}),
+        );
+        let mut frame = String::from(SYNC_BEGIN);
+        frame.push_str(&s);
+        render::restore_cursor(&mut frame, &snap);
+        frame.push_str(SYNC_END);
+        out.write_all(frame.as_bytes())?;
+        out.flush()?;
         Ok(())
     }
 
@@ -923,6 +981,8 @@ impl App {
         let hidden = selection.is_none() && self.selection_hidden();
         let mut remembered = None;
         let mut strip = None;
+        let mut mark = None;
+        let mut saved = false;
         let (mut peek, lay) = match (&selection, located) {
             (Some(sel), Some(loc)) => {
                 // Keep the child's live area (input line, status) out of the box's
@@ -930,17 +990,40 @@ impl App {
                 strip = self
                     .live_top(&snap)
                     .filter(|&k| loc.last_row < k && k < rows && k >= rows / 3);
-                let lay = overlay::layout_within(
+                let mut lay = overlay::layout_within(
                     self.known_top(),
                     strip.unwrap_or(rows),
                     loc.first_row,
                     loc.last_row,
                 );
                 let mut peek = PeekBox::new(sel);
-                let max_lines = lay.box_height.saturating_sub(2).clamp(3, 12);
-                if let Some(e) = self.start_explain(id, loc.screen.clone(), max_lines, false, false)
-                {
-                    peek.status = Status::Error(e);
+                let first = snap.text_with_positions().1[loc.screen.start];
+                mark = Place::new(
+                    &snap,
+                    sel,
+                    first,
+                    self.shadow.history_size(),
+                    self.shadow.alt_screen(),
+                );
+                if let Some(m) = self.marks.find(sel) {
+                    // Asked before: show that answer, no new call, and mark this copy too.
+                    saved = true;
+                    let (answer, model) = (m.answer.clone(), m.model.clone());
+                    if let Some((place, _)) = &mark {
+                        self.marks.add(sel, &answer, &model, place.clone());
+                    }
+                    peek.text = answer;
+                    peek.model = format!("{model} · saved");
+                    peek.status = Status::Done;
+                    peek.deep_available = true;
+                    lay = overlay::shrink(&lay, peek.fitted_height(snap.cols).max(3));
+                } else {
+                    let max_lines = lay.box_height.saturating_sub(2).clamp(3, 12);
+                    if let Some(e) =
+                        self.start_explain(id, loc.screen.clone(), max_lines, false, false)
+                    {
+                        peek.status = Status::Error(e);
+                    }
                 }
                 remembered = Some((sel.clone(), loc.screen));
                 (peek, lay)
@@ -983,6 +1066,9 @@ impl App {
                 "found": remembered.is_some(),
                 "source": self.selection_source,
                 "hidden": hidden,
+                "saved": saved,
+                "mark": mark.as_ref().map(|(_, c)| c.len()),
+                "alt": self.shadow.alt_screen(),
                 "box_top": lay.box_top,
                 "live_input": strip,
             }),
@@ -998,6 +1084,7 @@ impl App {
             id,
             selection: remembered,
             deep: false,
+            mark,
             snap,
             lay,
             peek,
@@ -1117,6 +1204,7 @@ impl App {
         bytes.extend_from_slice(SYNC_END.as_bytes());
         out.write_all(&bytes)?;
         out.flush()?;
+        self.marks_all = true;
         Ok(())
     }
 
@@ -1158,6 +1246,33 @@ impl App {
             Progress::Done => {
                 open.peek.status = Status::Done;
                 open.peek.deep_available = !open.deep;
+                if let (Some((sel, _)), Some((place, cells))) = (&open.selection, &open.mark)
+                    && !open.peek.text.trim().is_empty()
+                {
+                    self.marks
+                        .add(sel, &open.peek.text, &open.peek.model, place.clone());
+                    crate::event(
+                        "mark",
+                        serde_json::json!({"selection": sel, "cells": cells.len()}),
+                    );
+                    // Underline it right away if the box leaves its rows alone.
+                    let (top, bottom) = open.lay.region;
+                    let box_rows = open.lay.box_top..open.lay.box_top + open.lay.box_height;
+                    if cells
+                        .iter()
+                        .all(|&(r, _)| !(top..bottom).contains(&r) && !box_rows.contains(&r))
+                    {
+                        let mut s = String::from(SYNC_BEGIN);
+                        marks::draw(&mut s, &open.snap, cells);
+                        render::restore_cursor(&mut s, &open.snap);
+                        s.push_str("\x1b[?25l");
+                        if let Some(top) = open.strip_top {
+                            s.push_str(&strip_cursor(&self.shadow.snapshot(), top));
+                        }
+                        s.push_str(SYNC_END);
+                        out.write_all(s.as_bytes())?;
+                    }
+                }
                 // Give back the rows the text doesn't need, once, now that it is complete.
                 let fitted = open.peek.fitted_height(open.snap.cols).max(3);
                 if fitted < open.lay.box_height {
@@ -1212,6 +1327,7 @@ impl App {
             self.close(out, true)?;
         }
         self.pending = None;
+        self.marks_all = true;
         self.viewport_top = None;
         self.size = (cols, rows);
         self.shadow.resize(cols, rows);
@@ -1303,6 +1419,7 @@ fn message_layout(snap: &Snapshot, known_top: usize, peek: &PeekBox) -> Layout {
 mod tests {
     use super::*;
     use crate::shadow::Shadow;
+    use alacritty_terminal::term::cell::Flags;
 
     /// Feed `frame` bytes into a second emulator standing in for the real
     /// terminal and compare its visible cells to the shadow's.
@@ -1356,6 +1473,70 @@ mod tests {
                 "screen not restored for selection {first}..{last}"
             );
         }
+    }
+
+    /// The chars of `row` drawn with a dotted underline.
+    fn dotted(s: &Snapshot, row: usize) -> String {
+        s.rows[row]
+            .iter()
+            .filter(|c| c.flags.contains(Flags::DOTTED_UNDERLINE))
+            .map(|c| c.c)
+            .collect()
+    }
+
+    #[test]
+    fn answered_selection_gets_a_dotted_underline_that_survives_redraws() {
+        let mut app = test_app(40, 12);
+        app.selection = SelectionSource::fixed("true colour");
+        let mut real = Shadow::new(40, 12);
+        let mut step = |app: &mut App, f: &dyn Fn(&mut App, &mut Vec<u8>)| {
+            let mut bytes = Vec::new();
+            f(app, &mut bytes);
+            real.advance(&bytes);
+            real.snapshot()
+        };
+        step(&mut app, &|app, out| {
+            app.on_output(SCREEN, out, &mut Vec::new()).unwrap()
+        });
+        step(&mut app, &|app, out| app.open_peek(out).unwrap());
+        let id = app.open.as_ref().unwrap().id;
+        let answer = "Colour given as 24-bit RGB.";
+        let shown = step(&mut app, &|app, out| {
+            app.on_progress(id, Progress::Delta(answer.into()), out)
+                .unwrap();
+            app.on_progress(id, Progress::Done, out).unwrap();
+        });
+        // Underlined as soon as the answer is complete, box still open.
+        assert_eq!(dotted(&shown, 1), "true colour");
+        let shown = step(&mut app, &|app, out| {
+            app.close(out, false).unwrap();
+            app.tick(out).unwrap();
+        });
+        assert_eq!(dotted(&shown, 1), "true colour");
+        assert_eq!(shown.cursor, app.shadow.snapshot().cursor);
+
+        // The child draws the row again: the underline comes back after it settles.
+        let redraw = b"\x1b[2;1H\x1b[38;5;6mindexed colour\x1b[0m and true colour\x1b[3;5H";
+        let shown = step(&mut app, &|app, out| {
+            app.on_output(redraw, out, &mut Vec::new()).unwrap()
+        });
+        assert_eq!(dotted(&shown, 1), "");
+        let shown = step(&mut app, &|app, out| app.tick(out).unwrap());
+        assert_eq!(dotted(&shown, 1), "true colour");
+        // Other rows are not touched again.
+        let quiet = step(&mut app, &|app, out| {
+            app.on_output(b"\x1b[6;1Hlast line", out, &mut Vec::new())
+                .unwrap();
+            app.tick(out).unwrap();
+            assert!(!String::from_utf8_lossy(out).contains("4:4"));
+        });
+        assert_eq!(dotted(&quiet, 1), "true colour");
+
+        // Selecting it again shows the saved answer, with no new call.
+        step(&mut app, &|app, out| app.open_peek(out).unwrap());
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.peek.text, answer);
+        assert_eq!(open.peek.status, Status::Done);
     }
 
     #[test]
@@ -1494,6 +1675,9 @@ mod tests {
             viewport_top: None,
             degraded: false,
             size: (cols, rows),
+            marks: Marks::default(),
+            marks_stale: false,
+            marks_all: false,
         }
     }
 

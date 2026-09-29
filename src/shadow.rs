@@ -9,7 +9,7 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::test::TermSize;
-use alacritty_terminal::term::{Config, Term, TermMode};
+use alacritty_terminal::term::{Config, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{Processor, Rgb, StdSyncHandler};
 
 /// Replies the emulator wants to send back to the child (answers to queries).
@@ -127,6 +127,17 @@ impl Shadow {
     /// than making the terminal's own selection).
     pub fn mouse_mode(&self) -> bool {
         self.term.mode().intersects(TermMode::MOUSE_MODE)
+    }
+
+    /// Screen rows the child wrote to since the last call, or None when it may
+    /// have changed all of them (a scroll, a clear, a resize).
+    pub fn take_damage(&mut self) -> Option<Vec<usize>> {
+        let rows = match self.term.damage() {
+            TermDamage::Full => None,
+            TermDamage::Partial(lines) => Some(lines.map(|d| d.line).collect()),
+        };
+        self.term.reset_damage();
+        rows
     }
 
     /// Whether the child is drawing on the alternate (full-screen) buffer.
