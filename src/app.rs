@@ -938,17 +938,19 @@ impl App {
                 } else {
                     "Select some text with the mouse first, then press Alt+P.".to_string()
                 };
-                (
-                    PeekBox::message(&msg),
-                    message_layout(&snap, self.known_top()),
-                )
+                {
+                    let peek = PeekBox::message(&msg);
+                    let lay = message_layout(&snap, self.known_top(), &peek);
+                    (peek, lay)
+                }
             }
             (Some(_), None) => {
                 let msg = "The selected text isn't on screen (only visible text can be peeked in this version).";
-                (
-                    PeekBox::message(msg),
-                    message_layout(&snap, self.known_top()),
-                )
+                {
+                    let peek = PeekBox::message(msg);
+                    let lay = message_layout(&snap, self.known_top(), &peek);
+                    (peek, lay)
+                }
             }
         };
 
@@ -1260,9 +1262,13 @@ fn types_greek(bytes: &[u8]) -> bool {
 }
 
 /// Where to show a one-line message: just above the cursor's row.
-fn message_layout(snap: &Snapshot, known_top: usize) -> Layout {
+fn message_layout(snap: &Snapshot, known_top: usize, peek: &PeekBox) -> Layout {
     let rows = snap.rows.len();
-    let h = 3.min(rows);
+    // Tall enough for the whole message, up to half the screen.
+    let h = peek
+        .fitted_height(snap.cols)
+        .clamp(3, (rows / 2).max(3))
+        .min(rows);
     let top = snap.cursor.0.saturating_sub(h).max(known_top).min(rows - h);
     Layout {
         box_top: top,

@@ -44,7 +44,9 @@ def setup_codex(work, tmux):
     with open(config, "w") as f:
         f.write(f'check_for_update_on_startup = false\n{old}\n[projects.{json_str(folder)}]\n'
                 'trust_level = "trusted"\n')
-    shim = os.path.join(work, "bin", "codex-real")
+    # Named `codex`, so peekme knows the agent by the command name.
+    os.makedirs(os.path.join(work, "realbin"))
+    shim = os.path.join(work, "realbin", "codex")
     # Over SSH the remote PATH is minimal, and the npm package needs node.
     path = ":".join([os.path.dirname(os.path.realpath(shutil.which("node") or codex)),
                      os.path.dirname(codex), os.path.dirname(os.path.abspath(tmux))])
@@ -140,7 +142,7 @@ def run_case(env, win, case, px, out):
     os.makedirs(d, exist_ok=True)
     paths = {"events": os.path.join(d, "events.jsonl"), "agent": os.path.join(d, "agent.jsonl")}
     trace = os.path.join(d, "codex.bin")
-    argv, socks = m.build_command(env, dict(case, agent="codex-real", extkeys="off",
+    argv, socks = m.build_command(env, dict(case, agent="../realbin/codex", extkeys="off",
                                             env={"CODEX_TRACE": trace}), paths)
     sock = socks[1] if case["layers"] == "ssh+tmux" else socks[0]
     fails = []
@@ -166,6 +168,10 @@ def run_case(env, win, case, px, out):
             save("no-start")
             return name, fails
         time.sleep(2)
+        if case["terminal"] == "iterm2":
+            # Keys go to the frontmost app: make sure it is iTerm2.
+            run.sh("open", "-a", "iTerm")
+            time.sleep(1)
         run.keystroke('keystroke "/status"')
         time.sleep(1)
         run.keystroke("key code 36")  # Return
