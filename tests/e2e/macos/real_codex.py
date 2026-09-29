@@ -13,7 +13,7 @@ Codex logs nothing about its input, so the window is calibrated with the fake
 agent first (same terminal, same window), the word to drag is found with
 `tmux capture-pane`, and the checks read peekme's event log and the pane.
 """
-import argparse, os, shlex, shutil, subprocess, sys, tempfile, time
+import argparse, os, re, shlex, shutil, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -28,7 +28,7 @@ WORD = "Collaboration"
 WORD2 = "Permissions"
 
 
-def setup_codex(work):
+def setup_codex(work, tmux):
     """A shim that starts the real Codex in a trusted folder with a dummy login."""
     codex = shutil.which("codex")
     if not codex:
@@ -46,10 +46,18 @@ def setup_codex(work):
                 'trust_level = "trusted"\n')
     shim = os.path.join(work, "bin", "codex-real")
     # Over SSH the remote PATH is minimal, and the npm package needs node.
-    path = os.path.dirname(os.path.realpath(shutil.which("node") or codex)) + ":" + os.path.dirname(codex)
+    path = ":".join([os.path.dirname(os.path.realpath(shutil.which("node") or codex)),
+                     os.path.dirname(codex), os.path.dirname(os.path.abspath(tmux))])
+    # CODEX_TRACE: record what Codex writes (BSD `script`) and what tmux tells it.
     with open(shim, "w") as f:
         f.write(f"#!/bin/sh\ncd {shlex.quote(folder)}\nexport PATH={shlex.quote(path)}:\"$PATH\"\n"
-                f"export CODEX_HOME={shlex.quote(home)}\nexec {shlex.quote(codex)} \"$@\"\n")
+                f"export CODEX_HOME={shlex.quote(home)}\n"
+                'if [ -n "$CODEX_TRACE" ]; then\n'
+                "  tmux display-message -p '#{extended-keys-format}|#{mouse}|#{client_termname}|#{version}'"
+                ' > "$CODEX_TRACE.tmux" 2>&1\n'
+                '  env > "$CODEX_TRACE.env"\n'
+                f'  exec script -q "$CODEX_TRACE" {shlex.quote(codex)} "$@"\nfi\n'
+                f"exec {shlex.quote(codex)} \"$@\"\n")
     os.chmod(shim, 0o755)
 
 
@@ -122,7 +130,7 @@ def calibrate(env, win):
         run.screenshot(os.path.join(win.dir, "no-mouse.png"))
         return None
     finally:
-        run.keystroke('keystroke "d" using control down')
+        run.sh("pkill", "-f", "fakeagent.py")
         time.sleep(1)
 
 
@@ -131,7 +139,9 @@ def run_case(env, win, case, px, out):
     d = os.path.join(out, name.replace("|", "_").replace("+", "-"))
     os.makedirs(d, exist_ok=True)
     paths = {"events": os.path.join(d, "events.jsonl"), "agent": os.path.join(d, "agent.jsonl")}
-    argv, socks = m.build_command(env, dict(case, agent="codex-real", extkeys="off"), paths)
+    trace = os.path.join(d, "codex.bin")
+    argv, socks = m.build_command(env, dict(case, agent="codex-real", extkeys="off",
+                                            env={"CODEX_TRACE": trace}), paths)
     sock = socks[1] if case["layers"] == "ssh+tmux" else socks[0]
     fails = []
 
@@ -230,6 +240,12 @@ def run_case(env, win, case, px, out):
             run.keystroke("key code 53")
         save("end")
     finally:
+        try:
+            modes = re.findall(rb"\x1b\[\?(?:1000|1002|1003|1006|1007)[hl]", open(trace, "rb").read())
+            tm = open(trace + ".tmux").read().strip()
+            print(f"      mouse modes from Codex: {[x.decode()[1:] for x in modes]}  tmux: {tm}", flush=True)
+        except OSError:
+            pass
         with open(os.path.join(d, "events.txt"), "w") as f:
             f.write("\n".join(str(e) for e in m.jsonl(paths["events"])))
         for s in socks:
@@ -252,7 +268,7 @@ def main():
     os.makedirs(out, exist_ok=True)
     layers = args.layers.split(",")
     env = m.Env(work, need_ssh=any("ssh" in l for l in layers))
-    setup_codex(work)
+    setup_codex(work, env.tmux)
     if "terminal" in args.terminals:
         run.sh("open", "-a", "Terminal")
         time.sleep(5)
