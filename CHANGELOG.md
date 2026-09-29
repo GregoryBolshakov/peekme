@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1 (2026-09-28)
+
+- Alt+P and Option+P work inside tmux with Claude Code and Codex. Inside tmux these agents do not
+  send a mouse selection to the terminal, they give it to tmux, so peekme saw nothing and Option+P
+  typed `π`. peekme now reads the selection from tmux. This also covers SSH with tmux on the
+  other side.
+- With tmux handling the mouse (`set -g mouse on`) and Claude Code's classic screen, a selection
+  made with tmux can be explained too.
+- Every release is now tested through tmux and SSH in many combinations, and in the real Terminal
+  and iTerm2 on macOS, in their default settings and with Option as Meta.
+
 ## 0.3.0 (2026-09-28)
 
 - peekme works with GitHub Copilot CLI too. Type `copilot` as always, select text, press Alt+P.

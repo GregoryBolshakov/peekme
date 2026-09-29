@@ -1,0 +1,39 @@
+name: macOS terminals
+
+# peekme in the real Terminal and iTerm2, driven by real key and mouse events,
+# directly, inside tmux and over SSH + tmux. See tests/e2e/README.md.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      args:
+        description: "Extra arguments for tests/e2e/macos/run.py"
+        required: false
+        default: ""
+
+jobs:
+  terminals:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - run: cargo build --release --bins
+      - name: Install tmux, cliclick, iTerm2
+        run: |
+          brew install tmux cliclick
+          brew install --cask iterm2
+          xattr -dr com.apple.quarantine /Applications/iTerm.app || true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+          defaults write com.googlecode.iterm2 SUEnableAutomaticChecks -bool false
+          # No window restoration between test cases.
+          defaults write com.googlecode.iterm2 NSQuitAlwaysKeepsWindows -bool false
+          defaults write com.apple.Terminal NSQuitAlwaysKeepsWindows -bool false
+          defaults write NSGlobalDomain NSQuitAlwaysKeepsWindows -bool false
+      - name: Run
+        run: python3 tests/e2e/macos/run.py --out macos-e2e-out ${{ inputs.args }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-e2e
+          path: macos-e2e-out

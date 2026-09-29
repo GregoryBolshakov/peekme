@@ -55,9 +55,22 @@ pub enum Explainer {
     Claude(Arc<Pool>),
     /// Copilot CLI's headless server, one session per explanation.
     Copilot(Arc<copilot::Slot>),
+    /// Canned text, no model: `PEEKME_FAKE_EXPLAINER=1`, for end-to-end tests.
+    Fake,
 }
 
 impl Explainer {
+    /// The agent's explainer, or the canned one when `PEEKME_FAKE_EXPLAINER` is set.
+    pub fn for_agent(agent: Option<Agent>) -> Self {
+        if std::env::var_os("PEEKME_FAKE_EXPLAINER").is_some() {
+            return Explainer::Fake;
+        }
+        match agent {
+            Some(a) => Self::new(a),
+            None => Self::for_other_program(),
+        }
+    }
+
     pub fn new(agent: Agent) -> Self {
         match agent {
             Agent::Codex => Explainer::Codex(Arc::default()),
@@ -83,6 +96,21 @@ impl Explainer {
             },
             Explainer::Claude(pool) => crate::claude::explain::explain(pool, req, tx),
             Explainer::Copilot(slot) => copilot::explain(slot, req, tx),
+            Explainer::Fake => {
+                let sel = req.screen.selected();
+                tx(Progress::Started {
+                    model: "test".into(),
+                    source: if req.deep {
+                        "whole conversation"
+                    } else {
+                        "test"
+                    },
+                });
+                for part in ["Test explanation ", "of ", &format!("⟦{sel}⟧.")] {
+                    tx(Progress::Delta(part.to_string()));
+                }
+                tx(Progress::Done);
+            }
         }
     }
 
@@ -91,6 +119,7 @@ impl Explainer {
             Explainer::Codex(slot) => slot.shutdown(),
             Explainer::Claude(pool) => pool.shutdown(),
             Explainer::Copilot(slot) => slot.shutdown(),
+            Explainer::Fake => {}
         }
     }
 }

@@ -233,16 +233,14 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         carry: Vec::new(),
         in_paste: false,
         selection: SelectionSource::new(),
-        explainer: Some(match agent {
-            Some(a) => Explainer::new(a),
-            None => Explainer::for_other_program(),
-        }),
+        explainer: Some(Explainer::for_agent(agent)),
         agent,
         pty_pid,
         via_helper: helper_pid.is_some(),
         osc52: Osc52::default(),
         app_selection: None,
         last_release: None,
+        last_release_wall: None,
         boundary: Boundary::default(),
         greek_typed: false,
         tx,
@@ -365,6 +363,8 @@ struct App {
     app_selection: Option<AppSelection>,
     /// When and where the last mouse button release went to the child.
     last_release: Option<(Instant, (usize, usize))>,
+    /// The same moment on the wall clock, to compare with tmux buffer times.
+    last_release_wall: Option<std::time::SystemTime>,
     /// Where the child's output stopped: a box may only be drawn between sequences.
     boundary: Boundary,
     /// The user typed Greek letters: `π` is a letter for them, never the hotkey.
@@ -567,11 +567,9 @@ impl App {
                 self.greek_typed = true;
             }
             if t.kind == Kind::OptionP {
-                t.kind = if self.option_p_is_hotkey() {
-                    Kind::Hotkey
-                } else {
-                    Kind::Key
-                };
+                let hotkey = self.option_p_is_hotkey();
+                crate::event("option_p", serde_json::json!({"hotkey": hotkey}));
+                t.kind = if hotkey { Kind::Hotkey } else { Kind::Key };
             }
             self.sniff_colors(&t);
             if matches!(t.bytes.as_slice(), b"\x1b[I" | b"\x1b[O") {
@@ -691,7 +689,9 @@ impl App {
             return true;
         }
         let snap = self.shadow.snapshot();
-        self.current_selection(&snap).1.is_some()
+        self.selection_within(&snap, crate::tmux::FRESH_FOR_OPTION_P)
+            .1
+            .is_some()
     }
 
     /// A press starts a new selection (or is a click that clears the child's);
@@ -702,6 +702,7 @@ impl App {
             Mouse::Release => {
                 if let Some(cell) = input::mouse_cell(bytes) {
                     self.last_release = Some((Instant::now(), cell));
+                    self.last_release_wall = Some(std::time::SystemTime::now());
                 }
             }
             _ => {}
@@ -713,7 +714,16 @@ impl App {
     /// near where the drag ended) or Codex's (reverse video). Otherwise the
     /// terminal's mouse selection (X11 PRIMARY), or `PEEKME_SELECTION`.
     fn current_selection(&mut self, snap: &Snapshot) -> (Option<String>, Option<Located>) {
-        let (text, located) = self.any_selection(snap);
+        self.selection_within(snap, crate::tmux::FRESH)
+    }
+
+    /// Like `current_selection`, taking a tmux buffer only if at most `tmux_age` old.
+    fn selection_within(
+        &mut self,
+        snap: &Snapshot,
+        tmux_age: std::time::Duration,
+    ) -> (Option<String>, Option<Located>) {
+        let (text, located) = self.any_selection(snap, tmux_age);
         // Blank cells selected (a drag over an empty line) is no selection.
         match text {
             Some(t) if !t.trim().is_empty() => (Some(t), located),
@@ -721,12 +731,26 @@ impl App {
         }
     }
 
-    fn any_selection(&mut self, snap: &Snapshot) -> (Option<String>, Option<Located>) {
+    fn any_selection(
+        &mut self,
+        snap: &Snapshot,
+        tmux_age: std::time::Duration,
+    ) -> (Option<String>, Option<Located>) {
         if let Some(s) = &self.app_selection {
             return (
                 Some(s.text.clone()),
                 select::locate(snap, &s.text, Some(s.cell)),
             );
+        }
+        // Inside tmux, Claude Code and Codex copy a selection into a tmux
+        // buffer instead of reporting it with OSC 52.
+        if crate::tmux::inside()
+            && let Some(text) = crate::tmux::fresh_buffer(self.last_release_wall, tmux_age)
+        {
+            let hint = self.last_release.map(|(_, cell)| cell);
+            if let Some(loc) = select::locate(snap, &text, hint) {
+                return (Some(text), Some(loc));
+            }
         }
         // Reverse video means "selected" in Codex only; other TUIs use it for
         // tabs and menus.
@@ -806,6 +830,15 @@ impl App {
         };
 
         peek.child_name = self.agent.map_or("Output", Agent::short);
+        crate::event(
+            "open",
+            serde_json::json!({
+                "selection": selection,
+                "found": remembered.is_some(),
+                "box_top": lay.box_top,
+                "live_input": strip,
+            }),
+        );
         let mut frame = overlay::open_frame(&snap, &lay, &peek);
         if let Some(top) = strip {
             frame.push_str(&strip_cursor(&snap, top));
@@ -887,6 +920,7 @@ impl App {
         }
         let screen = screen.clone();
         let max_lines = open.lay.box_height.saturating_sub(2).clamp(3, 12);
+        crate::event("escalate", serde_json::json!({"selection": sel}));
         self.next_id += 1;
         let id = self.next_id;
         let err = self.start_explain(id, screen, max_lines, true, force);
@@ -916,6 +950,7 @@ impl App {
         let Some(open) = self.open.take() else {
             return Ok(());
         };
+        crate::event("close", serde_json::json!({"held_bytes": open.held.len()}));
         let mut bytes = Vec::new();
         bytes.extend_from_slice(SYNC_BEGIN.as_bytes());
         if !skip_repaint {
@@ -1276,6 +1311,7 @@ mod tests {
             osc52: Osc52::default(),
             app_selection: None,
             last_release: None,
+            last_release_wall: None,
             boundary: Boundary::default(),
             greek_typed: false,
             shadow: Shadow::new(cols, rows),

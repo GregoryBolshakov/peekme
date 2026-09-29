@@ -22,6 +22,7 @@ pub mod overlay;
 pub mod render;
 pub mod select;
 pub mod shadow;
+pub mod tmux;
 
 pub fn log_path() -> std::path::PathBuf {
     let base = std::env::var_os("XDG_STATE_HOME")
@@ -46,5 +47,28 @@ pub fn log(msg: &str) {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         let _ = std::io::Write::write_all(&mut f, format!("{secs} {msg}\n").as_bytes());
+    }
+}
+
+/// Append one event to `PEEKME_EVENT_LOG` as a JSON line, if it is set: what
+/// peekme decided (a box opened, with which selection; a key was typed or
+/// taken as the shortcut). For the end-to-end tests and for bug reports.
+pub fn event(kind: &str, fields: serde_json::Value) {
+    let Some(path) = std::env::var_os("PEEKME_EVENT_LOG") else {
+        return;
+    };
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let mut line = serde_json::json!({"t": ms as u64, "event": kind});
+    if let (Some(obj), serde_json::Value::Object(extra)) = (line.as_object_mut(), fields) {
+        obj.extend(extra);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes());
     }
 }
