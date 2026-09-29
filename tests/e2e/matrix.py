@@ -104,6 +104,16 @@ class Term:
             f.write(self.data)
 
 
+def clean_env(**extra):
+    """This process's environment without what would change peekme's behaviour:
+    TMUX (we may run inside tmux), PEEKME_ACTIVE (inside peekme, a new peekme
+    steps aside) and the Mac terminal hints."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("TMUX", "TMUX_PANE", "PEEKME_ACTIVE", "TERM_PROGRAM", "LC_TERMINAL")}
+    env.update(extra)
+    return env
+
+
 def jsonl(path):
     try:
         with open(path, encoding="utf-8") as f:
@@ -226,8 +236,7 @@ def run_case(env, case, out):
     os.makedirs(d, exist_ok=True)
     paths = {"events": os.path.join(d, "events.jsonl"), "agent": os.path.join(d, "agent.jsonl")}
     argv, socks = build_command(env, case, paths)
-    term_env = dict(os.environ, TERM="xterm-256color")
-    term_env.pop("TMUX", None)
+    term_env = clean_env(TERM="xterm-256color")
     t = Term(argv, term_env, os.path.join(d, "terminal.bin"))
     fails = []
     hotkey = PROFILES[case["profile"]]
@@ -270,19 +279,47 @@ def run_case(env, case, out):
         time.sleep(0.3)
         t.send(b"\x1b")
         check(wait(lambda: events("close")), "Esc did not close the box")
-        time.sleep(1.0)
+        time.sleep(0.6)
         after = t.screen()
         check(after[:ROWS // 2] == before[:ROWS // 2], "screen not restored after Esc")
-        # 5. With nothing selected, π is typed (Mac terminal default only).
+        # 5. A click clears the selection. Right away (users are quick, and
+        # that is when a stale copy could still be taken), the shortcut must
+        # not explain the old text: π is typed, Alt+P shows the hint.
+        t.send(CLICK)
+        wait(lambda: any("\x1b[<0;30;6m" in e["raw"] for e in agent_log("input")), 4)
+        time.sleep(0.2)
+        n = len(events("open"))
+        t.send(hotkey)
         if case["profile"] == "mac-default":
-            t.send(CLICK)
-            time.sleep(0.6)
-            n = len(events("open"))
-            t.send("π".encode())
-            check(wait(lambda: any("π" in e["raw"] for e in agent_log("input"))),
+            check(wait(lambda: any("π" in e["raw"] for e in agent_log("input")), 4),
                   "π with nothing selected was not typed")
             time.sleep(0.3)
             check(len(events("open")) == n, "π with nothing selected opened a box")
+        else:
+            later = wait(lambda: events("open")[n:], 4)
+            check(later and not later[-1].get("found"),
+                  f"Alt+P with nothing selected explained {later[-1].get('selection')!r}" if later
+                  else "Alt+P with nothing selected did nothing")
+            t.send(b"\x1b")
+            time.sleep(0.3)
+        # 6. Drag (the agent copies), click away at once, shortcut: the copy made
+        # just before the click must not count (inside tmux the agent's copy
+        # is a tmux buffer, and tmux times buffers only to the second).
+        t.send(DRAG)
+        wait(lambda: len(agent_log("selected")) >= 2, 4)
+        time.sleep(0.15)
+        t.send(CLICK)
+        wait(lambda: sum("\x1b[<0;30;6m" in e["raw"] for e in agent_log("input")) >= 2, 4)
+        time.sleep(0.15)
+        n = len(events("open"))
+        t.send(hotkey)
+        time.sleep(1.0)
+        quick = events("open")[n:]
+        check(not (quick and quick[-1].get("found")),
+              f"a copy cleared by a click was explained: {quick[-1].get('selection')!r}" if quick else "")
+        if quick:
+            t.send(b"\x1b")
+            time.sleep(0.3)
     finally:
         t.send(b"\x04")
         time.sleep(0.2)

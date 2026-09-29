@@ -258,6 +258,56 @@ fn install_shim(shim_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Bring an existing setup up to date: a newer peekme may know more agents
+/// than the block and links an older `peekme install` wrote (updating the
+/// binary through cargo, npm or Homebrew never runs peekme). Only touches a
+/// setup the user made: our marked block, our fish file, our links. Returns a
+/// line to show when something changed.
+pub fn refresh() -> Option<String> {
+    if !installed() {
+        return None;
+    }
+    let shim_dir = launch::shim_dir()?;
+    let me = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let mut added = Vec::new();
+    for agent in Agent::ALL {
+        let link = shim_dir.join(agent.command());
+        let works = std::fs::canonicalize(&link).is_ok();
+        if !works {
+            let _ = std::fs::remove_file(&link);
+            let _ = std::fs::create_dir_all(&shim_dir);
+            if std::os::unix::fs::symlink(&me, &link).is_ok() {
+                added.push(format!("`{}`", agent.command()));
+            }
+        }
+    }
+    let mut rewrote = false;
+    for t in targets().ok()? {
+        let Ok(old) = std::fs::read_to_string(&t.path) else {
+            continue;
+        };
+        if !old.contains(BEGIN) {
+            continue;
+        }
+        let new = match t.shell {
+            Shell::Fish => fish_file(&shim_dir),
+            _ => upsert_block(&old, &posix_block(&shim_dir)),
+        };
+        if new != old && write_file(&t.path, &new).is_ok() {
+            rewrote = true;
+        }
+    }
+    match (added.is_empty(), rewrote) {
+        (true, false) => None,
+        (false, _) => Some(format!(
+            "peekme: updated your shell setup, so {} now open with peekme too \
+             (in new terminals).",
+            added.join(" and ")
+        )),
+        (true, true) => Some("peekme: updated your shell setup.".into()),
+    }
+}
+
 pub fn install() -> Result<()> {
     let shim_dir = launch::shim_dir().ok_or_else(|| anyhow!("HOME is not set"))?;
     install_shim(&shim_dir)?;

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.2 (2026-09-28)
+
+- Updating peekme now also updates your shell setup. Before, a setup made with an older version
+  only knew `codex`, so after updating, `claude` and `copilot` still started without peekme until
+  you ran `peekme install` again. Now peekme adds the missing agents the first time it starts
+  and tells you once.
+- Inside tmux, a selection you cleared with a click right after making it was still explained by
+  the next Alt+P or Option+P. peekme now only takes a copy the agent made after your last mouse
+  release.
+
 ## 0.3.1 (2026-09-28)
 
 - Alt+P and Option+P work inside tmux with Claude Code and Codex. Inside tmux these agents do not

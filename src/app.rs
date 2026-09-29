@@ -240,7 +240,7 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         osc52: Osc52::default(),
         app_selection: None,
         last_release: None,
-        last_release_wall: None,
+        tmux_baseline: None,
         boundary: Boundary::default(),
         greek_typed: false,
         tx,
@@ -363,8 +363,9 @@ struct App {
     app_selection: Option<AppSelection>,
     /// When and where the last mouse button release went to the child.
     last_release: Option<(Instant, (usize, usize))>,
-    /// The same moment on the wall clock, to compare with tmux buffer times.
-    last_release_wall: Option<std::time::SystemTime>,
+    /// Inside tmux: tmux's newest paste buffer when the last mouse release went
+    /// to the agent. Only a newer buffer is the agent's copy of a selection.
+    tmux_baseline: Option<String>,
     /// Where the child's output stopped: a box may only be drawn between sequences.
     boundary: Boundary,
     /// The user typed Greek letters: `π` is a letter for them, never the hotkey.
@@ -702,7 +703,10 @@ impl App {
             Mouse::Release => {
                 if let Some(cell) = input::mouse_cell(bytes) {
                     self.last_release = Some((Instant::now(), cell));
-                    self.last_release_wall = Some(std::time::SystemTime::now());
+                    // Before the agent gets the release, so it cannot copy first.
+                    if crate::tmux::inside() {
+                        self.tmux_baseline = crate::tmux::newest_buffer();
+                    }
                 }
             }
             _ => {}
@@ -745,7 +749,7 @@ impl App {
         // Inside tmux, Claude Code and Codex copy a selection into a tmux
         // buffer instead of reporting it with OSC 52.
         if crate::tmux::inside()
-            && let Some(text) = crate::tmux::fresh_buffer(self.last_release_wall, tmux_age)
+            && let Some(text) = crate::tmux::fresh_buffer(self.tmux_baseline.as_deref(), tmux_age)
         {
             let hint = self.last_release.map(|(_, cell)| cell);
             if let Some(loc) = select::locate(snap, &text, hint) {
@@ -1311,7 +1315,7 @@ mod tests {
             osc52: Osc52::default(),
             app_selection: None,
             last_release: None,
-            last_release_wall: None,
+            tmux_baseline: None,
             boundary: Boundary::default(),
             greek_typed: false,
             shadow: Shadow::new(cols, rows),

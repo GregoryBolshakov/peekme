@@ -99,6 +99,11 @@ fn main() {
     if plain_run {
         install::first_run_question();
     }
+    // An older `peekme install` may predate some agents: fix that quietly
+    // before starting (only if the user set peekme up at all).
+    if let Some(note) = install::refresh() {
+        eprintln!("{note}");
+    }
 
     // A panic is logged, never printed over the child's screen. The loop in
     // `app` catches panics in the peek code and keeps passing the agent through.

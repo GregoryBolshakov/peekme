@@ -11,7 +11,7 @@ room, like Peek in VS Code. Esc closes it and the screen is exactly as before.
 The explanation comes from a small, fast model and it knows the conversation. If you select
 "its split panes" in an answer that recommends Kitty, it tells you it is about Kitty.
 
-Status: 0.3.1. Tested with Codex 0.157, Claude Code 2.1.283 and Copilot CLI 1.0.89 on Linux, also
+Status: 0.3.2. Tested with Codex 0.157, Claude Code 2.1.283 and Copilot CLI 1.0.89 on Linux, also
 inside tmux and over SSH. On macOS it is tested in Terminal and iTerm2 with a stand-in agent, also
 inside tmux and over SSH.
 
@@ -55,8 +55,8 @@ command copilot    # run plain Copilot CLI once
 
 The first time you run `peekme` on its own, it asks if it should do `peekme install` for you.
 
-Upgrading from an older peekme: run `peekme install` once more, so that `claude` and `copilot`
-get peekme too.
+When you update peekme and the new version knows more agents, it adds them to your shell setup by
+itself the next time it starts, and says so once. They work in new terminals.
 
 ## Use
 

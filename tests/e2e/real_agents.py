@@ -72,9 +72,8 @@ def run_case(env, case, out):
                       shlex.quote(m.PEEKME), shlex.quote(agent), *map(shlex.quote, args)])
     case = dict(case, extkeys="off")
     argv, socks = layered(env, case, inner)
-    term_env = {k: v for k, v in os.environ.items()
-                if not k.startswith(("CLAUDECODE", "CLAUDE_CODE_", "TMUX"))}
-    term_env["TERM"] = "xterm-256color"
+    term_env = {k: v for k, v in m.clean_env(TERM="xterm-256color").items()
+                if not k.startswith(("CLAUDECODE", "CLAUDE_CODE_"))}
     t = m.Term(argv, term_env, os.path.join(d, "terminal.bin"))
     fails = []
     hotkey = m.PROFILES[case["profile"]]

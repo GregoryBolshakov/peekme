@@ -27,17 +27,21 @@ fn unix(t: SystemTime) -> u64 {
     t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// Text of the newest paste buffer created at or after `since` (the last
-/// mouse release) and no older than `max_age`.
-pub fn fresh_buffer(since: Option<SystemTime>, max_age: Duration) -> Option<String> {
-    let now = SystemTime::now();
-    let oldest = unix(now.checked_sub(max_age).unwrap_or(UNIX_EPOCH))
-        .max(since.map_or(0, |s| unix(s).saturating_sub(1)));
-    let out = Command::new(tmux_bin())
-        .args(["list-buffers", "-F", "#{buffer_created} #{buffer_name}"])
-        .output()
-        .ok()?;
-    let name = newest(&String::from_utf8_lossy(&out.stdout), oldest)?;
+/// Name of tmux's newest paste buffer, if any. Taken when a mouse release is
+/// forwarded to the agent (before the agent sees it): only a buffer newer than
+/// this one can be the agent's copy of that selection.
+pub fn newest_buffer() -> Option<String> {
+    newest(&list_buffers()?, 0).map(|(_, name)| name)
+}
+
+/// Text of the newest paste buffer if it is not `baseline` (the newest one at
+/// the last mouse release) and at most `max_age` old.
+pub fn fresh_buffer(baseline: Option<&str>, max_age: Duration) -> Option<String> {
+    let oldest = unix(SystemTime::now().checked_sub(max_age).unwrap_or(UNIX_EPOCH));
+    let (_, name) = newest(&list_buffers()?, oldest)?;
+    if Some(name.as_str()) == baseline {
+        return None; // nothing copied since the last release
+    }
     let text = Command::new(tmux_bin())
         .args(["show-buffer", "-b", &name])
         .output()
@@ -46,16 +50,23 @@ pub fn fresh_buffer(since: Option<SystemTime>, max_age: Duration) -> Option<Stri
     (!text.trim().is_empty()).then_some(text)
 }
 
-/// The newest buffer in `list-buffers` output created at or after `oldest`.
-fn newest(list: &str, oldest: u64) -> Option<String> {
+fn list_buffers() -> Option<String> {
+    let out = Command::new(tmux_bin())
+        .args(["list-buffers", "-F", "#{buffer_created} #{buffer_name}"])
+        .output()
+        .ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// (created, name) of the newest buffer in `list-buffers` output created at or
+/// after `oldest`. tmux lists the newest first, and names new buffers uniquely.
+fn newest(list: &str, oldest: u64) -> Option<(u64, String)> {
     list.lines()
         .filter_map(|l| {
             let (created, name) = l.split_once(' ')?;
             Some((created.parse::<u64>().ok()?, name.to_string()))
         })
-        .filter(|(created, _)| *created >= oldest)
-        .max_by_key(|(created, _)| *created)
-        .map(|(_, name)| name)
+        .find(|(created, _)| *created >= oldest)
 }
 
 #[cfg(test)]
@@ -64,9 +75,13 @@ mod tests {
 
     #[test]
     fn picks_the_newest_fresh_buffer() {
-        let list = "1790000100 buffer2\n1790000200 buffer5\n1790000150 buffer3\n";
-        assert_eq!(newest(list, 1790000000).as_deref(), Some("buffer5"));
-        assert_eq!(newest(list, 1790000201), None, "all older than the release");
+        // `list-buffers` prints the newest first.
+        let list = "1790000200 buffer5\n1790000150 buffer3\n1790000100 buffer2\n";
+        assert_eq!(
+            newest(list, 1790000000).map(|b| b.1).as_deref(),
+            Some("buffer5")
+        );
+        assert_eq!(newest(list, 1790000201), None, "all too old");
         assert_eq!(newest("", 0), None);
     }
 }
