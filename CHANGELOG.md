@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.3 (2026-09-29)
 
 - Claude Code with Amazon Bedrock, Google Vertex or an API gateway: explanations failed with
   "Could not load AWS credentials" or "Not logged in", although Claude Code itself worked. The
