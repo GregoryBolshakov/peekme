@@ -19,6 +19,64 @@ pub fn inside() -> bool {
     std::env::var_os("TMUX").is_some_and(|v| !v.is_empty())
 }
 
+/// Keys that mean Option+P / Alt+P to tmux: Option as Meta, and `π` from a
+/// Mac terminal in its default setting.
+const OPTION_P_KEYS: [&str; 2] = ["M-p", "π"];
+const COPY_TABLES: [&str; 2] = ["copy-mode", "copy-mode-vi"];
+
+/// A drag that tmux handles (`mouse on`, the agent not taking the mouse)
+/// puts the pane in copy mode. With `copy-selection` as the drag-end binding
+/// it stays there, and every key goes to tmux, not to peekme: Option+P did
+/// nothing. So peekme marks its pane and binds Option+P in the copy-mode
+/// tables: in a peekme pane it copies what is selected, leaves copy mode and
+/// hands peekme Alt+P, which then reads that copy. In other panes the key
+/// does nothing, as before. Keys the user bound already are left alone.
+pub fn prepare_copy_mode() {
+    let Ok(pane) = std::env::var("TMUX_PANE") else {
+        return;
+    };
+    run(&["set-option", "-p", "-t", &pane, "@peekme", "1"]);
+    let action = "if-shell -F '#{selection_present}' \
+                  'send-keys -X copy-selection-and-cancel' 'send-keys -X cancel' ; \
+                  send-keys M-p";
+    for table in COPY_TABLES {
+        for key in OPTION_P_KEYS {
+            let bound = Command::new(tmux_bin())
+                .args(["list-keys", "-T", table, key])
+                .output()
+                .is_ok_and(|o| o.status.success() && !o.stdout.is_empty());
+            if !bound {
+                run(&[
+                    "bind-key",
+                    "-T",
+                    table,
+                    key,
+                    "if-shell",
+                    "-F",
+                    "#{@peekme}",
+                    action,
+                ]);
+            }
+        }
+    }
+}
+
+/// Unmark the pane when peekme ends (the agent may be run without it next).
+pub fn release_copy_mode() {
+    if let Ok(pane) = std::env::var("TMUX_PANE") {
+        run(&["set-option", "-p", "-u", "-t", &pane, "@peekme"]);
+    }
+}
+
+fn run(args: &[&str]) {
+    let _ = Command::new(tmux_bin())
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 fn tmux_bin() -> String {
     std::env::var("PEEKME_TMUX_BIN").unwrap_or_else(|_| "tmux".into())
 }
