@@ -83,6 +83,11 @@ default. A selection is then your terminal's own, and over SSH peekme cannot rea
 `set -g mouse on` to `~/.tmux.conf` and restart Codex. peekme tells you this the first time you
 press Option+P there.
 
+With tmux's mouse on, a drag over text the agent doesn't take is a tmux selection, and Option+P
+explains it, also when your tmux stays in copy mode after the drag. A selection made with Option
+held is your terminal's own. Over SSH no program on the other side can read it, so drag without
+Option there.
+
 In Claude Code, Alt+P opens the model picker. With peekme it explains the selection instead.
 `/model` still opens the model picker.
 

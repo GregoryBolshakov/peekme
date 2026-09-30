@@ -27,7 +27,7 @@ AGENTS = {
     "claude-classic": ("claude", ["--settings", '{"tui":"default"}'], "Claude Code", "Claude", []),
     # No update prompt (only for this run; the user's config is not touched).
     "codex": ("codex", ["-c", "check_for_update_on_startup=false"], "OpenAI Codex", "OpenAI",
-              [("Update available", b"\x1b")]),
+              [("Update available", b"\x1b"), ("Hooks need review", b"\x1b")]),
     "copilot": ("copilot", ["--no-auto-update"], "uses AI", "Copilot", [("Do you trust", b"\r")]),
 }
 

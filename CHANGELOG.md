@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Option+P did nothing after a tmux selection when tmux stays in copy mode after the drag (a
+  `MouseDragEnd1Pane` binding to `copy-selection`, common in tmux configs). tmux took the key for
+  its copy mode. peekme now binds Option+P in tmux's copy mode for its own pane: it leaves copy
+  mode and explains what you selected. Other panes are not affected, and a key you bound
+  yourself is left as it is.
+- Over SSH, Alt+P with nothing peekme can see now says that text selected with Option held stays
+  in your terminal. iTerm2 and Terminal don't give it to programs, so peekme can't read it.
+
 ## 0.3.4 (2026-09-29)
 
 - Codex inside tmux over SSH: Option+P typed `π` although text was selected. Codex (0.159)
