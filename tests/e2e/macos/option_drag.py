@@ -76,7 +76,7 @@ def main():
                 events = os.path.join(d, "events.jsonl")
                 trace = os.path.join(d, "codex.bin")
                 sock = f"od{n}"
-                inner = " ".join(["env", f"PEEKME_EVENT_LOG={shlex.quote(events)}", "PEEKME_FAKE_EXPLAINER=1",
+                inner = " ".join(["env", f"PEEKME_EVENT_LOG={shlex.quote(events)}", "PEEKME_FAKE_EXPLAINER=1", "PEEKME_LOG_INPUT=1",
                                   f"CODEX_TRACE={shlex.quote(trace)}", "TERM_PROGRAM=", "LC_TERMINAL=",
                                   shlex.quote(m.PEEKME), shlex.quote(os.path.join(work, "realbin", "codex"))])
                 remote = (f"LANG=C.UTF-8 LC_ALL=C.UTF-8 {shlex.quote(env.tmux)} -L {sock} "
@@ -114,6 +114,10 @@ def main():
                 if not m.wait(lambda: any(rc.WORD in l for l in pane()), 20, 0.5):
                     res["error"] = "no /status"
                     save("no-status")
+                    run.option_p()
+                    time.sleep(2)
+                    res["events"] = m.jsonl(events)
+                    res["pane"] = pane()[-8:]
                     continue
                 time.sleep(3)
                 lines = pane()

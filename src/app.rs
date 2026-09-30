@@ -630,6 +630,10 @@ impl App {
     }
 
     fn on_input(&mut self, bytes: &[u8], out: &mut dyn Write, child: &mut dyn Write) -> Result<()> {
+        if std::env::var_os("PEEKME_LOG_INPUT").is_some() {
+            let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+            crate::event("input", serde_json::json!({"hex": hex}));
+        }
         let mut pasting = self.in_paste;
         let tokens = input::tokenize(bytes, &mut self.carry, &mut self.in_paste);
         let mut forward: Vec<u8> = Vec::new();
