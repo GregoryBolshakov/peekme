@@ -38,8 +38,22 @@ jobs:
           npm i -g @anthropic-ai/claude-code
           claude --version
           python3 tests/e2e/macos/claude_optdrag.py macos-option-drag-out
-      - name: Run
-        run: python3 tests/e2e/macos/option_drag.py --plain --terminals iterm2 --options default --out macos-option-drag-out ${{ inputs.args }}
+      - name: Run (tmux 3.7, Option+P after 1 s and after 25 s)
+        run: |
+          python3 tests/e2e/macos/option_drag.py --plain --terminals iterm2 --options default --out macos-option-drag-out/t37-1
+          python3 tests/e2e/macos/option_drag.py --plain --terminals iterm2 --options default --delay 25 --out macos-option-drag-out/t37-25
+      - name: tmux 3.2a in a system folder (older Linux desktops)
+        run: |
+          curl -sSLO https://github.com/tmux/tmux/releases/download/3.2a/tmux-3.2a.tar.gz
+          tar xzf tmux-3.2a.tar.gz && cd tmux-3.2a
+          ./configure --prefix=/usr/local CFLAGS="-I$(brew --prefix)/include -I$(brew --prefix ncurses)/include" LDFLAGS="-L$(brew --prefix)/lib -L$(brew --prefix ncurses)/lib" > /dev/null
+          make -j4 > /dev/null && sudo make install > /dev/null
+          brew unlink tmux
+          hash -r; which tmux; tmux -V
+      - name: Run (tmux 3.2a)
+        run: |
+          python3 tests/e2e/macos/option_drag.py --plain --terminals iterm2 --options default --out macos-option-drag-out/t32-1
+          python3 tests/e2e/macos/option_drag.py --plain --terminals iterm2 --options default --delay 25 --out macos-option-drag-out/t32-25
       - uses: actions/upload-artifact@v4
         if: always()
         with:

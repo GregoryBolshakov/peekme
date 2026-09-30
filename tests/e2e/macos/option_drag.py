@@ -40,6 +40,7 @@ def main():
     ap.add_argument("--options", default="default,meta")
     ap.add_argument("--out", default="macos-option-drag-out")
     ap.add_argument("--plain", action="store_true", help="drag without Option held")
+    ap.add_argument("--delay", type=float, default=1.0, help="seconds between the drag and Option+P")
     args = ap.parse_args()
     work = tempfile.mkdtemp(prefix="peekme-optdrag-")
     out = os.path.abspath(args.out)
@@ -63,7 +64,7 @@ def main():
                 name = f"{terminal}-{option}"
                 d = os.path.join(out, name)
                 os.makedirs(d, exist_ok=True)
-                res = {"case": name}
+                res = {"case": f"{name}-delay{args.delay:g}"}
                 report.append(res)
                 # Pixels of the cells, from the fake agent in the same kind of window.
                 win = rc.Window(env, terminal, option, d)
@@ -135,6 +136,8 @@ def main():
                 save("selected")
                 res["clipboard_after_drag"] = pbpaste()
                 res["tmux_buffers_after_drag"] = run.sh(env.tmux, "-L", sock, "list-buffers").stdout
+                res["tmux_version"] = run.sh(env.tmux, "-V").stdout.strip()
+                time.sleep(max(0.0, args.delay - 1.0))
                 run.option_p()
                 time.sleep(2)
                 save("after-option-p")
