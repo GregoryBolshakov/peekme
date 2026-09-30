@@ -61,6 +61,35 @@ def setup_codex(work, tmux):
                 f'  exec script -q "$CODEX_TRACE" {shlex.quote(codex)} "$@"\nfi\n'
                 f"exec {shlex.quote(codex)} \"$@\"\n")
     os.chmod(shim, 0o755)
+    warm_up(shim)
+
+
+def warm_up(shim):
+    """The first Codex start in a new CODEX_HOME drops what is typed into it
+    (the first real case always failed to show /status). Start it once here."""
+    import pty, select
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ["TERM"] = "xterm-256color"
+        os.execv(shim, [shim])
+    end = time.time() + 12
+    sent = False
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.2)
+        if r:
+            try:
+                data = os.read(fd, 65536)
+            except OSError:
+                break
+            if b"\x1b[6n" in data:
+                os.write(fd, b"\x1b[1;1R")
+        if not sent and time.time() > end - 6:
+            os.write(fd, b"/status")
+            time.sleep(1)
+            os.write(fd, b"\r")
+            sent = True
+    os.kill(pid, 9)
+    os.waitpid(pid, 0)
 
 
 def json_str(s):
