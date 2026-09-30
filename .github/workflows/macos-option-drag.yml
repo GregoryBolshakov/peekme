@@ -1,0 +1,41 @@
+name: macOS Option+drag
+
+# The real Codex CLI in the real Terminal and iTerm2, through tmux and SSH.
+# Runs on release tags and by hand. See tests/e2e/macos/real_codex.py.
+on:
+  push:
+    branches: ["e2e-option-drag"]
+  workflow_dispatch:
+    inputs:
+      args:
+        description: "Extra arguments for tests/e2e/macos/real_codex.py"
+        required: false
+        default: ""
+
+jobs:
+  codex:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - run: cargo build --release --bins
+      - name: Install tmux, cliclick, iTerm2, Codex
+        run: |
+          brew install tmux cliclick
+          brew install --cask iterm2
+          xattr -dr com.apple.quarantine /Applications/iTerm.app || true
+          defaults write com.googlecode.iterm2 PromptOnQuit -bool false
+          defaults write com.googlecode.iterm2 SUEnableAutomaticChecks -bool false
+          defaults write com.googlecode.iterm2 NSQuitAlwaysKeepsWindows -bool false
+          defaults write com.apple.Terminal NSQuitAlwaysKeepsWindows -bool false
+          defaults write NSGlobalDomain NSQuitAlwaysKeepsWindows -bool false
+          npm i -g @openai/codex
+          codex --version
+          tmux -V
+      - name: Run
+        run: python3 tests/e2e/macos/option_drag.py --out macos-option-drag-out ${{ inputs.args }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-option-drag
+          path: macos-option-drag-out
