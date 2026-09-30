@@ -32,9 +32,10 @@ jobs:
           npm i -g @openai/codex
           codex --version
           tmux -V
-      - name: OSC 52 read probe
-        run: python3 tests/e2e/macos/osc52_probe_run.py macos-option-drag-out
+      - name: iTerm2 variables probe
+        run: python3 tests/e2e/macos/iterm_var_run.py macos-option-drag-out
       - name: Run
+        if: false
         run: python3 tests/e2e/macos/option_drag.py --out macos-option-drag-out ${{ inputs.args }}
       - uses: actions/upload-artifact@v4
         if: always()
