@@ -39,6 +39,7 @@ def main():
     ap.add_argument("--terminals", default="iterm2,terminal")
     ap.add_argument("--options", default="default,meta")
     ap.add_argument("--out", default="macos-option-drag-out")
+    ap.add_argument("--plain", action="store_true", help="drag without Option held")
     args = ap.parse_args()
     work = tempfile.mkdtemp(prefix="peekme-optdrag-")
     out = os.path.abspath(args.out)
@@ -121,8 +122,11 @@ def main():
                 (x1, y1), (x2, y2) = px(c + 1, r + 1), px(c + len(rc.WORD), r + 1)
                 subprocess.run(["pbcopy"], input=b"before")
                 # Option held through the drag: the terminal's own selection.
-                run.sh("cliclick", "-w", "80", "kd:alt", f"dd:{x1},{y1}", f"m:{(x1 + x2) // 2},{y1}",
-                       f"du:{x2},{y2}", "ku:alt")
+                # Over three rows (the calibration can be a row off in iTerm2).
+                (x1, y1), (x2, y2) = px(c + 1, r), px(c + len(rc.WORD), r + 2)
+                mods = ([], []) if args.plain else (["kd:alt"], ["ku:alt"])
+                run.sh("cliclick", "-w", "80", *mods[0], f"dd:{x1},{y1}", f"m:{(x1 + x2) // 2},{(y1 + y2) // 2}",
+                       f"du:{x2},{y2}", *mods[1])
                 time.sleep(1.0)
                 save("selected")
                 res["clipboard_after_drag"] = pbpaste()

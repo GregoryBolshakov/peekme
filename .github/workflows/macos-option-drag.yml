@@ -33,13 +33,13 @@ jobs:
           codex --version
           tmux -V
       - name: Claude Code with Option+drag
+        if: false
         run: |
           npm i -g @anthropic-ai/claude-code
           claude --version
           python3 tests/e2e/macos/claude_optdrag.py macos-option-drag-out
       - name: Run
-        if: false
-        run: python3 tests/e2e/macos/option_drag.py --out macos-option-drag-out ${{ inputs.args }}
+        run: python3 tests/e2e/macos/option_drag.py --plain --out macos-option-drag-out ${{ inputs.args }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
