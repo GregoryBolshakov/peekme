@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.5 (2026-09-30)
 
 - Option+P did nothing after a tmux selection when tmux stays in copy mode after the drag (a
   `MouseDragEnd1Pane` binding to `copy-selection`, common in tmux configs). tmux took the key for

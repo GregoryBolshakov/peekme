@@ -11,7 +11,7 @@ room, like Peek in VS Code. Esc closes it and the screen is exactly as before.
 The explanation comes from a small, fast model and it knows the conversation. If you select
 "its split panes" in an answer that recommends Kitty, it tells you it is about Kitty.
 
-Status: 0.3.4. Tested with Claude Code 2.1.285, Codex 0.159 and Copilot CLI 1.0.89 on Linux, also
+Status: 0.3.5. Tested with Claude Code 2.1.285, Codex 0.159 and Copilot CLI 1.0.89 on Linux, also
 inside tmux and over SSH. On macOS it is tested in Terminal and iTerm2 with a stand-in agent, and
 in Terminal with the real Codex, also inside tmux and over SSH.
 
