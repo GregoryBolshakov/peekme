@@ -74,10 +74,12 @@ def main():
             r = next((i for i, l in enumerate(lines) if "Claude Code" in l), None)
             if r is not None:
                 c = lines[r].index("Claude Code")
-                (x1, y1), (x2, y2) = px(c + 1, r + 1), px(c + 11, r + 1)
+                # Over three rows: the calibration can be a row off in iTerm2,
+                # and any text in the selection will do.
+                (x1, y1), (x2, y2) = px(c + 1, r), px(c + 11, r + 2)
                 subprocess.run(["pbcopy"], input=b"before")
                 keys = ["kd:alt"] if alt else []
-                run.sh("cliclick", "-w", "80", *keys, f"dd:{x1},{y1}", f"m:{(x1 + x2) // 2},{y1}",
+                run.sh("cliclick", "-w", "80", *keys, f"dd:{x1},{y1}", f"m:{(x1 + x2) // 2},{(y1 + y2) // 2}",
                        f"du:{x2},{y2}", *(["ku:alt"] if alt else []))
                 time.sleep(1.0)
                 run.screenshot(os.path.join(d, "selected.png"))
