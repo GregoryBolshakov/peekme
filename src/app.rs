@@ -304,6 +304,9 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         size: (cols, rows),
     };
     let mut stdout = std::io::stdout().lock();
+    if crate::tmux::inside() {
+        crate::tmux::prepare_copy_mode();
+    }
     let mut queue: VecDeque<Msg> = VecDeque::new();
 
     loop {
@@ -374,6 +377,9 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
 
     if app.open.is_some() && !app.degraded {
         let _ = std::panic::catch_unwind(AssertUnwindSafe(|| app.close(&mut stdout, true)));
+    }
+    if crate::tmux::inside() {
+        crate::tmux::release_copy_mode();
     }
     if let Some(explainer) = &app.explainer {
         explainer.shutdown();
@@ -935,6 +941,14 @@ impl App {
             (None, _) => {
                 let msg = if hidden {
                     tmux_mouse_message(self.agent)
+                } else if std::env::var_os("SSH_CONNECTION").is_some() {
+                    // A terminal's own selection (a drag with Option held, over
+                    // an agent that takes the mouse) never leaves the user's
+                    // computer: no terminal hands it to a program over SSH.
+                    "Select some text with the mouse first, then press Alt+P. Text selected \
+                     with Option held stays in your terminal on your own computer, so peekme \
+                     can't see it: drag without Option."
+                        .to_string()
                 } else {
                     "Select some text with the mouse first, then press Alt+P.".to_string()
                 };
