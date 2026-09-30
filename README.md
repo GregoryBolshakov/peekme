@@ -11,7 +11,7 @@ room, like Peek in VS Code. Esc closes it and the screen is exactly as before.
 The explanation comes from a small, fast model and it knows the conversation. If you select
 "its split panes" in an answer that recommends Kitty, it tells you it is about Kitty.
 
-Status: 0.3.4. Tested with Claude Code 2.1.285, Codex 0.159 and Copilot CLI 1.0.89 on Linux, also
+Status: 0.3.5. Tested with Claude Code 2.1.285, Codex 0.159 and Copilot CLI 1.0.89 on Linux, also
 inside tmux and over SSH. On macOS it is tested in Terminal and iTerm2 with a stand-in agent, and
 in Terminal with the real Codex, also inside tmux and over SSH.
 
@@ -82,6 +82,11 @@ Inside tmux, Codex leaves the mouse to the terminal when tmux has the mouse off,
 default. A selection is then your terminal's own, and over SSH peekme cannot read it. Add
 `set -g mouse on` to `~/.tmux.conf` and restart Codex. peekme tells you this the first time you
 press Option+P there.
+
+With tmux's mouse on, a drag over text the agent doesn't take is a tmux selection, and Option+P
+explains it, also when your tmux stays in copy mode after the drag. A selection made with Option
+held is your terminal's own. Over SSH no program on the other side can read it, so drag without
+Option there.
 
 In Claude Code, Alt+P opens the model picker. With peekme it explains the selection instead.
 `/model` still opens the model picker.
