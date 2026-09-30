@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Codex: Option+P typed `π` when the selected text was in one of Codex's answers. Codex copies
+  such a selection as markdown (`- **Desktop app**` for the words Desktop app), and peekme looked
+  for that text on the screen and did not find it. Now peekme uses the text Codex highlights.
+
 ## 0.3.5 (2026-09-30)
 
 - Option+P did nothing after a tmux selection when tmux stays in copy mode after the drag (a

@@ -830,12 +830,15 @@ impl App {
         tmux_age: std::time::Duration,
     ) -> (Option<String>, Option<Located>) {
         self.selection_source = "none";
+        // Codex copies the markdown source of an answer (`- **Desktop app**`),
+        // which is not on screen: then its highlight below is the selection.
+        let mut unlocated = None;
         if let Some(s) = &self.app_selection {
-            self.selection_source = "osc52";
-            return (
-                Some(s.text.clone()),
-                select::locate(snap, &s.text, Some(s.cell)),
-            );
+            if let Some(loc) = select::locate(snap, &s.text, Some(s.cell)) {
+                self.selection_source = "osc52";
+                return (Some(s.text.clone()), Some(loc));
+            }
+            unlocated = Some(s.text.clone());
         }
         // Inside tmux, Claude Code and Codex copy a selection into a tmux
         // buffer instead of reporting it with OSC 52.
@@ -855,6 +858,10 @@ impl App {
         {
             self.selection_source = "reverse";
             return (Some(loc.screen.selected()), Some(loc));
+        }
+        if let Some(text) = unlocated {
+            self.selection_source = "osc52";
+            return (Some(text), None);
         }
         let s = self.selection.read();
         if s.is_some() {
@@ -1793,6 +1800,37 @@ mod tests {
         app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
         assert!(app.open.is_none());
         assert_eq!(child, "π".as_bytes());
+    }
+
+    /// Codex 0.159 copies a selection in an answer as markdown source, which
+    /// is not on screen. Its reverse-video highlight is then the selection, so
+    /// π still explains instead of being typed.
+    #[test]
+    fn option_p_uses_codex_highlight_when_the_copy_is_markdown() {
+        let mut app = test_app_for(Agent::Codex, 60, 10);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.selection = SelectionSource::without_system();
+        app.on_output(
+            b"\x1b[3;3H\xe2\x80\xa2 \x1b[7mDesktop app\x1b[0m: install it with apt\r\n",
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        app.shadow.flush_sync();
+        app.on_input(b"\x1b[<0;5;3M\x1b[<0;15;3m", &mut out, &mut child)
+            .unwrap();
+        // "- **Desktop app**"
+        app.on_output(
+            b"\x1b]52;c;LSAqKkRlc2t0b3AgYXBwKio=\x07",
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        child.clear();
+        app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
+        assert!(app.open.is_some(), "π opened the box");
+        assert!(child.is_empty(), "π did not reach Codex");
+        assert_eq!(app.selection_source, "reverse");
     }
 
     /// Real GitHub Copilot CLI 1.0.89 at 120x40: startup, one question and its
