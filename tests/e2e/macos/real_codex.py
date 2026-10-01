@@ -2,7 +2,7 @@
 """The real Codex CLI in the real Terminal and iTerm2 on macOS (for a CI runner).
 
     python3 tests/e2e/macos/real_codex.py [--terminals terminal,iterm2] [--options default,meta]
-                                          [--layers ssh+tmux,tmux] [--out DIR]
+                                          [--layers ssh+tmux,tmux,direct] [--out DIR]
 
 Like run.py, but the agent is the real `codex` (installed with npm), so what
 Codex asks of the terminal (mouse modes, kitty keyboard flags, its own
@@ -50,15 +50,20 @@ def setup_codex(work, tmux):
     # Over SSH the remote PATH is minimal, and the npm package needs node.
     path = ":".join([os.path.dirname(os.path.realpath(shutil.which("node") or codex)),
                      os.path.dirname(codex), os.path.dirname(os.path.abspath(tmux))])
-    # CODEX_TRACE: record what Codex writes (BSD `script`) and what tmux tells it.
+    # CODEX_TRACE: record what Codex writes (BSD `script`, flushed on every
+    # write: with no tmux it is how the test reads the screen), the screen size
+    # and what tmux tells it. CODEX_TERM_PROGRAM: the terminal's own
+    # TERM_PROGRAM, which the test command clears and Codex reads.
     with open(shim, "w") as f:
         f.write(f"#!/bin/sh\ncd {shlex.quote(folder)}\nexport PATH={shlex.quote(path)}:\"$PATH\"\n"
                 f"export CODEX_HOME={shlex.quote(home)}\n"
+                'if [ -n "$CODEX_TERM_PROGRAM" ]; then export TERM_PROGRAM="$CODEX_TERM_PROGRAM"; fi\n'
                 'if [ -n "$CODEX_TRACE" ]; then\n'
                 "  tmux display-message -p '#{extended-keys-format}|#{mouse}|#{client_termname}|#{version}'"
                 ' > "$CODEX_TRACE.tmux" 2>&1\n'
                 '  env > "$CODEX_TRACE.env"\n'
-                f'  exec script -q "$CODEX_TRACE" {shlex.quote(codex)} "$@"\nfi\n'
+                '  stty size > "$CODEX_TRACE.size"\n'
+                f'  exec script -qF "$CODEX_TRACE" {shlex.quote(codex)} "$@"\nfi\n'
                 f"exec {shlex.quote(codex)} \"$@\"\n")
     os.chmod(shim, 0o755)
 
@@ -69,6 +74,18 @@ def json_str(s):
 
 def pane(env, sock):
     r = subprocess.run([env.tmux, "-L", sock, "capture-pane", "-p"], capture_output=True, text=True)
+    return r.stdout.split("\n") if r.returncode == 0 else []
+
+
+def traced_screen(trace):
+    """Codex's screen without tmux: its recorded output through peekme's own
+    emulator (examples/vtdump). Rows count from 0 like capture-pane."""
+    try:
+        rows, cols = open(trace + ".size").read().split()
+    except (OSError, ValueError):
+        return []
+    vtdump = os.path.join(os.path.dirname(m.PEEKME), "examples", "vtdump")
+    r = subprocess.run([vtdump, trace, cols, rows], capture_output=True, text=True)
     return r.stdout.split("\n") if r.returncode == 0 else []
 
 
@@ -142,9 +159,16 @@ def run_case(env, win, case, px, out):
     os.makedirs(d, exist_ok=True)
     paths = {"events": os.path.join(d, "events.jsonl"), "agent": os.path.join(d, "agent.jsonl")}
     trace = os.path.join(d, "codex.bin")
-    argv, socks = m.build_command(env, dict(case, agent="../realbin/codex", extkeys="off",
-                                            env={"CODEX_TRACE": trace}), paths)
+    direct = case["layers"] == "direct"
+    extra = {"CODEX_TRACE": trace}
+    if direct:
+        # What the terminal sets: Codex picks its defaults by it.
+        extra["CODEX_TERM_PROGRAM"] = {"terminal": "Apple_Terminal", "iterm2": "iTerm.app"}[case["terminal"]]
+    argv, socks = m.build_command(env, dict(case, agent="../realbin/codex", extkeys="off", env=extra), paths)
     sock = socks[1] if case["layers"] == "ssh+tmux" else socks[0]
+
+    def screen():
+        return traced_screen(trace) if direct else pane(env, sock)
     fails = []
 
     def check(ok, msg):
@@ -158,12 +182,12 @@ def run_case(env, win, case, px, out):
     def save(tag):
         run.screenshot(os.path.join(d, f"{tag}.png"))
         with open(os.path.join(d, f"{tag}.txt"), "w") as f:
-            f.write("\n".join(pane(env, sock)))
+            f.write("\n".join(screen()))
 
     try:
         if not check(win.run(argv), "the window does not take commands"):
             return name, fails
-        if not check(m.wait(lambda: any(READY in l for l in pane(env, sock)), 60, 0.5),
+        if not check(m.wait(lambda: any(READY in l for l in screen()), 60, 0.5),
                      "Codex never started"):
             save("no-start")
             return name, fails
@@ -172,18 +196,18 @@ def run_case(env, win, case, px, out):
         # type again, after a click on a blank cell to give the window focus.
         for attempt in range(3):
             run.keystroke('keystroke "/status"')
-            if m.wait(lambda: any("/status" in l for l in pane(env, sock)), 3, 0.5):
+            if m.wait(lambda: any("/status" in l for l in screen()), 3, 0.5):
                 break
             run.sh("cliclick", "c:{},{}".format(*px(60, 3)))
             time.sleep(1)
         time.sleep(1)
         run.keystroke("key code 36")  # Return
         # The first Return can land in Codex's command popup: press it again.
-        if not m.wait(lambda: any(WORD in l for l in pane(env, sock)), 4, 0.5):
+        if not m.wait(lambda: any(WORD in l for l in screen()), 4, 0.5):
             run.keystroke("key code 36")
         deadline, calm, last = time.time() + 30, None, None
         while time.time() < deadline:
-            text = pane(env, sock)
+            text = screen()
             if any(WORD in l for l in text) and text == last:
                 calm = calm or time.time()
                 if time.time() - calm >= 3:
@@ -192,7 +216,7 @@ def run_case(env, win, case, px, out):
                 calm = None
             last = text
             time.sleep(0.5)
-        lines = pane(env, sock)
+        lines = screen()
         row = next((i for i, l in enumerate(lines) if WORD in l), None)
         if not check(row is not None, f"{WORD!r} never showed"):
             save("no-start")
@@ -216,13 +240,13 @@ def run_case(env, win, case, px, out):
                 save(f"hidden-{i}")
                 if i == 0 or case["option"] == "meta":
                     if check(later and later[-1].get("hidden"), f"press {i + 1}: no box saying why"):
-                        check(any("tmux set -g mouse on" in l for l in pane(env, sock)),
+                        check(any("tmux set -g mouse on" in l for l in screen()),
                               f"press {i + 1}: the box does not say how to fix it")
                     run.keystroke("key code 53")
                     time.sleep(1.0)
                 else:
                     check(not later, "second press opened a box again")
-                    check(any("π" in l for l in pane(env, sock)), "second press did not type π")
+                    check(any("π" in l for l in screen()), "second press did not type π")
             return name, fails
 
         def explain(word, tag):
@@ -246,14 +270,14 @@ def run_case(env, win, case, px, out):
             opened_before = len(events("open"))
             time.sleep(0.6)
             save(f"{tag}-box")
-            check(not any("π" in l for l in pane(env, sock)), f"{tag}: π reached Codex")
+            check(not any("π" in l for l in screen()), f"{tag}: π reached Codex")
             run.keystroke("key code 53")  # Esc
             check(m.wait(lambda: len(events("close")) >= opened_before, 5), f"{tag}: Esc did not close the box")
             time.sleep(1.0)
             return r, c
 
         first = explain(WORD, "first")
-        lines = pane(env, sock)
+        lines = screen()
         explain(WORD2, "second")
         if first is None:
             return name, fails
@@ -268,7 +292,7 @@ def run_case(env, win, case, px, out):
         if case["option"] == "default":
             last_p = (events("option_p") or [{}])[-1]
             check(len(events("open")) == n, f"π with nothing selected opened a box ({last_p})")
-            check(any("π" in l for l in pane(env, sock)), "π with nothing selected was not typed")
+            check(any("π" in l for l in screen()), "π with nothing selected was not typed")
         else:
             later = events("open")[n:]
             check(later and not later[-1].get("found"), "Alt+P with nothing selected did not show the hint")
@@ -285,6 +309,9 @@ def run_case(env, win, case, px, out):
             f.write("\n".join(str(e) for e in m.jsonl(paths["events"])))
         for s in socks:
             run.sh(env.tmux, "-L", s, "kill-server")
+        if direct:
+            run.sh("pkill", "-f", "realbin/codex")
+            time.sleep(1)
     return name, fails
 
 
@@ -326,7 +353,8 @@ def main():
                     continue
                 n = 0
                 for layer in layers:
-                    for mouse in ("off", "on"):
+                    # No tmux: nothing to switch the mouse off.
+                    for mouse in (("on",) if layer == "direct" else ("off", "on")):
                         total += 1
                         n += 1
                         case = dict(terminal=terminal, option=option, layers=layer, mouse=mouse,

@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
-      - run: cargo build --release --bins
+      - run: cargo build --release --bins --examples
       - name: Install tmux, cliclick, iTerm2, Codex
         run: |
           brew install tmux cliclick
