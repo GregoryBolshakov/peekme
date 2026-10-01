@@ -38,5 +38,21 @@ fn main() {
             }
         }
     }
+    if std::env::var_os("VTDUMP_UNDERLINE").is_some() {
+        // Print runs of underlined cells (how peekme marks answered text).
+        use alacritty_terminal::term::cell::Flags;
+        for (r, row) in snap.rows.iter().enumerate() {
+            let mut run = String::new();
+            let blank = alacritty_terminal::term::cell::Cell::default();
+            for cell in row.iter().chain(std::iter::once(&blank)) {
+                if cell.flags.intersects(Flags::ALL_UNDERLINES) {
+                    run.push(cell.c);
+                } else if !run.is_empty() {
+                    println!("-- underline row {r}: {run:?}");
+                    run.clear();
+                }
+            }
+        }
+    }
     println!("-- cursor {:?}", snap.cursor);
 }

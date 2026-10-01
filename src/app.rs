@@ -711,13 +711,20 @@ impl App {
                 .visible(&snap, self.shadow.history_size(), self.shadow.alt_screen());
         let known = self.known_top();
         let mut s = String::new();
-        for (_, cells) in placed {
+        for v in placed {
             let touched = all
+                || v.moved
                 || damaged
                     .as_ref()
-                    .is_none_or(|rows| cells.iter().any(|(r, _)| rows.contains(r)));
-            if touched && cells.iter().all(|&(r, _)| r >= known) {
-                marks::draw(&mut s, &snap, &cells, self.hover.as_ref() == Some(&cells));
+                    .is_none_or(|rows| v.cells.iter().any(|(r, _)| rows.contains(r)));
+            if touched && v.cells.iter().all(|&(r, _)| r >= known) {
+                marks::draw(
+                    &mut s,
+                    &snap,
+                    &v.cells,
+                    self.hover.as_ref() == Some(&v.cells),
+                );
+                self.marks.drawn(v.index);
             }
         }
         self.set_pointer(self.hover.is_some(), out)?;
@@ -971,8 +978,11 @@ impl App {
         self.marks
             .visible(&snap, self.shadow.history_size(), self.shadow.alt_screen())
             .into_iter()
-            .find(|(_, c)| c.contains(&cell) && c.iter().all(|&(r, _)| r >= known))
-            .map(|(text, cells)| MarkHit { text, cells })
+            .find(|v| v.cells.contains(&cell) && v.cells.iter().all(|&(r, _)| r >= known))
+            .map(|v| MarkHit {
+                text: v.text,
+                cells: v.cells,
+            })
     }
 
     /// A click on a mark: show its saved answer, or close it if it is open.

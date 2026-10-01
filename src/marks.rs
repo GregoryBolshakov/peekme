@@ -20,6 +20,8 @@ pub struct Mark {
     pub answer: String,
     pub model: String,
     place: Place,
+    /// Where the terminal last got its underline from us.
+    drawn: Option<(usize, usize)>,
 }
 
 /// Where a mark is.
@@ -30,6 +32,47 @@ pub struct Place {
     /// First cell, the row counted from the top of history, so it stays put
     /// while the normal screen scrolls.
     anchor: (usize, usize),
+    /// The rows around it, to tell it from other copies of the same words
+    /// when a full-screen agent scrolls or expands something above it.
+    context: Context,
+}
+
+/// The text of a mark's own rows and of the rows just above and below.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Context {
+    above: String,
+    own: String,
+    below: String,
+}
+
+impl Context {
+    fn of(snap: &Snapshot, cells: &[(usize, usize)]) -> Context {
+        let (first, last) = (cells[0].0, cells[cells.len() - 1].0);
+        Context {
+            above: first
+                .checked_sub(1)
+                .map_or_else(String::new, |r| snap.rows_text(r, r + 1)),
+            own: snap.rows_text(first, last + 1),
+            below: snap.rows_text(last + 1, last + 2),
+        }
+    }
+
+    /// How well `cells` on `snap` fit: None when its own rows differ.
+    fn fit(&self, snap: &Snapshot, cells: &[(usize, usize)]) -> Option<usize> {
+        let here = Context::of(snap, cells);
+        (here.own == self.own)
+            .then(|| usize::from(here.above == self.above) + usize::from(here.below == self.below))
+    }
+}
+
+/// A mark on screen.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Visible {
+    pub index: usize,
+    pub text: String,
+    pub cells: Vec<(usize, usize)>,
+    /// It is not where it was last drawn.
+    pub moved: bool,
 }
 
 #[derive(Default)]
@@ -52,6 +95,7 @@ impl Place {
         let place = Place {
             alt,
             anchor: (history + first.0, first.1),
+            context: Context::of(snap, &cells),
         };
         Some((place, cells))
     }
@@ -69,9 +113,17 @@ impl Marks {
             answer: answer.into(),
             model: model.into(),
             place,
+            drawn: None,
         });
         if self.list.len() > MAX {
             self.list.remove(0);
+        }
+    }
+
+    /// The terminal now has the underline of mark `index` where it is.
+    pub fn drawn(&mut self, index: usize) {
+        if let Some(m) = self.list.get_mut(index) {
+            m.drawn = Some(m.place.anchor);
         }
     }
 
@@ -81,27 +133,45 @@ impl Marks {
         self.list.iter().rev().find(|m| flat(&m.text) == key)
     }
 
-    /// Text and cells of every mark visible on `snap`. On the normal screen a mark
-    /// only counts at its own place. Full-screen agents scroll their own
-    /// content, so there the occurrence nearest to the old place wins and
-    /// becomes the new place.
-    pub fn visible(
-        &mut self,
-        snap: &Snapshot,
-        history: usize,
-        alt: bool,
-    ) -> Vec<(String, Vec<(usize, usize)>)> {
+    /// Every mark visible on `snap`: its text, its cells, and whether it is
+    /// not where it was last drawn (then the terminal may not have its line).
+    /// On the normal screen a mark only counts at its own place. Full-screen
+    /// agents scroll their own content, so there the copy whose rows look like
+    /// the mark's rows wins, the nearest one among equals. When several
+    /// copies are on screen and none fits, the mark is not shown rather than
+    /// put on the wrong copy.
+    pub fn visible(&mut self, snap: &Snapshot, history: usize, alt: bool) -> Vec<Visible> {
         let mut found = Vec::new();
-        for m in self.list.iter_mut().filter(|m| m.place.alt == alt) {
+        for (index, m) in self.list.iter_mut().enumerate() {
+            if m.place.alt != alt {
+                continue;
+            }
             let (ar, ac) = m.place.anchor;
             let at = |c: &Vec<(usize, usize)>| c.first().map(|&(r, c)| (history + r, c));
-            let best = select::occurrences(snap, &m.text)
+            let copies: Vec<_> = select::occurrences(snap, &m.text)
                 .into_iter()
                 .filter(|c| alt || at(c) == Some(m.place.anchor))
-                .min_by_key(|c| at(c).map(|(r, c)| (r.abs_diff(ar), c.abs_diff(ac))));
-            if let Some(cells) = best {
+                .collect();
+            let only = copies.len() == 1;
+            let best = copies
+                .into_iter()
+                .filter_map(|c| {
+                    let fit = m.place.context.fit(snap, &c);
+                    (fit.is_some() || only).then_some((fit, c))
+                })
+                .min_by_key(|(fit, c)| {
+                    let (r, col) = at(c).unwrap_or_default();
+                    (std::cmp::Reverse(*fit), r.abs_diff(ar), col.abs_diff(ac))
+                });
+            if let Some((_, cells)) = best {
                 m.place.anchor = at(&cells).unwrap_or(m.place.anchor);
-                found.push((m.text.clone(), cells));
+                m.place.context = Context::of(snap, &cells);
+                found.push(Visible {
+                    index,
+                    text: m.text.clone(),
+                    cells,
+                    moved: m.drawn != Some(m.place.anchor),
+                });
             }
         }
         found
@@ -167,10 +237,8 @@ mod tests {
         assert_eq!(cells, (4..11).map(|c| (0, c)).collect::<Vec<_>>());
         let mut marks = Marks::default();
         marks.add("ripgrep", "a search tool", "haiku", place);
-        assert_eq!(
-            marks.visible(&snap, s.history_size(), false),
-            vec![("ripgrep".to_string(), cells)]
-        );
+        let v = marks.visible(&snap, s.history_size(), false);
+        assert_eq!((v[0].text.as_str(), &v[0].cells), ("ripgrep", &cells));
 
         // Two lines scroll off: the mark is gone, not moved to the other ripgrep.
         s.advance(b"\r\nfour\r\nfive\r\nsix");
@@ -194,7 +262,7 @@ mod tests {
         let cells: Vec<_> = marks
             .visible(&snap, 0, true)
             .into_iter()
-            .map(|(_, c)| c)
+            .map(|v| v.cells)
             .collect();
         assert_eq!(cells, vec![(4..12).map(|c| (0, c)).collect::<Vec<_>>()]);
         assert!(marks.visible(&snap, 0, false).is_empty());
@@ -204,5 +272,39 @@ mod tests {
         assert!(out.starts_with("\x1b[1;5H"));
         assert!(out.contains(";4:4"));
         assert!(out.contains("the  PTY"));
+    }
+
+    #[test]
+    fn a_full_screen_mark_keeps_to_its_copy_when_another_is_closer() {
+        // The words are in the question (top row, which the agent pins) and
+        // in the answer, which is marked.
+        let screen = |answer_row: usize| {
+            let mut b = b"\x1b[?1049h\x1b[1;1H> what is a pseudo-terminal".to_vec();
+            b.extend(format!("\x1b[{};1Hanswer line", answer_row).bytes());
+            b.extend(format!("\x1b[{};1H- the pseudo-terminal layer", answer_row + 1).bytes());
+            b.extend(format!("\x1b[{};1Hmore text", answer_row + 2).bytes());
+            let mut s = Shadow::new(40, 12);
+            s.advance(&b);
+            s
+        };
+        let s = screen(3);
+        let snap = s.snapshot();
+        let (place, _) = Place::new(&snap, "pseudo-terminal", (3, 6), 0, true).unwrap();
+        let mut marks = Marks::default();
+        marks.add("pseudo-terminal", "x", "m", place);
+        // Scrolled: the answer is 3 rows lower, the question copy is now nearer
+        // to the old place.
+        let snap = screen(7).snapshot();
+        let v = marks.visible(&snap, 0, true);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].cells[0], (7, 6), "still the answer's copy");
+        assert!(v[0].moved);
+        marks.drawn(v[0].index);
+        assert!(!marks.visible(&snap, 0, true)[0].moved);
+
+        // The row changed and two copies are on screen: show none, not the wrong one.
+        let mut s = screen(7);
+        s.advance(b"\x1b[8;1H\x1b[2K- a pseudo-terminal, rewritten");
+        assert!(marks.visible(&s.snapshot(), 0, true).is_empty());
     }
 }
