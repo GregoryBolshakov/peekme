@@ -1,7 +1,22 @@
 # Changelog
 
-## Unreleased
+## 0.4.0-beta.2 (2026-09-30)
 
+A test build, only on crates.io. `cargo install peekme` still gives 0.3.5. To try it:
+`cargo install peekme --version 0.4.0-beta.2`. It has all the fixes from 0.3.5.
+
+- Text you already asked about gets a dotted underline once the answer is complete, so you can
+  see what you peeked before. The line comes back when the agent redraws those rows. Terminals
+  without dotted lines show another kind of underline.
+- Click underlined text to see its answer again, with no new request. Click it again to close
+  the box. A double click opens it once. Dragging over the text still selects it, and a click with
+  Ctrl, Cmd, Shift or Option still does what your terminal or agent does with it. Links in the
+  agent's answer stay links. With the mouse over underlined text the line turns solid, and in
+  terminals that support it (kitty, Ghostty, WezTerm) the pointer becomes a hand.
+- Clicks work where the agent handles the mouse itself: Codex and Claude Code full screen, also
+  in tmux and over SSH. In Claude Code's classic screen, select the text and press Alt+P.
+- Select marked text and press Alt+P: the answer from before opens right away. Alt+P again still
+  asks with the whole chat.
 - Codex: Option+P typed `π` when the selected text was in one of Codex's answers. Codex copies
   such a selection as markdown (`- **Desktop app**` for the words Desktop app), and peekme looked
   for that text on the screen and did not find it. Now peekme uses the text Codex highlights.
