@@ -346,8 +346,9 @@ fn classify(bytes: &[u8]) -> Kind {
         }
         let is_p = k.id == (b'u', 112) || k.base == Some(112);
         // Kitty keyboard protocol on a Mac without Option-as-Alt: the key code
-        // is the composed character.
-        let is_mac_option_p = k.id == (b'u', MAC_OPTION_P as u32) && k.mods & !SHIFT_LOCKS == 0;
+        // is the composed character, some terminals with Option reported as Alt.
+        let is_mac_option_p =
+            k.id == (b'u', MAC_OPTION_P as u32) && k.mods & !(SHIFT_LOCKS | ALT) == 0;
         return match (k.id, k.mods) {
             _ if is_p && k.id.0 == b'u' && k.mods == ALT => Kind::Hotkey,
             _ if is_mac_option_p => Kind::OptionP,
@@ -501,6 +502,8 @@ mod tests {
         );
         // Kitty keyboard protocol reports the composed character as the key.
         assert_eq!(kinds(b"\x1b[960u"), vec![Kind::OptionP]);
+        assert_eq!(kinds(b"\x1b[960;3u"), vec![Kind::OptionP], "Option as Alt");
+        assert_eq!(kinds(b"\x1b[960;3:1u"), vec![Kind::OptionP]);
         assert_eq!(
             kinds(b"\x1b[960;5u"),
             vec![Kind::Key],

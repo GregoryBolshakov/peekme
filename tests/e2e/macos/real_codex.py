@@ -226,6 +226,11 @@ def run_case(env, win, case, px, out):
             # Codex asks tmux, sees mouse off and leaves the mouse to the
             # terminal: the drag is Terminal's or iTerm2's own selection, which
             # peekme cannot see over SSH. Option+P says so once, then types π.
+            # Direct: Terminal's View > Allow Mouse Reporting off (Cmd+R) keeps
+            # the mouse from Codex the same way.
+            if direct:
+                run.keystroke('keystroke "r" using command down')
+                time.sleep(1.0)
             r = next(i for i, l in enumerate(lines) if WORD in l)
             c = lines[r].index(WORD)
             (x1, y1), (x2, y2) = px(c + 1, r + 1), px(c + len(WORD), r + 1)
@@ -239,7 +244,9 @@ def run_case(env, win, case, px, out):
                 later = events("open")[n:]
                 save(f"hidden-{i}")
                 if i == 0 or case["option"] == "meta":
-                    if check(later and later[-1].get("hidden"), f"press {i + 1}: no box saying why"):
+                    if direct:
+                        check(later and later[-1].get("withheld"), f"press {i + 1}: no box saying why ({events('option_p')[-1:]})")
+                    elif check(later and later[-1].get("hidden"), f"press {i + 1}: no box saying why"):
                         check(any("tmux set -g mouse on" in l for l in screen()),
                               f"press {i + 1}: the box does not say how to fix it")
                     run.keystroke("key code 53")
@@ -312,6 +319,9 @@ def run_case(env, win, case, px, out):
         if direct:
             run.sh("pkill", "-f", "realbin/codex")
             time.sleep(1)
+            if case["mouse"] == "off":
+                run.keystroke('keystroke "r" using command down')  # reporting back on
+                time.sleep(0.5)
     return name, fails
 
 
@@ -353,8 +363,8 @@ def main():
                     continue
                 n = 0
                 for layer in layers:
-                    # No tmux: nothing to switch the mouse off.
-                    for mouse in (("on",) if layer == "direct" else ("off", "on")):
+                    # Direct, mouse off: Terminal's mouse reporting switched off.
+                    for mouse in ("off", "on"):
                         total += 1
                         n += 1
                         case = dict(terminal=terminal, option=option, layers=layer, mouse=mouse,

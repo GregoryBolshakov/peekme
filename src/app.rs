@@ -320,7 +320,8 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         tmux_baseline: None,
         boundary: Boundary::default(),
         greek_typed: false,
-        told_tmux_mouse: false,
+        told_hidden: false,
+        mouse_seen: false,
         tx,
         cwd: std::env::current_dir()?.to_string_lossy().into_owned(),
         viewport_top: None,
@@ -470,8 +471,11 @@ struct App {
     known_from: usize,
     /// The user typed Greek letters: `π` is a letter for them, never the hotkey.
     greek_typed: bool,
-    /// Told the user once that the agent leaves the mouse to the terminal in tmux.
-    told_tmux_mouse: bool,
+    /// Told the user once that the terminal keeps the mouse (tmux mouse off, or
+    /// a terminal that never reports it), so no selection can be seen.
+    told_hidden: bool,
+    /// A mouse report came from the terminal (it does pass the mouse on).
+    mouse_seen: bool,
     tx: Sender<Msg>,
     cwd: String,
     /// Where the child's live area starts, learned from its scroll regions.
@@ -769,12 +773,16 @@ impl App {
             }
             if t.kind == Kind::OptionP {
                 let mut hotkey = self.option_p_is_hotkey();
-                if !hotkey && !self.greek_typed && !self.told_tmux_mouse && self.selection_hidden()
+                if !hotkey
+                    && !self.greek_typed
+                    && !self.told_hidden
+                    && (self.selection_hidden()
+                        || (cfg!(target_os = "macos") && self.mouse_withheld()))
                 {
                     // Option+P can never find a selection here: say why, once,
                     // instead of typing π without a word.
                     hotkey = true;
-                    self.told_tmux_mouse = true;
+                    self.told_hidden = true;
                 }
                 crate::event(
                     "option_p",
@@ -797,6 +805,9 @@ impl App {
             // Repeats and releases of keys we consumed never reach the child.
             if t.kind != Kind::Passive && self.consumed.swallow(&t) {
                 continue;
+            }
+            if let Kind::Mouse(_) = t.kind {
+                self.mouse_seen = true;
             }
             if let Kind::Mouse(m) = t.kind
                 && self.mark_mouse(m, &t.bytes, &mut forward, out, child)?
@@ -1237,6 +1248,17 @@ impl App {
             && crate::tmux::mouse() == Some(false)
     }
 
+    /// The agent asked for the mouse, but not one mouse report came from the
+    /// terminal: it keeps the mouse to itself (Terminal with View > Allow
+    /// Mouse Reporting off, or every drag made with Option held in iTerm2).
+    /// A drag is then the terminal's own selection, which peekme can't read.
+    fn mouse_withheld(&self) -> bool {
+        !crate::tmux::inside()
+            && std::env::var_os("SSH_CONNECTION").is_none()
+            && self.shadow.mouse_mode()
+            && !self.mouse_seen
+    }
+
     /// The agent's own process: with the job-control helper, the helper's child.
     fn agent_pid(&self) -> Option<u32> {
         let pid = self.pty_pid?;
@@ -1281,6 +1303,7 @@ impl App {
             None => self.current_selection(&snap),
         };
         let hidden = selection.is_none() && self.selection_hidden();
+        let withheld = selection.is_none() && !hidden && self.mouse_withheld();
         let mut remembered = None;
         let mut strip = None;
         let mut mark = None;
@@ -1333,6 +1356,8 @@ impl App {
             (None, _) => {
                 let msg = if hidden {
                     tmux_mouse_message(self.agent)
+                } else if withheld {
+                    withheld_mouse_message(self.agent)
                 } else if std::env::var_os("SSH_CONNECTION").is_some() {
                     // A terminal's own selection (a drag with Option held, over
                     // an agent that takes the mouse) never leaves the user's
@@ -1368,6 +1393,7 @@ impl App {
                 "found": remembered.is_some(),
                 "source": self.selection_source,
                 "hidden": hidden,
+                "withheld": withheld,
                 "saved": saved,
                 "mark": mark.as_ref().map(|(_, c)| c.len()),
                 "alt": self.shadow.alt_screen(),
@@ -1693,6 +1719,16 @@ fn tmux_mouse_message(agent: Option<Agent>) -> String {
          cannot see what you select. Turn it on with `tmux set -g mouse on` (and add \
          `set -g mouse on` to ~/.tmux.conf), then restart {}.",
         agent.map_or("it", Agent::command)
+    )
+}
+
+/// Why peekme sees no selection when the terminal never reports the mouse.
+fn withheld_mouse_message(agent: Option<Agent>) -> String {
+    let who = agent.map_or("the program", Agent::short);
+    format!(
+        "Your terminal does not send the mouse to {who}, so what you select is the terminal's \
+         own selection and peekme can't see it. In Terminal, turn on View > Allow Mouse \
+         Reporting (Cmd+R). In iTerm2, drag without Option held."
     )
 }
 
@@ -2075,7 +2111,8 @@ mod tests {
             known_from: 0,
             boundary: Boundary::default(),
             greek_typed: false,
-            told_tmux_mouse: false,
+            told_hidden: false,
+            mouse_seen: false,
             shadow: Shadow::new(cols, rows),
             open: None,
             pending: None,
@@ -2407,6 +2444,36 @@ mod tests {
         app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
         assert!(app.open.is_none());
         assert_eq!(child, "π".as_bytes());
+    }
+
+    /// Codex asked for the mouse, but the terminal never sent a mouse report
+    /// (Terminal with Allow Mouse Reporting off): the drag is the terminal's
+    /// own selection. The box says why instead of "select some text".
+    #[test]
+    fn says_when_the_terminal_keeps_the_mouse() {
+        let mut app = test_app_for(Agent::Codex, 100, 20);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.selection = SelectionSource::without_system();
+        app.on_output(
+            b"\x1b[?1000h\x1b[?1002h\x1b[?1006hsome answer\r\n",
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        app.shadow.flush_sync();
+        out.clear();
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        assert!(app.open.is_some());
+        assert!(String::from_utf8_lossy(&out).contains("Reporting"));
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+
+        // Once a mouse report came, the terminal does pass the mouse on.
+        app.on_input(b"\x1b[<0;3;1M\x1b[<0;3;1m", &mut out, &mut child)
+            .unwrap();
+        out.clear();
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        assert!(app.open.is_some());
+        assert!(!String::from_utf8_lossy(&out).contains("Reporting"));
     }
 
     /// On a Mac with no tmux Codex copies to the pasteboard, which peekme reads
