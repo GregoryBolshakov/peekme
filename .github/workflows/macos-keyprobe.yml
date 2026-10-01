@@ -4,6 +4,8 @@ name: macOS key probe
 # Codex's keyboard modes, then real Codex directly in Terminal. By hand only.
 on:
   workflow_dispatch:
+  push:
+    branches: [e2e-mac-direct]
 
 jobs:
   probe:
