@@ -1,0 +1,35 @@
+name: macOS key probe
+
+# What Option+P sends in Terminal on each macOS version once an app asks for
+# Codex's keyboard modes, then real Codex directly in Terminal. By hand only.
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - run: cargo build --release --bins --examples
+      - name: Install tmux, cliclick, Codex
+        run: |
+          brew install tmux cliclick
+          defaults write com.apple.Terminal NSQuitAlwaysKeepsWindows -bool false
+          defaults write NSGlobalDomain NSQuitAlwaysKeepsWindows -bool false
+          npm i -g @openai/codex
+          codex --version
+      - name: Key probe
+        run: python3 tests/e2e/macos/keyprobe.py
+      - name: Real Codex in Terminal
+        if: always()
+        run: python3 tests/e2e/macos/real_codex.py --layers direct --out keyprobe-out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: keyprobe-${{ matrix.os }}
+          path: keyprobe-out
