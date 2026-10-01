@@ -785,6 +785,9 @@ impl App {
                     }),
                 );
                 t.kind = if hotkey { Kind::Hotkey } else { Kind::Key };
+                if !hotkey {
+                    self.selection.settle();
+                }
             }
             self.sniff_colors(&t);
             if matches!(t.bytes.as_slice(), b"\x1b[I" | b"\x1b[O") {
@@ -1484,6 +1487,7 @@ impl App {
         let Some(open) = self.open.take() else {
             return Ok(());
         };
+        self.selection.settle();
         crate::event("close", serde_json::json!({"held_bytes": open.held.len()}));
         let mut bytes = Vec::new();
         bytes.extend_from_slice(SYNC_BEGIN.as_bytes());
@@ -2403,6 +2407,44 @@ mod tests {
         app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
         assert!(app.open.is_none());
         assert_eq!(child, "π".as_bytes());
+    }
+
+    /// On a Mac with no tmux Codex copies to the pasteboard, which peekme reads
+    /// as the system selection. Once used, that copy is no selection any more:
+    /// π with nothing highlighted is typed, until something new is copied.
+    #[test]
+    fn option_p_types_once_the_mac_clipboard_copy_was_used() {
+        let mut app = test_app_for(Agent::Codex, 60, 10);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.selection = SelectionSource::fixed_clipboard("Desktop app");
+        app.on_output(
+            b"\x1b[3;3H\xe2\x80\xa2 \x1b[7mDesktop app\x1b[0m: install it\r\n",
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        app.shadow.flush_sync();
+        app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
+        assert!(app.open.is_some(), "π opened the box");
+        assert_eq!(app.selection_source, "reverse");
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+
+        // A click cleared Codex's highlight; the copy is still in the clipboard.
+        app.on_output(b"\x1b[3;5HDesktop app", &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        child.clear();
+        app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
+        assert!(app.open.is_none(), "an old copy is no selection");
+        assert_eq!(child, "π".as_bytes());
+
+        // Something new copied (the terminal's own copy on select) counts.
+        app.selection = SelectionSource::fixed_clipboard("install it");
+        child.clear();
+        app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
+        assert!(app.open.is_some(), "a new copy is a selection");
+        assert_eq!(app.selection_source, "system");
     }
 
     /// Codex 0.159 copies a selection in an answer as markdown source, which

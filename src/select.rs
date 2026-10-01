@@ -15,16 +15,26 @@ pub struct SelectionSource {
     /// A fixed selection, for tests (they must not change the process environment:
     /// tests run in parallel threads, and that is not safe on macOS).
     fixed: Option<String>,
+    /// The system source is a clipboard (no PRIMARY outside Linux): a copy
+    /// stays there after its selection is gone, so only a new one counts.
+    clipboard_only: bool,
+    /// The clipboard text already used or passed over.
+    seen: Option<String>,
 }
 
 impl SelectionSource {
     pub fn new() -> Self {
-        Self {
+        let mut s = Self {
             #[cfg(target_os = "linux")]
             clipboard: None,
             system: true,
             fixed: None,
-        }
+            clipboard_only: cfg!(not(target_os = "linux")),
+            seen: None,
+        };
+        // Whatever was copied before the agent started is no selection.
+        s.settle();
+        s
     }
 
     /// Only `PEEKME_SELECTION`, never the system's selection.
@@ -34,6 +44,18 @@ impl SelectionSource {
             clipboard: None,
             system: false,
             fixed: None,
+            clipboard_only: false,
+            seen: None,
+        }
+    }
+
+    /// Like a Mac's clipboard, holding `text`: it counts until `settle`.
+    #[cfg(test)]
+    pub fn fixed_clipboard(text: &str) -> Self {
+        Self {
+            fixed: Some(text.to_string()),
+            clipboard_only: true,
+            ..Self::without_system()
         }
     }
 
@@ -46,11 +68,29 @@ impl SelectionSource {
     }
 
     pub fn read(&mut self) -> Option<String> {
+        if self.fixed.is_none()
+            && let Ok(s) = std::env::var("PEEKME_SELECTION")
+        {
+            return Some(s).filter(|s| !s.trim().is_empty());
+        }
+        let text = self.read_raw();
+        if self.clipboard_only && text.is_some() && text == self.seen {
+            return None;
+        }
+        text
+    }
+
+    /// The selection was used, or a key was typed with it there: from now on
+    /// a clipboard counts only once something new is copied.
+    pub fn settle(&mut self) {
+        if self.clipboard_only {
+            self.seen = self.read_raw();
+        }
+    }
+
+    fn read_raw(&mut self) -> Option<String> {
         if let Some(s) = &self.fixed {
             return Some(s.clone());
-        }
-        if let Ok(s) = std::env::var("PEEKME_SELECTION") {
-            return Some(s).filter(|s| !s.trim().is_empty());
         }
         if !self.system {
             return None;
