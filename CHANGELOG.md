@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0-beta.3 (2026-09-30)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.0-beta.3`.
+
+- In Codex and Claude Code full screen, an underline could disappear after a small scroll or after
+  opening a tool call, when the same words were on screen twice (for example in your question and
+  in the answer). peekme moved the mark to the other copy and never drew it there. Now a mark
+  follows its own copy, found by the lines around it.
+
 ## 0.4.0-beta.2 (2026-09-30)
 
 A test build, only on crates.io. `cargo install peekme` still gives 0.3.5. To try it:
