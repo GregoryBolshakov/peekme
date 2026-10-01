@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0-beta.5 (2026-09-30)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.0-beta.5`.
+
+- Mac, without tmux or SSH: Option+P with nothing selected explained the last thing Codex copied
+  to the clipboard. Now a copy counts once. After that Option+P types the letter again, until you
+  select or copy something new.
+
 ## 0.4.0-beta.4 (2026-09-30)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.0-beta.4`.
