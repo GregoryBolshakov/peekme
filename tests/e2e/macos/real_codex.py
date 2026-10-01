@@ -170,6 +170,7 @@ def run_case(env, win, case, px, out):
     def screen():
         return traced_screen(trace) if direct else pane(env, sock)
     fails = []
+    reporting_off = False
 
     def check(ok, msg):
         if not ok:
@@ -230,6 +231,7 @@ def run_case(env, win, case, px, out):
             # the mouse from Codex the same way.
             if direct:
                 run.keystroke('keystroke "r" using command down')
+                reporting_off = True
                 time.sleep(1.0)
             r = next(i for i, l in enumerate(lines) if WORD in l)
             c = lines[r].index(WORD)
@@ -319,7 +321,7 @@ def run_case(env, win, case, px, out):
         if direct:
             run.sh("pkill", "-f", "realbin/codex")
             time.sleep(1)
-            if case["mouse"] == "off":
+            if reporting_off:
                 run.keystroke('keystroke "r" using command down')  # reporting back on
                 time.sleep(0.5)
     return name, fails
