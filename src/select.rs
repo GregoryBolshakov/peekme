@@ -186,6 +186,19 @@ pub fn locate(snap: &Snapshot, selection: &str, hint: Option<(usize, usize)>) ->
 /// row, from its first to its last non-blank char (a wide char with its
 /// second half).
 pub fn occurrences(snap: &Snapshot, text: &str) -> Vec<Vec<(usize, usize)>> {
+    copies(snap, text, 0).into_iter().map(|c| c.cells).collect()
+}
+
+/// One place `text` appears on screen, with up to `around` chars of the text
+/// before and after it. Whitespace runs count as one space, so the context
+/// does not depend on where lines wrap.
+pub struct Copy {
+    pub cells: Vec<(usize, usize)>,
+    pub before: Vec<char>,
+    pub after: Vec<char>,
+}
+
+pub fn copies(snap: &Snapshot, text: &str, around: usize) -> Vec<Copy> {
     let (screen, pos) = snap.text_with_positions();
     let (norm_screen, map) = normalize(&screen);
     let (norm_text, _) = normalize(&text.chars().collect::<Vec<_>>());
@@ -195,8 +208,9 @@ pub fn occurrences(snap: &Snapshot, text: &str) -> Vec<Vec<(usize, usize)>> {
     find_all(&norm_screen, &norm_text)
         .into_iter()
         .map(|s| {
+            let end = s + norm_text.len();
             let mut cells: Vec<(usize, usize)> = Vec::new();
-            for &i in &map[s..s + norm_text.len()] {
+            for &i in &map[s..end] {
                 if screen[i].is_whitespace() {
                     continue;
                 }
@@ -213,7 +227,11 @@ pub fn occurrences(snap: &Snapshot, text: &str) -> Vec<Vec<(usize, usize)>> {
                 };
                 cells.extend((from..=c).map(|c| (r, c)));
             }
-            cells
+            Copy {
+                cells,
+                before: norm_screen[s.saturating_sub(around)..s].to_vec(),
+                after: norm_screen[end..(end + around).min(norm_screen.len())].to_vec(),
+            }
         })
         .collect()
 }

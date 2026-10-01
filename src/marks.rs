@@ -12,16 +12,29 @@ use crate::render;
 use crate::select;
 use crate::shadow::Snapshot;
 
+/// Screen cells, (row, column).
+type Cells = Vec<(usize, usize)>;
+
 /// Oldest marks are dropped past this many.
 const MAX: usize = 100;
+
+/// Chars of text kept on each side of a mark, to tell its copy of the words
+/// from others.
+const AROUND: usize = 48;
+/// With the words on screen more than once, the text around a copy must
+/// agree in at least this many chars for it to be the mark's copy.
+const MIN_AGREE: usize = 4;
+/// On the normal screen a mark normally stays at its row. After a resize the
+/// rows rewrap: then a copy whose surroundings agree this much is the mark.
+const REFLOW_AGREE: usize = 24;
 
 pub struct Mark {
     pub text: String,
     pub answer: String,
     pub model: String,
     place: Place,
-    /// Where the terminal last got its underline from us.
-    drawn: Option<(usize, usize)>,
+    /// The cells the terminal last got its underline on from us.
+    drawn: Option<Vec<(usize, usize)>>,
 }
 
 /// Where a mark is.
@@ -32,37 +45,19 @@ pub struct Place {
     /// First cell, the row counted from the top of history, so it stays put
     /// while the normal screen scrolls.
     anchor: (usize, usize),
-    /// The rows around it, to tell it from other copies of the same words
-    /// when a full-screen agent scrolls or expands something above it.
-    context: Context,
+    /// The text just before and after it, whitespace runs as one space.
+    before: Vec<char>,
+    after: Vec<char>,
+    /// Its rows as they were drawn: the whole row text and the mark's columns
+    /// in it. When only some of them are on screen, those still get the line.
+    rows: Vec<Row>,
 }
 
-/// The text of a mark's own rows and of the rows just above and below.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Context {
-    above: String,
-    own: String,
-    below: String,
-}
-
-impl Context {
-    fn of(snap: &Snapshot, cells: &[(usize, usize)]) -> Context {
-        let (first, last) = (cells[0].0, cells[cells.len() - 1].0);
-        Context {
-            above: first
-                .checked_sub(1)
-                .map_or_else(String::new, |r| snap.rows_text(r, r + 1)),
-            own: snap.rows_text(first, last + 1),
-            below: snap.rows_text(last + 1, last + 2),
-        }
-    }
-
-    /// How well `cells` on `snap` fit: None when its own rows differ.
-    fn fit(&self, snap: &Snapshot, cells: &[(usize, usize)]) -> Option<usize> {
-        let here = Context::of(snap, cells);
-        (here.own == self.own)
-            .then(|| usize::from(here.above == self.above) + usize::from(here.below == self.below))
-    }
+struct Row {
+    text: String,
+    from: usize,
+    to: usize,
 }
 
 /// A mark on screen.
@@ -71,7 +66,7 @@ pub struct Visible {
     pub index: usize,
     pub text: String,
     pub cells: Vec<(usize, usize)>,
-    /// It is not where it was last drawn.
+    /// The terminal may not have its line here: drawn elsewhere or not yet.
     pub moved: bool,
 }
 
@@ -89,16 +84,107 @@ impl Place {
         history: usize,
         alt: bool,
     ) -> Option<(Place, Vec<(usize, usize)>)> {
-        let cells = select::occurrences(snap, text)
+        let copy = select::copies(snap, text, AROUND)
             .into_iter()
-            .find(|c| c.first() == Some(&first))?;
+            .find(|c| c.cells.first() == Some(&first))?;
         let place = Place {
             alt,
             anchor: (history + first.0, first.1),
-            context: Context::of(snap, &cells),
+            before: copy.before,
+            after: copy.after,
+            rows: rows_of(snap, &copy.cells),
         };
-        Some((place, cells))
+        Some((place, copy.cells))
     }
+
+    /// How many chars of the text around `copy` agree with the mark's.
+    fn agree(&self, copy: &select::Copy) -> usize {
+        let back = self
+            .before
+            .iter()
+            .rev()
+            .zip(copy.before.iter().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let ahead = self
+            .after
+            .iter()
+            .zip(&copy.after)
+            .take_while(|(a, b)| a == b)
+            .count();
+        back + ahead
+    }
+
+    /// The mark's rows that are on `snap`, when not all of them are: the
+    /// longest run of them, nearest to the old place among equals.
+    fn partly(&self, snap: &Snapshot) -> Option<Vec<(usize, usize)>> {
+        let n = self.rows.len();
+        if n < 2 {
+            return None;
+        }
+        let line = |r: usize| snap.rows_text(r, r + 1);
+        let screen: Vec<String> = (0..snap.rows.len()).map(line).collect();
+        // Rows of the run, distance from the old place, cells.
+        let mut best: Option<(usize, usize, Cells)> = None;
+        for (r, text) in screen.iter().enumerate() {
+            for k in 0..n {
+                if *text != self.rows[k].text || self.rows[k].text.trim().is_empty() {
+                    continue;
+                }
+                // Start of a run: the row before it is not the mark's row before.
+                if k > 0 && r > 0 && screen[r - 1] == self.rows[k - 1].text {
+                    continue;
+                }
+                let mut j = k;
+                while j + 1 < n
+                    && r + (j + 1 - k) < screen.len()
+                    && screen[r + j + 1 - k] == self.rows[j + 1].text
+                {
+                    j += 1;
+                }
+                if k == 0 && j == n - 1 {
+                    continue;
+                }
+                let cells: Vec<_> = (k..=j)
+                    .flat_map(|i| {
+                        let row = r + i - k;
+                        (self.rows[i].from..=self.rows[i].to).map(move |c| (row, c))
+                    })
+                    .collect();
+                let len = j - k + 1;
+                // Where its first row would be, above the screen when cut at the top.
+                let dist = (r as isize - k as isize - self.anchor.0 as isize).unsigned_abs();
+                if best
+                    .as_ref()
+                    .is_none_or(|(l, d, _)| len > *l || (len == *l && dist < *d))
+                {
+                    best = Some((len, dist, cells));
+                }
+            }
+        }
+        best.map(|(_, _, cells)| cells)
+    }
+}
+
+/// Each row `cells` cover: its whole text and the columns covered.
+fn rows_of(snap: &Snapshot, cells: &[(usize, usize)]) -> Vec<Row> {
+    let mut rows: Vec<Row> = Vec::new();
+    let mut last = None;
+    for &(r, c) in cells {
+        if last == Some(r) {
+            if let Some(row) = rows.last_mut() {
+                row.to = c;
+            }
+        } else {
+            rows.push(Row {
+                text: snap.rows_text(r, r + 1),
+                from: c,
+                to: c,
+            });
+            last = Some(r);
+        }
+    }
+    rows
 }
 
 impl Marks {
@@ -107,7 +193,8 @@ impl Marks {
     }
 
     pub fn add(&mut self, text: &str, answer: &str, model: &str, place: Place) {
-        self.list.retain(|m| m.place != place);
+        self.list
+            .retain(|m| (m.place.alt, m.place.anchor) != (place.alt, place.anchor));
         self.list.push(Mark {
             text: text.into(),
             answer: answer.into(),
@@ -120,11 +207,32 @@ impl Marks {
         }
     }
 
-    /// The terminal now has the underline of mark `index` where it is.
-    pub fn drawn(&mut self, index: usize) {
+    /// The terminal now has the underline of mark `index` on `cells`.
+    pub fn drawn(&mut self, index: usize, cells: &[(usize, usize)]) {
         if let Some(m) = self.list.get_mut(index) {
-            m.drawn = Some(m.place.anchor);
+            m.drawn = Some(cells.to_vec());
         }
+    }
+
+    /// Cells that got our underline before and must lose it: those of marks
+    /// that moved or left the screen (`now` is what `visible` found), except
+    /// cells a mark has now. The child does not repaint them: in its own view
+    /// they never changed.
+    pub fn stale(&mut self, now: &[Visible]) -> Vec<(usize, usize)> {
+        let keep: std::collections::HashSet<_> =
+            now.iter().flat_map(|v| v.cells.iter().copied()).collect();
+        let mut out = Vec::new();
+        for (index, m) in self.list.iter_mut().enumerate() {
+            let current = now.iter().find(|v| v.index == index).map(|v| &v.cells);
+            if m.drawn.as_ref() != current
+                && let Some(old) = m.drawn.take()
+            {
+                out.extend(old.into_iter().filter(|c| !keep.contains(c)));
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// The newest mark with this text, wherever it is.
@@ -133,13 +241,14 @@ impl Marks {
         self.list.iter().rev().find(|m| flat(&m.text) == key)
     }
 
-    /// Every mark visible on `snap`: its text, its cells, and whether it is
-    /// not where it was last drawn (then the terminal may not have its line).
-    /// On the normal screen a mark only counts at its own place. Full-screen
-    /// agents scroll their own content, so there the copy whose rows look like
-    /// the mark's rows wins, the nearest one among equals. When several
-    /// copies are on screen and none fits, the mark is not shown rather than
-    /// put on the wrong copy.
+    /// Every mark visible on `snap`: its text and its cells.
+    ///
+    /// On the normal screen a mark stays at its row (after a resize, where
+    /// rows rewrap, at the copy whose surrounding text agrees). Full-screen
+    /// agents scroll their own content, so there the copy whose surrounding
+    /// text agrees most wins, the nearest among equals; with several copies
+    /// and none that agrees, none. When the words are not all on screen, the
+    /// rows of the mark that are still there count.
     pub fn visible(&mut self, snap: &Snapshot, history: usize, alt: bool) -> Vec<Visible> {
         let mut found = Vec::new();
         for (index, m) in self.list.iter_mut().enumerate() {
@@ -147,32 +256,48 @@ impl Marks {
                 continue;
             }
             let (ar, ac) = m.place.anchor;
-            let at = |c: &Vec<(usize, usize)>| c.first().map(|&(r, c)| (history + r, c));
-            let copies: Vec<_> = select::occurrences(snap, &m.text)
-                .into_iter()
-                .filter(|c| alt || at(c) == Some(m.place.anchor))
-                .collect();
+            let at = |c: &[(usize, usize)]| c.first().map(|&(r, c)| (history + r, c));
+            let copies = select::copies(snap, &m.text, AROUND);
             let only = copies.len() == 1;
             let best = copies
                 .into_iter()
-                .filter_map(|c| {
-                    let fit = m.place.context.fit(snap, &c);
-                    (fit.is_some() || only).then_some((fit, c))
+                .map(|c| (m.place.agree(&c), c))
+                .filter(|(agree, c)| {
+                    if alt {
+                        only || *agree >= MIN_AGREE
+                    } else {
+                        at(&c.cells) == Some(m.place.anchor) || *agree >= REFLOW_AGREE
+                    }
                 })
-                .min_by_key(|(fit, c)| {
-                    let (r, col) = at(c).unwrap_or_default();
-                    (std::cmp::Reverse(*fit), r.abs_diff(ar), col.abs_diff(ac))
+                .min_by_key(|(agree, c)| {
+                    let (r, col) = at(&c.cells).unwrap_or_default();
+                    (
+                        at(&c.cells) != Some(m.place.anchor),
+                        std::cmp::Reverse(*agree),
+                        r.abs_diff(ar),
+                        col.abs_diff(ac),
+                    )
                 });
-            if let Some((_, cells)) = best {
-                m.place.anchor = at(&cells).unwrap_or(m.place.anchor);
-                m.place.context = Context::of(snap, &cells);
-                found.push(Visible {
-                    index,
-                    text: m.text.clone(),
-                    cells,
-                    moved: m.drawn != Some(m.place.anchor),
-                });
-            }
+            let cells = match best {
+                Some((_, copy)) => {
+                    m.place.anchor = at(&copy.cells).unwrap_or(m.place.anchor);
+                    m.place.rows = rows_of(snap, &copy.cells);
+                    m.place.before = copy.before;
+                    m.place.after = copy.after;
+                    copy.cells
+                }
+                None if alt => match m.place.partly(snap) {
+                    Some(cells) => cells,
+                    None => continue,
+                },
+                None => continue,
+            };
+            found.push(Visible {
+                index,
+                text: m.text.clone(),
+                moved: m.drawn.as_ref() != Some(&cells),
+                cells,
+            });
         }
         found
     }
@@ -192,6 +317,15 @@ pub fn draw(out: &mut String, snap: &Snapshot, cells: &[(usize, usize)], hover: 
     } else {
         Flags::DOTTED_UNDERLINE
     };
+    paint(out, snap, cells, Some(style));
+}
+
+/// Bytes that redraw `cells` as the child has them, without our line.
+pub fn restore(out: &mut String, snap: &Snapshot, cells: &[(usize, usize)]) {
+    paint(out, snap, cells, None);
+}
+
+fn paint(out: &mut String, snap: &Snapshot, cells: &[(usize, usize)], style: Option<Flags>) {
     let mut i = 0;
     while i < cells.len() {
         let (r, c0) = cells[i];
@@ -208,8 +342,10 @@ pub fn draw(out: &mut String, snap: &Snapshot, cells: &[(usize, usize)], hover: 
             .iter()
             .map(|cell| {
                 let mut cell = cell.clone();
-                cell.flags.remove(Flags::ALL_UNDERLINES);
-                cell.flags.insert(style);
+                if let Some(style) = style {
+                    cell.flags.remove(Flags::ALL_UNDERLINES);
+                    cell.flags.insert(style);
+                }
                 cell
             })
             .collect();
@@ -274,6 +410,80 @@ mod tests {
         assert!(out.contains("the  PTY"));
     }
 
+    fn alt(cols: u16, rows: u16, lines: &[&str]) -> Snapshot {
+        let mut b = b"\x1b[?1049h".to_vec();
+        for (i, l) in lines.iter().enumerate() {
+            b.extend(format!("\x1b[{};1H{l}", i + 1).bytes());
+        }
+        let mut s = Shadow::new(cols, rows);
+        s.advance(&b);
+        s.snapshot()
+    }
+
+    #[test]
+    fn rows_of_a_mark_still_on_screen_keep_their_line() {
+        let text = "the quick brown fox jumps over";
+        let page = [
+            "intro",
+            "a line with the quick brown",
+            "fox jumps over the dog",
+            "outro",
+        ];
+        let snap = alt(30, 6, &page);
+        let (place, cells) = Place::new(&snap, text, (1, 12), 0, true).unwrap();
+        assert_eq!(cells.last(), Some(&(2, 13)));
+        let mut marks = Marks::default();
+        marks.add(text, "x", "m", place);
+
+        // Scrolled up by two rows: only the second row of the mark is left.
+        let snap = alt(30, 6, &page[2..]);
+        let v = marks.visible(&snap, 0, true);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].cells, (0..=13).map(|c| (0, c)).collect::<Vec<_>>());
+        // Scrolled down: only the first row, now at the bottom.
+        let snap = alt(30, 6, &["", "", "", "", "", "a line with the quick brown"]);
+        let v = marks.visible(&snap, 0, true);
+        assert_eq!(v[0].cells, (12..=26).map(|c| (5, c)).collect::<Vec<_>>());
+        // Back in full.
+        let snap = alt(30, 6, &page);
+        assert_eq!(marks.visible(&snap, 0, true)[0].cells, cells);
+    }
+
+    #[test]
+    fn a_mark_is_found_again_after_its_rows_rewrap() {
+        let text = "pseudo-terminal";
+        let wide = [
+            "> what is a pseudo-terminal",
+            "- the pseudo-terminal layer: tmux gives each pane one",
+        ];
+        let snap = alt(60, 6, &wide);
+        let (place, _) = Place::new(&snap, text, (1, 6), 0, true).unwrap();
+        let mut marks = Marks::default();
+        marks.add(text, "x", "m", place);
+        // Narrower: the answer's line wraps, the question stays on row 0.
+        let narrow = [
+            "> what is a pseudo-terminal",
+            "- the",
+            "  pseudo-terminal layer: tmux",
+            "  gives each pane one",
+        ];
+        let v = marks.visible(&alt(30, 6, &narrow), 0, true);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].cells[0], (2, 2), "the answer's copy");
+
+        // The normal screen: the row number changes when lines rewrap.
+        let mut s = Shadow::new(60, 4);
+        s.advance(b"first\r\n- the pseudo-terminal layer: tmux gives each pane one");
+        let (place, _) = Place::new(&s.snapshot(), text, (1, 6), s.history_size(), false).unwrap();
+        let mut marks = Marks::default();
+        marks.add(text, "x", "m", place);
+        let mut s = Shadow::new(30, 4);
+        s.advance(b"first\r\n- the\r\n  pseudo-terminal layer: tmux\r\n  gives each pane one");
+        let v = marks.visible(&s.snapshot(), s.history_size(), false);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].cells[0], (2, 2));
+    }
+
     #[test]
     fn a_full_screen_mark_keeps_to_its_copy_when_another_is_closer() {
         // The words are in the question (top row, which the agent pins) and
@@ -299,7 +509,7 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].cells[0], (7, 6), "still the answer's copy");
         assert!(v[0].moved);
-        marks.drawn(v[0].index);
+        marks.drawn(v[0].index, &v[0].cells);
         assert!(!marks.visible(&snap, 0, true)[0].moved);
 
         // The row changed and two copies are on screen: show none, not the wrong one.

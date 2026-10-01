@@ -711,6 +711,16 @@ impl App {
                 .visible(&snap, self.shadow.history_size(), self.shadow.alt_screen());
         let known = self.known_top();
         let mut s = String::new();
+        let stale: Vec<_> = self
+            .marks
+            .stale(&placed)
+            .into_iter()
+            .filter(|&(r, c)| r >= known && r < snap.rows.len() && c < snap.cols)
+            .collect();
+        marks::restore(&mut s, &snap, &stale);
+        if !stale.is_empty() {
+            self.hover = None;
+        }
         for v in placed {
             let touched = all
                 || v.moved
@@ -724,7 +734,7 @@ impl App {
                     &v.cells,
                     self.hover.as_ref() == Some(&v.cells),
                 );
-                self.marks.drawn(v.index);
+                self.marks.drawn(v.index, &v.cells);
             }
         }
         self.set_pointer(self.hover.is_some(), out)?;
@@ -1158,10 +1168,21 @@ impl App {
     ) -> (Option<String>, Option<Located>) {
         self.selection_source = "none";
         // Codex copies the markdown source of an answer (`- **Desktop app**`),
-        // which is not on screen: then its highlight below is the selection.
+        // which is not on screen as such. A long copy can still be found by
+        // its first words, but then it is not what the screen shows: Codex's
+        // highlight below is the selection.
+        let highlight = matches!(self.agent, Some(Agent::Codex) | None)
+            && codex::screen::selection(snap).is_some();
+        let shown = |loc: &Located, text: &str| {
+            !highlight
+                || select::normalize(&loc.screen.text[loc.screen.start..loc.screen.end]).0
+                    == select::normalize(&text.chars().collect::<Vec<_>>()).0
+        };
         let mut unlocated = None;
         if let Some(s) = &self.app_selection {
-            if let Some(loc) = select::locate(snap, &s.text, Some(s.cell)) {
+            if let Some(loc) = select::locate(snap, &s.text, Some(s.cell))
+                && shown(&loc, &s.text)
+            {
                 self.selection_source = "osc52";
                 return (Some(s.text.clone()), Some(loc));
             }
@@ -1173,7 +1194,9 @@ impl App {
             && let Some(text) = crate::tmux::fresh_buffer(self.tmux_baseline.as_deref(), tmux_age)
         {
             let hint = self.last_release.map(|(_, cell)| cell);
-            if let Some(loc) = select::locate(snap, &text, hint) {
+            if let Some(loc) = select::locate(snap, &text, hint)
+                && shown(&loc, &text)
+            {
                 self.selection_source = "tmux";
                 return (Some(text), Some(loc));
             }
@@ -2411,6 +2434,30 @@ mod tests {
         assert!(app.open.is_some(), "π opened the box");
         assert!(child.is_empty(), "π did not reach Codex");
         assert_eq!(app.selection_source, "reverse");
+
+        // A long copy found on screen by its first words only, markdown after
+        // them: still Codex's highlight, the text the user sees.
+        let mut app = test_app_for(Agent::Codex, 70, 10);
+        app.selection = SelectionSource::without_system();
+        app.on_output(
+            b"\x1b[3;1H\x1b[7m3. Step number 3 of the plan, with some filler words.\x1b[0m\r\n\
+              \x1b[7m\xe2\x80\xa2 Desktop app\x1b[0m: install it\r\n",
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        app.shadow.flush_sync();
+        app.on_input(b"\x1b[<0;1;3M\x1b[<0;13;4m", &mut out, &mut child)
+            .unwrap();
+        // "3. Step number 3 of the plan, with some filler words.\n- **Desktop app**"
+        let osc = b"\x1b]52;c;My4gU3RlcCBudW1iZXIgMyBvZiB0aGUgcGxhbiwgd2l0aCBzb21lIGZpbGxlciB3b3Jkcy4KLSAqKkRlc2t0b3AgYXBwKio=\x07";
+        app.on_output(osc, &mut out, &mut child).unwrap();
+        child.clear();
+        app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
+        assert!(app.open.is_some());
+        assert_eq!(app.selection_source, "reverse");
+        let sel = &app.open.as_ref().unwrap().selection.as_ref().unwrap().0;
+        assert!(sel.ends_with("• Desktop app"), "{sel:?}");
     }
 
     /// Real GitHub Copilot CLI 1.0.89 at 120x40: startup, one question and its
