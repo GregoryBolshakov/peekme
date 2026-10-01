@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0-beta.4 (2026-09-30)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.0-beta.4`.
+
+- Underlined text that is only partly on screen keeps the line on the part you can see.
+- After you resize the window, underlines find their text again where the lines wrap now.
+- Leftover underlines no longer stay behind on other text after scrolling in Codex.
+- Codex: a selection over several formatted lines now gets its underline too.
+
 ## 0.4.0-beta.3 (2026-09-30)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.0-beta.3`.
