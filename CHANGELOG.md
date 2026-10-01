@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0-beta.6 (2026-09-30)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.0-beta.6`.
+
+- Mac Terminal with View > Allow Mouse Reporting off: a drag is Terminal's own selection, which
+  Codex and peekme never get, so Option+P typed the letter. Now Option+P tells you once to turn
+  mouse reporting on (Cmd+R). Alt+P says it every time.
+- Option+P is also understood when the terminal reports Option as Alt.
+
 ## 0.4.0-beta.5 (2026-09-30)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.0-beta.5`.
