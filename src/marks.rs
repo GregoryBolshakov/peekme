@@ -81,7 +81,7 @@ impl Marks {
         self.list.iter().rev().find(|m| flat(&m.text) == key)
     }
 
-    /// Cells of every mark visible on `snap`. On the normal screen a mark
+    /// Text and cells of every mark visible on `snap`. On the normal screen a mark
     /// only counts at its own place. Full-screen agents scroll their own
     /// content, so there the occurrence nearest to the old place wins and
     /// becomes the new place.
@@ -90,7 +90,7 @@ impl Marks {
         snap: &Snapshot,
         history: usize,
         alt: bool,
-    ) -> Vec<Vec<(usize, usize)>> {
+    ) -> Vec<(String, Vec<(usize, usize)>)> {
         let mut found = Vec::new();
         for m in self.list.iter_mut().filter(|m| m.place.alt == alt) {
             let (ar, ac) = m.place.anchor;
@@ -101,7 +101,7 @@ impl Marks {
                 .min_by_key(|c| at(c).map(|(r, c)| (r.abs_diff(ar), c.abs_diff(ac))));
             if let Some(cells) = best {
                 m.place.anchor = at(&cells).unwrap_or(m.place.anchor);
-                found.push(cells);
+                found.push((m.text.clone(), cells));
             }
         }
         found
@@ -113,9 +113,15 @@ fn flat(s: &str) -> Vec<char> {
     select::normalize(&s.chars().collect::<Vec<_>>()).0
 }
 
-/// Bytes that redraw `cells` of `snap` with a dotted underline. The caller
-/// puts the cursor and the pen back.
-pub fn draw(out: &mut String, snap: &Snapshot, cells: &[(usize, usize)]) {
+/// Bytes that redraw `cells` of `snap` with a dotted underline, or a solid one
+/// while the pointer is over the mark. The caller puts the cursor and the pen
+/// back.
+pub fn draw(out: &mut String, snap: &Snapshot, cells: &[(usize, usize)], hover: bool) {
+    let style = if hover {
+        Flags::UNDERLINE
+    } else {
+        Flags::DOTTED_UNDERLINE
+    };
     let mut i = 0;
     while i < cells.len() {
         let (r, c0) = cells[i];
@@ -133,7 +139,7 @@ pub fn draw(out: &mut String, snap: &Snapshot, cells: &[(usize, usize)]) {
             .map(|cell| {
                 let mut cell = cell.clone();
                 cell.flags.remove(Flags::ALL_UNDERLINES);
-                cell.flags.insert(Flags::DOTTED_UNDERLINE);
+                cell.flags.insert(style);
                 cell
             })
             .collect();
@@ -161,7 +167,10 @@ mod tests {
         assert_eq!(cells, (4..11).map(|c| (0, c)).collect::<Vec<_>>());
         let mut marks = Marks::default();
         marks.add("ripgrep", "a search tool", "haiku", place);
-        assert_eq!(marks.visible(&snap, s.history_size(), false), vec![cells]);
+        assert_eq!(
+            marks.visible(&snap, s.history_size(), false),
+            vec![("ripgrep".to_string(), cells)]
+        );
 
         // Two lines scroll off: the mark is gone, not moved to the other ripgrep.
         s.advance(b"\r\nfour\r\nfive\r\nsix");
@@ -182,12 +191,16 @@ mod tests {
         // The agent scrolled its own view by one row.
         let s = shadow(b"\x1b[?1049h\x1b[1;1Hsee the  PTY  here");
         let snap = s.snapshot();
-        let cells = marks.visible(&snap, 0, true);
+        let cells: Vec<_> = marks
+            .visible(&snap, 0, true)
+            .into_iter()
+            .map(|(_, c)| c)
+            .collect();
         assert_eq!(cells, vec![(4..12).map(|c| (0, c)).collect::<Vec<_>>()]);
         assert!(marks.visible(&snap, 0, false).is_empty());
 
         let mut out = String::new();
-        draw(&mut out, &snap, &cells[0]);
+        draw(&mut out, &snap, &cells[0], false);
         assert!(out.starts_with("\x1b[1;5H"));
         assert!(out.contains(";4:4"));
         assert!(out.contains("the  PTY"));

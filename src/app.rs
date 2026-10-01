@@ -77,6 +77,27 @@ struct AppSelection {
 /// clipboard writes (Claude's `/copy`) are not selections.
 const SELECTION_AFTER_RELEASE: Duration = Duration::from_secs(2);
 
+/// A mark on screen: its text and the cells it covers.
+struct MarkHit {
+    text: String,
+    cells: Vec<(usize, usize)>,
+}
+
+/// A left press on a mark, held back until it is a click (released on the
+/// same cell) or a drag (then the child gets it after all).
+struct HeldPress {
+    bytes: Vec<u8>,
+    cell: (usize, usize),
+    hit: MarkHit,
+}
+
+/// More presses on a mark this soon after a click on it are part of a double
+/// or triple click: the box is open already, they do nothing.
+const MULTI_CLICK: Duration = Duration::from_millis(500);
+/// A press this soon after the window got focus is the click that brought it
+/// to the front, not a click on a mark.
+const ACTIVATION: Duration = Duration::from_millis(200);
+
 /// A hotkey press waiting for the child to finish a synchronized update.
 struct PendingOpen {
     since: Instant,
@@ -308,6 +329,14 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         marks: Marks::default(),
         marks_stale: false,
         marks_all: false,
+        held_press: None,
+        swallow_release: false,
+        last_mark_click: None,
+        focus_in_at: None,
+        clicked: None,
+        hover: None,
+        pointer_on: false,
+        child_pointer: None,
     };
     let mut stdout = std::io::stdout().lock();
     if crate::tmux::inside() {
@@ -456,6 +485,19 @@ struct App {
     marks_stale: bool,
     /// peekme repainted rows itself (closing a box): draw every mark again.
     marks_all: bool,
+    held_press: Option<HeldPress>,
+    /// The release of a press that was swallowed (a double click on a mark).
+    swallow_release: bool,
+    last_mark_click: Option<(Instant, String)>,
+    focus_in_at: Option<Instant>,
+    /// A mark the user clicked, for the next open instead of the selection.
+    clicked: Option<MarkHit>,
+    /// Cells of the mark under the pointer, drawn with a solid underline.
+    hover: Option<Vec<(usize, usize)>>,
+    /// peekme set the pointer shape (OSC 22) to a hand.
+    pointer_on: bool,
+    /// The child's last pointer shape request, to give it back.
+    child_pointer: Option<Vec<u8>>,
 }
 
 impl App {
@@ -468,6 +510,13 @@ impl App {
         if self.degraded {
             out.write_all(bytes)?;
             return Ok(out.flush()?);
+        }
+        if let Some(i) = find(bytes, b"\x1b]22;") {
+            let end = bytes[i..]
+                .iter()
+                .position(|&b| b == 0x07 || b == b'\\')
+                .map_or(bytes.len(), |e| i + e + 1);
+            self.child_pointer = Some(bytes[i..end].to_vec());
         }
         if self.open.is_none() {
             // Pass through first: whatever happens below, the user sees the child.
@@ -662,17 +711,18 @@ impl App {
                 .visible(&snap, self.shadow.history_size(), self.shadow.alt_screen());
         let known = self.known_top();
         let mut s = String::new();
-        for cells in placed {
+        for (_, cells) in placed {
             let touched = all
                 || damaged
                     .as_ref()
                     .is_none_or(|rows| cells.iter().any(|(r, _)| rows.contains(r)));
             if touched && cells.iter().all(|&(r, _)| r >= known) {
-                marks::draw(&mut s, &snap, &cells);
+                marks::draw(&mut s, &snap, &cells, self.hover.as_ref() == Some(&cells));
             }
         }
+        self.set_pointer(self.hover.is_some(), out)?;
         if s.is_empty() {
-            return Ok(());
+            return Ok(out.flush()?);
         }
         crate::event(
             "marks",
@@ -722,14 +772,21 @@ impl App {
             self.sniff_colors(&t);
             if matches!(t.bytes.as_slice(), b"\x1b[I" | b"\x1b[O") {
                 self.consumed.clear();
+                self.focus_in_at = (t.bytes == b"\x1b[I").then(Instant::now);
             }
             // Repeats and releases of keys we consumed never reach the child.
             if t.kind != Kind::Passive && self.consumed.swallow(&t) {
                 continue;
             }
+            if let Kind::Mouse(m) = t.kind
+                && self.mark_mouse(m, &t.bytes, &mut forward, out, child)?
+            {
+                continue;
+            }
             match (t.kind, self.open.is_some()) {
                 (Kind::Hotkey, _) => {
                     self.consumed.consume(&t);
+                    self.clicked = None;
                     if self.open.is_some() {
                         self.flush_forward(&mut forward, child)?;
                         // Alt+P again on the same selection: explain with the whole conversation.
@@ -786,6 +843,208 @@ impl App {
             }
         }
         self.flush_forward(&mut forward, child)
+    }
+
+    /// Clicks and hover on marks. A plain left press on a mark is held back:
+    /// released on the same cell it opens the saved answer and the child never
+    /// sees it, a drag sends it on so the child's selection starts there.
+    /// Returns true when the token is used up here.
+    fn mark_mouse(
+        &mut self,
+        m: Mouse,
+        bytes: &[u8],
+        forward: &mut Vec<u8>,
+        out: &mut dyn Write,
+        child: &mut dyn Write,
+    ) -> Result<bool> {
+        let cell = input::mouse_cell(bytes);
+        let button = input::mouse_button(bytes).unwrap_or(u32::MAX);
+        match m {
+            Mouse::Press => {
+                if let Some(h) = self.held_press.take() {
+                    self.forward_press(&h.bytes, forward, out, child)?;
+                }
+                self.swallow_release = false;
+                let Some(cell) = cell else {
+                    return Ok(false);
+                };
+                // Modifiers belong to the terminal, tmux or the agent (links).
+                if button != 0 || self.focus_in_at.is_some_and(|t| t.elapsed() < ACTIVATION) {
+                    return Ok(false);
+                }
+                let Some(hit) = self.mark_hit(cell) else {
+                    return Ok(false);
+                };
+                if let Some((at, text)) = &self.last_mark_click
+                    && at.elapsed() < MULTI_CLICK
+                    && *text == hit.text
+                {
+                    self.last_mark_click = Some((Instant::now(), hit.text));
+                    self.swallow_release = true;
+                    return Ok(true);
+                }
+                self.held_press = Some(HeldPress {
+                    bytes: bytes.to_vec(),
+                    cell,
+                    hit,
+                });
+                Ok(true)
+            }
+            Mouse::Release => {
+                if std::mem::take(&mut self.swallow_release) {
+                    return Ok(true);
+                }
+                let Some(h) = self.held_press.take() else {
+                    return Ok(false);
+                };
+                if cell == Some(h.cell) {
+                    self.flush_forward(forward, child)?;
+                    self.click_mark(h.hit, out)?;
+                    return Ok(true);
+                }
+                self.forward_press(&h.bytes, forward, out, child)?;
+                Ok(false)
+            }
+            Mouse::Motion => {
+                let held_button = button & 3 != 3;
+                if held_button && let Some(h) = self.held_press.take() {
+                    self.forward_press(&h.bytes, forward, out, child)?;
+                } else if !held_button && self.held_press.is_none() && self.open.is_none() {
+                    self.hover(cell, out)?;
+                }
+                Ok(false)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// A press the child gets after all, as it would have without peekme.
+    fn forward_press(
+        &mut self,
+        bytes: &[u8],
+        forward: &mut Vec<u8>,
+        out: &mut dyn Write,
+        child: &mut dyn Write,
+    ) -> Result<()> {
+        if self.open.is_some() {
+            self.flush_forward(forward, child)?;
+            self.close(out, false)?;
+        }
+        self.note_mouse(Mouse::Press, bytes);
+        forward.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    /// The mark at screen `cell`, if a click there is peekme's: the child
+    /// takes the mouse, and the cell is not a link (links are the agent's).
+    /// With a box open, only the mark of that box counts (a click closes it).
+    fn mark_hit(&mut self, cell: (usize, usize)) -> Option<MarkHit> {
+        if self.marks.is_empty() || !self.shadow.mouse_mode() {
+            return None;
+        }
+        if let Some(open) = &self.open {
+            let (text, _) = open.selection.as_ref()?;
+            let (_, cells) = open.mark.as_ref()?;
+            let (top, bottom) = open.lay.region;
+            let box_rows = open.lay.box_top..open.lay.box_top + open.lay.box_height;
+            let shown = cells
+                .iter()
+                .all(|&(r, _)| !(top..bottom).contains(&r) && !box_rows.contains(&r));
+            let is_link = open
+                .snap
+                .rows
+                .get(cell.0)?
+                .get(cell.1)?
+                .hyperlink()
+                .is_some();
+            return (shown && !is_link && cells.contains(&cell) && self.marks.find(text).is_some())
+                .then(|| MarkHit {
+                    text: text.clone(),
+                    cells: cells.clone(),
+                });
+        }
+        let snap = self.shadow.snapshot();
+        if snap.rows.get(cell.0)?.get(cell.1)?.hyperlink().is_some() {
+            return None;
+        }
+        let known = self.known_top();
+        self.marks
+            .visible(&snap, self.shadow.history_size(), self.shadow.alt_screen())
+            .into_iter()
+            .find(|(_, c)| c.contains(&cell) && c.iter().all(|&(r, _)| r >= known))
+            .map(|(text, cells)| MarkHit { text, cells })
+    }
+
+    /// A click on a mark: show its saved answer, or close it if it is open.
+    fn click_mark(&mut self, hit: MarkHit, out: &mut dyn Write) -> Result<()> {
+        self.last_mark_click = Some((Instant::now(), hit.text.clone()));
+        let own = self
+            .open
+            .as_ref()
+            .and_then(|o| o.selection.as_ref())
+            .is_some_and(|(s, _)| *s == hit.text);
+        crate::event(
+            "mark_click",
+            serde_json::json!({"selection": hit.text, "close": own}),
+        );
+        self.close(out, false)?;
+        if own {
+            return Ok(());
+        }
+        self.set_pointer(false, out)?;
+        self.hover = None;
+        self.clicked = Some(hit);
+        self.request_open(out)
+    }
+
+    /// The pointer moved: a mark under it gets a solid underline and a hand
+    /// pointer (OSC 22, where the terminal has it), like a link.
+    fn hover(&mut self, cell: Option<(usize, usize)>, out: &mut dyn Write) -> Result<()> {
+        if self.marks.is_empty() && self.hover.is_none() {
+            return Ok(());
+        }
+        let now = cell.and_then(|c| self.mark_hit(c)).map(|h| h.cells);
+        if now == self.hover {
+            return Ok(());
+        }
+        let old = std::mem::replace(&mut self.hover, now);
+        if !self.can_draw() {
+            // Mid-frame: the next quiet tick draws every mark with this hover.
+            self.marks_all = true;
+            return Ok(());
+        }
+        let snap = self.shadow.snapshot();
+        let mut frame = String::from(SYNC_BEGIN);
+        if let Some(cells) = &old {
+            marks::draw(&mut frame, &snap, cells, false);
+        }
+        if let Some(cells) = &self.hover {
+            marks::draw(&mut frame, &snap, cells, true);
+        }
+        render::restore_cursor(&mut frame, &snap);
+        frame.push_str(SYNC_END);
+        out.write_all(frame.as_bytes())?;
+        self.set_pointer(self.hover.is_some(), out)?;
+        out.flush()?;
+        Ok(())
+    }
+
+    /// The hand pointer over a mark; off it, the child's own shape again.
+    fn set_pointer(&mut self, hand: bool, out: &mut dyn Write) -> Result<()> {
+        if hand == self.pointer_on {
+            return Ok(());
+        }
+        self.pointer_on = hand;
+        if hand {
+            out.write_all(b"\x1b]22;pointer\x1b\\")?;
+        } else {
+            match &self.child_pointer {
+                Some(seq) => out.write_all(seq)?,
+                // Empty: the terminal's own default.
+                None => out.write_all(b"\x1b]22;\x1b\\")?,
+            }
+        }
+        Ok(())
     }
 
     fn flush_forward(&mut self, forward: &mut Vec<u8>, child: &mut dyn Write) -> Result<()> {
@@ -977,7 +1236,14 @@ impl App {
         self.next_id += 1;
         let id = self.next_id;
 
-        let (selection, located) = self.current_selection(&snap);
+        let (selection, located) = match self.clicked.take() {
+            Some(hit) => {
+                self.selection_source = "mark";
+                let loc = select::at_cells(&snap, &hit.cells);
+                (Some(hit.text), loc)
+            }
+            None => self.current_selection(&snap),
+        };
         let hidden = selection.is_none() && self.selection_hidden();
         let mut remembered = None;
         let mut strip = None;
@@ -1263,7 +1529,7 @@ impl App {
                         .all(|&(r, _)| !(top..bottom).contains(&r) && !box_rows.contains(&r))
                     {
                         let mut s = String::from(SYNC_BEGIN);
-                        marks::draw(&mut s, &open.snap, cells);
+                        marks::draw(&mut s, &open.snap, cells, false);
                         render::restore_cursor(&mut s, &open.snap);
                         s.push_str("\x1b[?25l");
                         if let Some(top) = open.strip_top {
@@ -1328,6 +1594,8 @@ impl App {
         }
         self.pending = None;
         self.marks_all = true;
+        self.hover = None;
+        self.held_press = None;
         self.viewport_top = None;
         self.size = (cols, rows);
         self.shadow.resize(cols, rows);
@@ -1392,6 +1660,10 @@ fn tmux_mouse_message(agent: Option<Agent>) -> String {
 }
 
 /// Typed text with Greek letters other than `π`.
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
 fn types_greek(bytes: &[u8]) -> bool {
     String::from_utf8_lossy(bytes).chars().any(|c| {
         matches!(c, '\u{0370}'..='\u{03ff}' | '\u{1f00}'..='\u{1fff}') && c != input::MAC_OPTION_P
@@ -1539,6 +1811,112 @@ mod tests {
         assert_eq!(open.peek.status, Status::Done);
     }
 
+    /// `SCREEN` with the mouse taken by the child and "true colour" (row 2,
+    /// columns 20-30 in mouse terms) answered once.
+    fn app_with_a_mark() -> App {
+        let mut app = test_app(40, 12);
+        app.selection = SelectionSource::fixed("true colour");
+        let mut out = Vec::new();
+        app.on_output(SCREEN, &mut out, &mut Vec::new()).unwrap();
+        app.on_output(
+            b"\x1b[?1000h\x1b[?1003h\x1b[?1006h",
+            &mut out,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        app.open_peek(&mut out).unwrap();
+        let id = app.open.as_ref().unwrap().id;
+        app.on_progress(id, Progress::Delta("24-bit RGB.".into()), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        app.close(&mut out, false).unwrap();
+        app.selection = SelectionSource::without_system();
+        app
+    }
+
+    #[test]
+    fn a_click_on_a_mark_opens_its_answer_and_again_closes_it() {
+        let mut app = app_with_a_mark();
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_input(b"\x1b[<0;24;2M\x1b[<0;24;2m", &mut out, &mut child)
+            .unwrap();
+        let open = app.open.as_ref().expect("the click opened the box");
+        assert_eq!(open.peek.text, "24-bit RGB.");
+        assert!(child.is_empty(), "the child never saw the click");
+
+        // A double click is one open: its second press is dropped.
+        app.on_input(b"\x1b[<0;24;2M\x1b[<0;24;2m", &mut out, &mut child)
+            .unwrap();
+        assert!(app.open.is_some() && child.is_empty());
+
+        // Later, a click on the same mark closes the box.
+        app.last_mark_click = None;
+        app.on_input(b"\x1b[<0;22;2M\x1b[<0;22;2m", &mut out, &mut child)
+            .unwrap();
+        assert!(app.open.is_none());
+        assert!(child.is_empty());
+    }
+
+    #[test]
+    fn mark_clicks_leave_drags_modifiers_links_and_window_focus_to_the_child() {
+        let mut app = app_with_a_mark();
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        // A drag that starts on the mark: the child gets the press after all.
+        app.on_input(b"\x1b[<0;24;2M", &mut out, &mut child)
+            .unwrap();
+        assert!(child.is_empty(), "held until it is a click or a drag");
+        app.on_input(b"\x1b[<32;27;2M\x1b[<0;27;2m", &mut out, &mut child)
+            .unwrap();
+        assert_eq!(child, b"\x1b[<0;24;2M\x1b[<32;27;2M\x1b[<0;27;2m");
+        assert!(app.open.is_none());
+        child.clear();
+
+        // Ctrl+click is the agent's (links).
+        app.on_input(b"\x1b[<16;24;2M\x1b[<16;24;2m", &mut out, &mut child)
+            .unwrap();
+        assert!(app.open.is_none());
+        assert_eq!(child, b"\x1b[<16;24;2M\x1b[<16;24;2m");
+        child.clear();
+
+        // The click that brings the window to the front.
+        app.on_input(b"\x1b[I\x1b[<0;24;2M\x1b[<0;24;2m", &mut out, &mut child)
+            .unwrap();
+        assert!(app.open.is_none());
+        assert_eq!(child, b"\x1b[I\x1b[<0;24;2M\x1b[<0;24;2m");
+        child.clear();
+        app.focus_in_at = None;
+
+        // The agent made those words a link: a click is the agent's.
+        app.on_output(
+            b"\x1b]8;;https://example.com\x1b\\\x1b[2;20Htrue colour\x1b]8;;\x1b\\",
+            &mut out,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        app.on_input(b"\x1b[<0;24;2M\x1b[<0;24;2m", &mut out, &mut child)
+            .unwrap();
+        assert!(app.open.is_none());
+        assert_eq!(child, b"\x1b[<0;24;2M\x1b[<0;24;2m");
+    }
+
+    #[test]
+    fn hovering_a_mark_underlines_it_solid_with_a_hand_pointer() {
+        let mut app = app_with_a_mark();
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_input(b"\x1b[<35;24;2M", &mut out, &mut child)
+            .unwrap();
+        let shown = String::from_utf8_lossy(&out).to_string();
+        assert!(shown.contains("\x1b]22;pointer\x1b\\"), "{shown:?}");
+        assert!(!shown.contains("4:4"), "solid, not dotted");
+        assert_eq!(child, b"\x1b[<35;24;2M", "the child still gets the motion");
+        out.clear();
+        app.on_input(b"\x1b[<35;5;6M", &mut out, &mut child)
+            .unwrap();
+        let shown = String::from_utf8_lossy(&out).to_string();
+        assert!(shown.contains("4:4"), "dotted again");
+        assert!(shown.contains("\x1b]22;\x1b\\"), "pointer given back");
+    }
+
     #[test]
     fn output_held_while_open_is_replayed_correctly() {
         // Scroll-region inserts (how Codex adds history) arrive while the box is open.
@@ -1678,6 +2056,14 @@ mod tests {
             marks: Marks::default(),
             marks_stale: false,
             marks_all: false,
+            held_press: None,
+            swallow_release: false,
+            last_mark_click: None,
+            focus_in_at: None,
+            clicked: None,
+            hover: None,
+            pointer_on: false,
+            child_pointer: None,
         }
     }
 

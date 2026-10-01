@@ -73,6 +73,18 @@ fn parse_mouse(bytes: &[u8]) -> Option<Mouse> {
     })
 }
 
+/// Button and modifier bits of an SGR mouse report: 0 is a plain left
+/// button, +4 Shift, +8 Meta, +16 Ctrl, +32 motion.
+pub fn mouse_button(bytes: &[u8]) -> Option<u32> {
+    let body = bytes.strip_prefix(b"\x1b[<")?;
+    std::str::from_utf8(body.get(..body.len().checked_sub(1)?)?)
+        .ok()?
+        .split(';')
+        .next()?
+        .parse()
+        .ok()
+}
+
 /// Screen cell (0-based row, column) of an SGR mouse report.
 pub fn mouse_cell(bytes: &[u8]) -> Option<(usize, usize)> {
     let body = bytes.strip_prefix(b"\x1b[<")?;

@@ -218,6 +218,27 @@ pub fn occurrences(snap: &Snapshot, text: &str) -> Vec<Vec<(usize, usize)>> {
         .collect()
 }
 
+/// `cells` (one occurrence, as `occurrences` gives it) as a located range.
+pub fn at_cells(snap: &Snapshot, cells: &[(usize, usize)]) -> Option<Located> {
+    let (screen, pos) = snap.text_with_positions();
+    let (&first, &last) = (cells.first()?, cells.last()?);
+    let start = pos.iter().position(|&p| p == first)?;
+    // The last cell may be the second half of a wide char.
+    let end = pos
+        .iter()
+        .rposition(|&p| p == last || p == (last.0, last.1.wrapping_sub(1)))?
+        + 1;
+    Some(Located {
+        first_row: first.0,
+        last_row: last.0,
+        screen: crate::context::ScreenSel {
+            text: screen,
+            start,
+            end,
+        },
+    })
+}
+
 fn find_all(hay: &[char], needle: &[char]) -> Vec<usize> {
     if needle.len() > hay.len() {
         return Vec::new();
