@@ -22,14 +22,13 @@ it and never reaches the agent, typing goes through, Esc closes the box; and
 with nothing selected Option+P types π (default) or shows the "select text"
 hint (meta).
 """
-import argparse, json, os, re, shlex, shutil, subprocess, sys, tempfile, time
+import argparse, json, os, plistlib, re, shlex, shutil, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import matrix as m  # noqa: E402
 
 SGR = re.compile(r"\x1b\[<(\d+);(\d+);(\d+)([Mm])")
-TERMINAL_PLIST = os.path.expanduser("~/Library/Preferences/com.apple.Terminal.plist")
 ITERM_PROFILES = os.path.expanduser("~/Library/Application Support/iTerm2/DynamicProfiles")
 
 
@@ -75,12 +74,7 @@ def quit_terminals():
 def launch(terminal, option, script):
     quit_terminals()
     if terminal == "terminal":
-        # Option as Meta lives in the profile ("Basic" is the default one).
-        key = "':Window Settings:Basic:useOptionAsMetaKey'"
-        sh("/usr/libexec/PlistBuddy", "-c", f"Delete {key}", TERMINAL_PLIST)
-        sh("/usr/libexec/PlistBuddy", "-c", f"Add {key} bool {str(option == 'meta').lower()}", TERMINAL_PLIST)
-        sh("killall", "cfprefsd")
-        time.sleep(1)
+        terminal_option_as_meta(option == "meta")
         sh("open", "-a", "Terminal", script)
     else:
         os.makedirs(ITERM_PROFILES, exist_ok=True)
@@ -91,6 +85,23 @@ def launch(terminal, option, script):
                                      "Right Option Key Sends": opt}]}, f)
         sh("defaults", "write", "com.googlecode.iterm2", "Default Bookmark Guid", "-string", "peekme-e2e")
         sh("open", "/Applications/iTerm.app")
+
+
+def terminal_option_as_meta(on):
+    """Option as Meta lives in the profile ("Basic" is the default one). Once
+    Terminal has run, cfprefsd caches its prefs and an edit of the plist file
+    is lost, so go through `defaults`."""
+    r = subprocess.run(["defaults", "export", "com.apple.Terminal", "-"], capture_output=True)
+    prefs = plistlib.loads(r.stdout) if r.returncode == 0 and r.stdout else {}
+    for k in ("Default Window Settings", "Startup Window Settings"):
+        prefs[k] = "Basic"
+    prefs.setdefault("Window Settings", {}).setdefault("Basic", {})["useOptionAsMetaKey"] = on
+    subprocess.run(["defaults", "import", "com.apple.Terminal", "-"], input=plistlib.dumps(prefs),
+                   capture_output=True)
+    r = subprocess.run(["defaults", "export", "com.apple.Terminal", "-"], capture_output=True)
+    got = plistlib.loads(r.stdout).get("Window Settings", {}).get("Basic", {}).get("useOptionAsMetaKey")
+    if got != on:
+        print(f"      Terminal Option as Meta is {got}, wanted {on}", flush=True)
 
 
 def last_motion(agent_log):
@@ -131,7 +142,16 @@ def calibrate(agent_log):
         left, top, width, height = win
         x0, y0 = left + width // 4, top + height // 3
         dx, dy = width // 2, height // 3
-    (ca, ra), (cb, rb) = at(x0, y0), at(x0 + dx, y0 + dy)
+    def reported(x, y):
+        """Move to a new cell and wait for its report: the pointer may still
+        sit where the last window's sweep left it, which reports nothing."""
+        n = len(m.jsonl(agent_log))
+        sh("cliclick", f"m:{x},{y}")
+        m.wait(lambda: len(m.jsonl(agent_log)) > n, 2, 0.05)
+        return last_motion(agent_log)
+
+    reported(x0 + dx // 2, y0 + dy // 2)
+    (ca, ra), (cb, rb) = reported(x0, y0), reported(x0 + dx, y0 + dy)
     w, h = dx / (cb - ca), dy / (rb - ra)
     first_col = at(x0, y0)[0]
     xb = next(x for x in range(x0, x0 + int(w) + 3) if at(x, y0)[0] != first_col)
