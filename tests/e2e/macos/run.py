@@ -103,6 +103,17 @@ def last_motion(agent_log):
     return last
 
 
+def front_window():
+    """(left, top, width, height) of the frontmost app's front window, or None."""
+    r = sh("osascript", "-e", 'tell application "System Events" to tell '
+           '(first process whose frontmost is true) to get {position, size} of front window')
+    try:
+        left, top, width, height = (int(v) for v in r.stdout.split(","))
+    except ValueError:
+        return None
+    return left, top, width, height
+
+
 def calibrate(agent_log):
     """A function (col, row) -> pixel at the cell's center. The terminal
     reports every pointer move (any-motion mode), so sweeping the pointer finds
@@ -112,9 +123,16 @@ def calibrate(agent_log):
         time.sleep(0.15)
         return last_motion(agent_log)
 
-    x0, y0 = 300, 250
-    (ca, ra), (cb, rb) = at(x0, y0), at(x0 + 300, y0 + 150)
-    w, h = 300 / (cb - ca), 150 / (rb - ra)
+    # Sweep inside the front window: its size depends on the profile's font,
+    # which is smaller once Terminal has run before on the runner (key probe).
+    x0, y0, dx, dy = 300, 250, 300, 150
+    win = front_window()
+    if win:
+        left, top, width, height = win
+        x0, y0 = left + width // 4, top + height // 3
+        dx, dy = width // 2, height // 3
+    (ca, ra), (cb, rb) = at(x0, y0), at(x0 + dx, y0 + dy)
+    w, h = dx / (cb - ca), dy / (rb - ra)
     first_col = at(x0, y0)[0]
     xb = next(x for x in range(x0, x0 + int(w) + 3) if at(x, y0)[0] != first_col)
     first_row = at(x0, y0)[1]
