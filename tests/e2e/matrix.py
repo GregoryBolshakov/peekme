@@ -274,14 +274,12 @@ def run_case(env, case, out):
         if not check(wait(lambda: any("alpha bravo" in l for l in t.screen()), 15), "agent screen never appeared"):
             return name, fails
         time.sleep(0.5)
-        # 1. A drag reaches the agent, which reports the selection.
-        t.send(DRAG)
+        # 1. The drag and shortcut may reach peekme in one input read.
+        before = t.screen()
+        t.send(DRAG + hotkey)
         check(wait(lambda: any(e.get("text") == SELECTED for e in agent_log("selected"))),
               "drag did not reach the agent")
-        time.sleep(0.4)
-        before = t.screen()
         # 2. The shortcut opens a box on the dragged text.
-        t.send(hotkey)
         opened = wait(lambda: events("open"))
         if check(opened, "shortcut did not open a box"):
             check(opened[-1].get("found") and opened[-1].get("selection") == SELECTED,

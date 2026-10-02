@@ -103,6 +103,14 @@ struct PendingOpen {
     since: Instant,
 }
 
+struct PendingHotkey {
+    since: Instant,
+    option_p: Option<Vec<u8>>,
+}
+
+const HOTKEY_AFTER_DRAG: Duration = Duration::from_secs(1);
+const HOTKEY_SELECTION_WAIT: Duration = Duration::from_secs(1);
+
 /// Run `program` in a pseudo-terminal with peekme. `agent` is the agent CLI
 /// it is, if any.
 pub fn run(
@@ -317,6 +325,9 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         app_selection: None,
         selection_source: "",
         last_release: None,
+        mouse_press: None,
+        recent_drag: None,
+        pending_hotkey: None,
         tmux_baseline: None,
         boundary: Boundary::default(),
         greek_typed: false,
@@ -351,7 +362,9 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
             None => match rx.recv_timeout(Duration::from_millis(40)) {
                 Ok(m) => m,
                 Err(RecvTimeoutError::Timeout) => {
-                    guarded(&mut app, &mut stdout, |app, out| app.tick(out))?;
+                    guarded(&mut app, &mut stdout, |app, out| {
+                        app.on_idle(out, &mut *writer)
+                    })?;
                     continue;
                 }
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -461,6 +474,9 @@ struct App {
     selection_source: &'static str,
     /// When and where the last mouse button release went to the child.
     last_release: Option<(Instant, (usize, usize))>,
+    mouse_press: Option<(usize, usize)>,
+    recent_drag: Option<Instant>,
+    pending_hotkey: Option<PendingHotkey>,
     /// Inside tmux: tmux's newest paste buffer when the last mouse release went
     /// to the agent. Only a newer buffer is the agent's copy of a selection.
     tmux_baseline: Option<String>,
@@ -571,7 +587,13 @@ impl App {
             self.pending = None;
             self.open_peek(out)?;
         }
+        self.resolve_pending_hotkey(out, child)?;
         Ok(())
+    }
+
+    fn on_idle(&mut self, out: &mut dyn Write, child: &mut dyn Write) -> Result<()> {
+        self.resolve_pending_hotkey(out, child)?;
+        self.tick(out)
     }
 
     /// First screen row whose content the shadow really knows.
@@ -773,6 +795,18 @@ impl App {
             }
             if t.kind == Kind::OptionP {
                 let mut hotkey = self.option_p_is_hotkey();
+                if !hotkey && !self.greek_typed && self.hotkey_follows_drag() {
+                    self.flush_forward(&mut forward, child)?;
+                    crate::event(
+                        "option_p_wait",
+                        serde_json::json!({"mouse": self.shadow.mouse_mode()}),
+                    );
+                    self.pending_hotkey = Some(PendingHotkey {
+                        since: Instant::now(),
+                        option_p: Some(t.bytes),
+                    });
+                    continue;
+                }
                 if !hotkey
                     && !self.greek_typed
                     && !self.told_hidden
@@ -818,6 +852,14 @@ impl App {
                 (Kind::Hotkey, _) => {
                     self.consumed.consume(&t);
                     self.clicked = None;
+                    if self.open.is_none() && self.hotkey_follows_drag() && !self.has_selection() {
+                        self.flush_forward(&mut forward, child)?;
+                        self.pending_hotkey = Some(PendingHotkey {
+                            since: Instant::now(),
+                            option_p: None,
+                        });
+                        continue;
+                    }
                     if self.open.is_some() {
                         self.flush_forward(&mut forward, child)?;
                         // Alt+P again on the same selection: explain with the whole conversation.
@@ -1129,20 +1171,83 @@ impl App {
         if self.open.is_some() {
             return true;
         }
+        self.has_selection()
+    }
+
+    fn has_selection(&mut self) -> bool {
         let snap = self.shadow.snapshot();
         self.selection_within(&snap, crate::tmux::FRESH_FOR_OPTION_P)
             .1
             .is_some()
     }
 
+    fn hotkey_follows_drag(&self) -> bool {
+        self.recent_drag
+            .is_some_and(|at| at.elapsed() < HOTKEY_AFTER_DRAG)
+    }
+
+    fn resolve_pending_hotkey(&mut self, out: &mut dyn Write, child: &mut dyn Write) -> Result<()> {
+        let Some(pending) = &self.pending_hotkey else {
+            return Ok(());
+        };
+        let timed_out = pending.since.elapsed() >= HOTKEY_SELECTION_WAIT;
+        if self.has_selection() {
+            let pending = self.pending_hotkey.take().unwrap();
+            if pending.option_p.is_some() {
+                crate::event(
+                    "option_p",
+                    serde_json::json!({
+                        "hotkey": true,
+                        "delayed": true,
+                        "source": self.selection_source,
+                        "mouse": self.shadow.mouse_mode(),
+                    }),
+                );
+            }
+            self.clicked = None;
+            self.request_open(out)?;
+        } else if timed_out {
+            let pending = self.pending_hotkey.take().unwrap();
+            if let Some(bytes) = pending.option_p {
+                child.write_all(&bytes)?;
+                child.flush()?;
+                self.selection.settle();
+                crate::event(
+                    "option_p",
+                    serde_json::json!({
+                        "hotkey": false,
+                        "delayed": true,
+                        "source": self.selection_source,
+                        "mouse": self.shadow.mouse_mode(),
+                    }),
+                );
+            } else {
+                self.request_open(out)?;
+            }
+        }
+        Ok(())
+    }
+
     /// A press starts a new selection (or is a click that clears the child's);
     /// the release is where a drag ended.
     fn note_mouse(&mut self, m: Mouse, bytes: &[u8]) {
         match m {
-            Mouse::Press => self.app_selection = None,
+            Mouse::Press => {
+                self.app_selection = None;
+                self.recent_drag = None;
+                self.mouse_press = (input::mouse_button(bytes) == Some(0))
+                    .then(|| input::mouse_cell(bytes))
+                    .flatten();
+            }
             Mouse::Release => {
                 if let Some(cell) = input::mouse_cell(bytes) {
-                    self.last_release = Some((Instant::now(), cell));
+                    let now = Instant::now();
+                    self.recent_drag = self
+                        .mouse_press
+                        .take()
+                        .filter(|&start| start != cell)
+                        .map(|_| now);
+                    self.last_release = Some((now, cell));
                     // Before the agent gets the release, so it cannot copy first.
                     if crate::tmux::inside() {
                         self.tmux_baseline = crate::tmux::newest_buffer();
@@ -2107,6 +2212,9 @@ mod tests {
             app_selection: None,
             selection_source: "",
             last_release: None,
+            mouse_press: None,
+            recent_drag: None,
+            pending_hotkey: None,
             tmux_baseline: None,
             known_from: 0,
             boundary: Boundary::default(),
@@ -2444,6 +2552,36 @@ mod tests {
         app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
         assert!(app.open.is_none());
         assert_eq!(child, "π".as_bytes());
+    }
+
+    #[test]
+    fn option_p_waits_for_codex_selection_repaint() {
+        let mut app = test_app(40, 8);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(b"\x1b[2;1Hpick me", &mut out, &mut child)
+            .unwrap();
+        let input = b"\x1b[<0;1;2M\x1b[<0;8;2m\xcf\x80";
+        app.on_input(input, &mut out, &mut child).unwrap();
+        assert_eq!(child, &input[..input.len() - 2]);
+        app.on_output(b"\x1b[2;1H\x1b[7mpick me\x1b[0m", &mut out, &mut child)
+            .unwrap();
+        assert_eq!(
+            app.open.as_ref().unwrap().selection.as_ref().unwrap().0,
+            "pick me"
+        );
+        assert_eq!(child, &input[..input.len() - 2]);
+    }
+
+    #[test]
+    fn option_p_after_drag_is_forwarded_without_a_selection() {
+        let mut app = test_app(40, 8);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let input = b"\x1b[<0;1;2M\x1b[<0;8;2m\xcf\x80";
+        app.on_input(input, &mut out, &mut child).unwrap();
+        app.pending_hotkey.as_mut().unwrap().since = Instant::now() - HOTKEY_SELECTION_WAIT;
+        app.on_idle(&mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+        assert_eq!(child, input);
     }
 
     /// Codex asked for the mouse, but the terminal never sent a mouse report
