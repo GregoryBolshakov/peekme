@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0-beta.7 (2026-10-02)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.0-beta.7`.
+
+- Codex: Option+P pressed right after a drag sometimes typed the letter instead of opening the
+  box. Codex draws its selection a moment after you release the mouse, and peekme looked too
+  early. Now it waits up to a second for the selection.
+
 ## 0.4.0-beta.6 (2026-09-30)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.0-beta.6`.
