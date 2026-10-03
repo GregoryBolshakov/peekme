@@ -251,13 +251,14 @@ impl Marks {
     /// rows of the mark that are still there count.
     pub fn visible(&mut self, snap: &Snapshot, history: usize, alt: bool) -> Vec<Visible> {
         let mut found = Vec::new();
+        let screen = select::Text::of(snap);
         for (index, m) in self.list.iter_mut().enumerate() {
             if m.place.alt != alt {
                 continue;
             }
             let (ar, ac) = m.place.anchor;
             let at = |c: &[(usize, usize)]| c.first().map(|&(r, c)| (history + r, c));
-            let copies = select::copies(snap, &m.text, AROUND);
+            let copies = screen.copies(snap, &m.text, AROUND);
             let only = copies.len() == 1;
             let best = copies
                 .into_iter()

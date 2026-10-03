@@ -538,18 +538,14 @@ impl App {
                 .map_or(bytes.len(), |e| i + e + 1);
             self.child_pointer = Some(bytes[i..end].to_vec());
         }
-        if self.open.is_none() {
-            // Pass through first: whatever happens below, the user sees the child.
-            out.write_all(bytes)?;
-            out.flush()?;
-        }
         if let Some(k) = viewport_top(bytes, self.size.1 as usize) {
             self.viewport_top = Some(k);
         }
-        self.shadow.advance(bytes);
-        self.marks_stale = !self.marks.is_empty();
         if self.open.is_none() {
-            self.boundary.feed(bytes);
+            self.pass_through(bytes, out)?;
+        } else {
+            self.shadow.advance(bytes);
+            self.marks_stale = !self.marks.is_empty();
         }
         if let Some(text) = self.osc52.feed(bytes)
             && let Some((at, cell)) = self.last_release
@@ -588,6 +584,54 @@ impl App {
             self.open_peek(out)?;
         }
         self.resolve_pending_hotkey(out, child)?;
+        Ok(())
+    }
+
+    /// Pass the child's bytes to the terminal first: whatever happens below,
+    /// the user sees the child. When a synchronized frame of the child ends,
+    /// the marks it moved or wrote over are drawn into that frame, just before
+    /// its end, so the terminal shows the text and its underline at once. A
+    /// child that keeps redrawing (a spinner) would otherwise hold the marks
+    /// back, and text that moved would show the old line until a quiet tick.
+    fn pass_through(&mut self, bytes: &[u8], out: &mut dyn Write) -> Result<()> {
+        let mut rest = bytes;
+        while !self.marks.is_empty()
+            && self.pending.is_none()
+            && let Some(i) = find(rest, SYNC_END.as_bytes())
+        {
+            let end = i + SYNC_END.len();
+            out.write_all(&rest[..i])?;
+            self.shadow.advance(&rest[..end]);
+            self.boundary.feed(&rest[..end]);
+            self.marks_stale = true;
+            let frame = if self.can_draw() {
+                // The frame must end even when drawing the marks fails.
+                std::panic::catch_unwind(AssertUnwindSafe(|| self.marks_bytes(out)))
+            } else {
+                Ok(Ok(String::new()))
+            };
+            let s = match frame {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
+                    out.write_all(&rest[i..])?;
+                    return Err(e);
+                }
+                Err(panic) => {
+                    let _ = out.write_all(&rest[i..]);
+                    std::panic::resume_unwind(panic);
+                }
+            };
+            out.write_all(s.as_bytes())?;
+            out.write_all(SYNC_END.as_bytes())?;
+            rest = &rest[end..];
+        }
+        out.write_all(rest)?;
+        out.flush()?;
+        self.shadow.advance(rest);
+        self.boundary.feed(rest);
+        if !rest.is_empty() {
+            self.marks_stale = !self.marks.is_empty();
+        }
         Ok(())
     }
 
@@ -728,6 +772,22 @@ impl App {
 
     /// Draw the underline again under marks whose rows the child wrote over.
     fn draw_marks(&mut self, out: &mut dyn Write) -> Result<()> {
+        let s = self.marks_bytes(out)?;
+        if s.is_empty() {
+            return Ok(out.flush()?);
+        }
+        let mut frame = String::from(SYNC_BEGIN);
+        frame.push_str(&s);
+        frame.push_str(SYNC_END);
+        out.write_all(frame.as_bytes())?;
+        out.flush()?;
+        Ok(())
+    }
+
+    /// Bytes that draw the underline again where the marks need it and take it
+    /// off where they left, the cursor and pen put back after; empty when
+    /// nothing changed. The pointer shape goes to `out` straight away.
+    fn marks_bytes(&mut self, out: &mut dyn Write) -> Result<String> {
         let damaged = self.shadow.take_damage();
         let all = std::mem::take(&mut self.marks_all);
         self.marks_stale = false;
@@ -765,19 +825,14 @@ impl App {
         }
         self.set_pointer(self.hover.is_some(), out)?;
         if s.is_empty() {
-            return Ok(out.flush()?);
+            return Ok(s);
         }
         crate::event(
             "marks",
             serde_json::json!({"all": all, "damaged": damaged, "bytes": s.len()}),
         );
-        let mut frame = String::from(SYNC_BEGIN);
-        frame.push_str(&s);
-        render::restore_cursor(&mut frame, &snap);
-        frame.push_str(SYNC_END);
-        out.write_all(frame.as_bytes())?;
-        out.flush()?;
-        Ok(())
+        render::restore_cursor(&mut s, &snap);
+        Ok(s)
     }
 
     fn on_input(&mut self, bytes: &[u8], out: &mut dyn Write, child: &mut dyn Write) -> Result<()> {
@@ -2010,6 +2065,53 @@ mod tests {
         app.close(&mut out, false).unwrap();
         app.selection = SelectionSource::without_system();
         app
+    }
+
+    #[test]
+    fn a_mark_moves_with_its_text_in_the_same_frame() {
+        // Full screen, like Codex: a block above the mark unfolds and pushes it down.
+        let page = |gap: usize| {
+            let mut b = b"\x1b[?2026h\x1b[2J\x1b[1;1Htitle".to_vec();
+            for r in 0..gap {
+                b.extend(format!("\x1b[{};1Hdetail {r}", r + 2).bytes());
+            }
+            b.extend(format!("\x1b[{};1Hsee the true colour here\x1b[1;1H", gap + 2).bytes());
+            b.extend(SYNC_END.bytes());
+            b
+        };
+        let mut app = test_app(40, 12);
+        let mut real = Shadow::new(40, 12);
+        let mut out = b"\x1b[?1049h".to_vec();
+        app.on_output(&out.clone(), &mut Vec::new(), &mut Vec::new())
+            .unwrap();
+        app.selection = SelectionSource::fixed("true colour");
+        app.on_output(&page(0), &mut out, &mut Vec::new()).unwrap();
+        app.open_peek(&mut out).unwrap();
+        let id = app.open.as_ref().unwrap().id;
+        app.on_progress(id, Progress::Delta("24-bit RGB.".into()), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        app.close(&mut out, false).unwrap();
+        app.tick(&mut out).unwrap();
+        real.advance(&out);
+        assert_eq!(dotted(&real.snapshot(), 1), "true colour");
+
+        // Unfolded: no tick in between, the line is already at its new row.
+        let mut out = Vec::new();
+        app.on_output(&page(2), &mut out, &mut Vec::new()).unwrap();
+        assert!(out.ends_with(SYNC_END.as_bytes()));
+        real.advance(&out);
+        let shown = real.snapshot();
+        assert_eq!(dotted(&shown, 1), "");
+        assert_eq!(dotted(&shown, 3), "true colour");
+        assert_eq!(shown.cursor, (0, 0));
+        // Folded again: back up, and the rows it left lose the line.
+        let mut out = Vec::new();
+        app.on_output(&page(0), &mut out, &mut Vec::new()).unwrap();
+        real.advance(&out);
+        let shown = real.snapshot();
+        assert_eq!(dotted(&shown, 1), "true colour");
+        assert_eq!(dotted(&shown, 3), "");
     }
 
     #[test]

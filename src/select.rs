@@ -239,41 +239,71 @@ pub struct Copy {
 }
 
 pub fn copies(snap: &Snapshot, text: &str, around: usize) -> Vec<Copy> {
-    let (screen, pos) = snap.text_with_positions();
-    let (norm_screen, map) = normalize(&screen);
-    let (norm_text, _) = normalize(&text.chars().collect::<Vec<_>>());
-    if norm_text.is_empty() {
-        return Vec::new();
+    Text::of(snap).copies(snap, text, around)
+}
+
+/// The screen's text, read once for several searches.
+pub struct Text {
+    screen: Vec<char>,
+    pos: Vec<(usize, usize)>,
+    norm: Vec<char>,
+    map: Vec<usize>,
+}
+
+impl Text {
+    pub fn of(snap: &Snapshot) -> Text {
+        let (screen, pos) = snap.text_with_positions();
+        let (norm, map) = normalize(&screen);
+        Text {
+            screen,
+            pos,
+            norm,
+            map,
+        }
     }
-    find_all(&norm_screen, &norm_text)
-        .into_iter()
-        .map(|s| {
-            let end = s + norm_text.len();
-            let mut cells: Vec<(usize, usize)> = Vec::new();
-            for &i in &map[s..end] {
-                if screen[i].is_whitespace() {
-                    continue;
+
+    /// [`copies`] on the screen this text was read from.
+    pub fn copies(&self, snap: &Snapshot, text: &str, around: usize) -> Vec<Copy> {
+        let Text {
+            screen,
+            pos,
+            norm: norm_screen,
+            map,
+        } = self;
+        let (norm_text, _) = normalize(&text.chars().collect::<Vec<_>>());
+        if norm_text.is_empty() {
+            return Vec::new();
+        }
+        find_all(norm_screen, &norm_text)
+            .into_iter()
+            .map(|s| {
+                let end = s + norm_text.len();
+                let mut cells: Vec<(usize, usize)> = Vec::new();
+                for &i in &map[s..end] {
+                    if screen[i].is_whitespace() {
+                        continue;
+                    }
+                    let (r, c) = pos[i];
+                    let c = if snap.rows[r][c].flags.contains(Flags::WIDE_CHAR) {
+                        c + 1
+                    } else {
+                        c
+                    };
+                    // Fill the gaps between words on the same row.
+                    let from = match cells.last() {
+                        Some(&(lr, lc)) if lr == r => lc + 1,
+                        _ => pos[i].1,
+                    };
+                    cells.extend((from..=c).map(|c| (r, c)));
                 }
-                let (r, c) = pos[i];
-                let c = if snap.rows[r][c].flags.contains(Flags::WIDE_CHAR) {
-                    c + 1
-                } else {
-                    c
-                };
-                // Fill the gaps between words on the same row.
-                let from = match cells.last() {
-                    Some(&(lr, lc)) if lr == r => lc + 1,
-                    _ => pos[i].1,
-                };
-                cells.extend((from..=c).map(|c| (r, c)));
-            }
-            Copy {
-                cells,
-                before: norm_screen[s.saturating_sub(around)..s].to_vec(),
-                after: norm_screen[end..(end + around).min(norm_screen.len())].to_vec(),
-            }
-        })
-        .collect()
+                Copy {
+                    cells,
+                    before: norm_screen[s.saturating_sub(around)..s].to_vec(),
+                    after: norm_screen[end..(end + around).min(norm_screen.len())].to_vec(),
+                }
+            })
+            .collect()
+    }
 }
 
 /// `cells` (one occurrence, as `occurrences` gives it) as a located range.
