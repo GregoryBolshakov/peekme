@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0-beta.8 (2026-10-03)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.0-beta.8`.
+
+- Codex: the underline under explained text lagged when you unfolded a command or a reasoning
+  block. The text moved down at once, but the underline came after Codex went quiet, and for that
+  time it stayed on the old place. Now peekme draws it in the same frame as Codex's text.
+
 ## 0.4.0-beta.7 (2026-10-02)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.0-beta.7`.
