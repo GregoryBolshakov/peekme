@@ -463,7 +463,7 @@ dependencies = [
 
 [[package]]
 name = "peekme"
-version = "0.4.0-beta.8"
+version = "0.4.0-beta.9"
 dependencies = [
  "alacritty_terminal",
  "anyhow",

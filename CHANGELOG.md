@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0-beta.9 (2026-10-04)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.0-beta.9`.
+
+- Peek inside a peek. Select words in the box with the mouse and press Option+P (Alt+P): a new
+  box opens inside it, under that line. The outer boxes stay around it, so you see where you are.
+  You can go several levels deep while the window is wide enough.
+- Each box scrolls on its own. The wheel scrolls the box under the pointer, PgUp/PgDn the
+  innermost one. Esc closes the innermost box.
+- Answers inside a box are saved like the ones on screen. Their words get the dotted underline,
+  and a click on them shows the saved answer again with no new call.
+- A press inside the box now selects text there. Before, it closed the box.
+- With an agent that does not use the mouse (Claude Code classic, for example), peekme turns
+  mouse reports on while a box is open, so text in it can be selected. The agent gets none of them.
+
 ## 0.4.0-beta.8 (2026-10-03)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.0-beta.8`.
