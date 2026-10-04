@@ -2910,6 +2910,9 @@ mod tests {
         let (mut child, mut out) = (Vec::new(), Vec::new());
         app.on_output(CLAUDE[0], &mut out, &mut child).unwrap();
         app.shadow.flush_sync();
+        // The terminal sends mouse reports (on a Mac, the first π would say
+        // so when it never had).
+        app.mouse_seen = true;
 
         // Nothing selected: π is typed.
         app.selection = SelectionSource::without_system();
