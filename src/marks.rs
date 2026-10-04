@@ -3,8 +3,13 @@
 //!
 //! The terminal keeps the underline until the child writes over those cells,
 //! so after the child's output settles peekme draws it again where needed.
+//!
+//! Saved answers are a tree: a peek opened on words inside an answer is that
+//! answer's child. The marks on screen point to the top answers.
 
+use std::collections::BTreeMap;
 use std::fmt::Write;
+use std::ops::Range;
 
 use alacritty_terminal::term::cell::Flags;
 
@@ -17,6 +22,9 @@ type Cells = Vec<(usize, usize)>;
 
 /// Oldest marks are dropped past this many.
 const MAX: usize = 100;
+/// Oldest top answers, with everything under them, are dropped past this
+/// many answers in all.
+const MAX_ANSWERS: usize = 300;
 
 /// Chars of text kept on each side of a mark, to tell its copy of the words
 /// from others.
@@ -28,10 +36,33 @@ const MIN_AGREE: usize = 4;
 /// rows rewrap: then a copy whose surroundings agree this much is the mark.
 const REFLOW_AGREE: usize = 24;
 
-pub struct Mark {
+/// Which saved answer. Newer answers have bigger ids.
+pub type AnswerId = u64;
+
+/// A saved explanation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Answer {
+    /// The words it explains.
     pub text: String,
     pub answer: String,
     pub model: String,
+    /// The answer whose words these are; none for words on the screen.
+    pub parent: Option<AnswerId>,
+    /// Answers to words of this one, oldest first.
+    pub children: Vec<Child>,
+}
+
+/// A nested answer and the places in its parent's text it was asked about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Child {
+    pub id: AnswerId,
+    /// Char ranges of the parent's `answer`.
+    pub ranges: Vec<Range<usize>>,
+}
+
+/// A mark on screen.
+struct Mark {
+    answer: AnswerId,
     place: Place,
     /// The cells the terminal last got its underline on from us.
     drawn: Option<Vec<(usize, usize)>>,
@@ -73,6 +104,8 @@ pub struct Visible {
 #[derive(Default)]
 pub struct Marks {
     list: Vec<Mark>,
+    answers: BTreeMap<AnswerId, Answer>,
+    next: AnswerId,
 }
 
 impl Place {
@@ -192,19 +225,116 @@ impl Marks {
         self.list.is_empty()
     }
 
-    pub fn add(&mut self, text: &str, answer: &str, model: &str, place: Place) {
+    /// Save an answer to `text`, words on the screen when `parent` is none,
+    /// else words of that answer. Returns its id.
+    pub fn save(
+        &mut self,
+        parent: Option<AnswerId>,
+        text: &str,
+        answer: &str,
+        model: &str,
+    ) -> AnswerId {
+        self.next += 1;
+        let id = self.next;
+        self.answers.insert(
+            id,
+            Answer {
+                text: text.into(),
+                answer: answer.into(),
+                model: model.into(),
+                parent,
+                children: Vec::new(),
+            },
+        );
+        if let Some(p) = parent.and_then(|p| self.answers.get_mut(&p)) {
+            p.children.push(Child {
+                id,
+                ranges: Vec::new(),
+            });
+        }
+        while self.answers.len() > MAX_ANSWERS {
+            let Some(oldest) = self
+                .answers
+                .iter()
+                .find(|(_, a)| a.parent.is_none())
+                .map(|(&id, _)| id)
+            else {
+                break;
+            };
+            self.remove(oldest);
+        }
+        id
+    }
+
+    /// Drop an answer, its children and the marks of all of them.
+    fn remove(&mut self, id: AnswerId) {
+        let Some(a) = self.answers.remove(&id) else {
+            return;
+        };
+        if let Some(p) = a.parent.and_then(|p| self.answers.get_mut(&p)) {
+            p.children.retain(|c| c.id != id);
+        }
+        self.list.retain(|m| m.answer != id);
+        for c in a.children {
+            self.remove(c.id);
+        }
+    }
+
+    /// A new answer to the same words, from more context: what was asked
+    /// about the old text no longer fits it, so its children go.
+    pub fn replace(&mut self, id: AnswerId, answer: &str, model: &str) {
+        let Some(a) = self.answers.get_mut(&id) else {
+            return;
+        };
+        a.answer = answer.into();
+        a.model = model.into();
+        for c in std::mem::take(&mut a.children) {
+            self.remove(c.id);
+        }
+    }
+
+    pub fn answer(&self, id: AnswerId) -> Option<&Answer> {
+        self.answers.get(&id)
+    }
+
+    /// Mark the words of answer `id` at `place` on the screen.
+    pub fn add(&mut self, id: AnswerId, place: Place) {
         self.list
             .retain(|m| (m.place.alt, m.place.anchor) != (place.alt, place.anchor));
         self.list.push(Mark {
-            text: text.into(),
-            answer: answer.into(),
-            model: model.into(),
+            answer: id,
             place,
             drawn: None,
         });
         if self.list.len() > MAX {
             self.list.remove(0);
         }
+    }
+
+    /// Answer `child` was asked about the chars `range` of its parent too.
+    pub fn add_range(&mut self, child: AnswerId, range: Range<usize>) {
+        let Some(parent) = self.answers.get(&child).and_then(|a| a.parent) else {
+            return;
+        };
+        if let Some(c) = self
+            .answers
+            .get_mut(&parent)
+            .and_then(|p| p.children.iter_mut().find(|c| c.id == child))
+            && !c.ranges.contains(&range)
+        {
+            c.ranges.push(range);
+        }
+    }
+
+    /// Where answer `id` underlines the words of its children: each range with
+    /// the child it opens.
+    pub fn child_ranges(&self, id: AnswerId) -> Vec<(Range<usize>, AnswerId)> {
+        self.answers.get(&id).map_or_else(Vec::new, |a| {
+            a.children
+                .iter()
+                .flat_map(|c| c.ranges.iter().map(|r| (r.clone(), c.id)))
+                .collect()
+        })
     }
 
     /// The terminal now has the underline of mark `index` on `cells`.
@@ -235,10 +365,23 @@ impl Marks {
         out
     }
 
-    /// The newest mark with this text, wherever it is.
-    pub fn find(&self, text: &str) -> Option<&Mark> {
+    /// The newest answer to these words on the screen, wherever they are.
+    pub fn find(&self, text: &str) -> Option<AnswerId> {
+        self.find_under(None, text)
+    }
+
+    /// The newest answer to these words of answer `parent`.
+    pub fn find_child(&self, parent: AnswerId, text: &str) -> Option<AnswerId> {
+        self.find_under(Some(parent), text)
+    }
+
+    fn find_under(&self, parent: Option<AnswerId>, text: &str) -> Option<AnswerId> {
         let key = flat(text);
-        self.list.iter().rev().find(|m| flat(&m.text) == key)
+        self.answers
+            .iter()
+            .rev()
+            .find(|(_, a)| a.parent == parent && flat(&a.text) == key)
+            .map(|(&id, _)| id)
     }
 
     /// Every mark visible on `snap`: its text and its cells.
@@ -253,12 +396,15 @@ impl Marks {
         let mut found = Vec::new();
         let screen = select::Text::of(snap);
         for (index, m) in self.list.iter_mut().enumerate() {
+            let Some(text) = self.answers.get(&m.answer).map(|a| &a.text) else {
+                continue;
+            };
             if m.place.alt != alt {
                 continue;
             }
             let (ar, ac) = m.place.anchor;
             let at = |c: &[(usize, usize)]| c.first().map(|&(r, c)| (history + r, c));
-            let copies = screen.copies(snap, &m.text, AROUND);
+            let copies = screen.copies(snap, text, AROUND);
             let only = copies.len() == 1;
             let best = copies
                 .into_iter()
@@ -295,7 +441,7 @@ impl Marks {
             };
             found.push(Visible {
                 index,
-                text: m.text.clone(),
+                text: text.clone(),
                 moved: m.drawn.as_ref() != Some(&cells),
                 cells,
             });
@@ -360,6 +506,12 @@ mod tests {
     use super::*;
     use crate::shadow::Shadow;
 
+    fn mark(marks: &mut Marks, text: &str, answer: &str, model: &str, place: Place) -> AnswerId {
+        let id = marks.save(None, text, answer, model);
+        marks.add(id, place);
+        id
+    }
+
     fn shadow(bytes: &[u8]) -> Shadow {
         let mut s = Shadow::new(20, 4);
         s.advance(bytes);
@@ -373,7 +525,7 @@ mod tests {
         let (place, cells) = Place::new(&snap, "ripgrep", (0, 4), s.history_size(), false).unwrap();
         assert_eq!(cells, (4..11).map(|c| (0, c)).collect::<Vec<_>>());
         let mut marks = Marks::default();
-        marks.add("ripgrep", "a search tool", "haiku", place);
+        mark(&mut marks, "ripgrep", "a search tool", "haiku", place);
         let v = marks.visible(&snap, s.history_size(), false);
         assert_eq!((v[0].text.as_str(), &v[0].cells), ("ripgrep", &cells));
 
@@ -382,7 +534,8 @@ mod tests {
         let snap = s.snapshot();
         assert_eq!(snap.rows_text(0, 1), "ripgrep three\n");
         assert!(marks.visible(&snap, s.history_size(), false).is_empty());
-        assert_eq!(marks.find("ripgrep").unwrap().answer, "a search tool");
+        let id = marks.find("ripgrep").unwrap();
+        assert_eq!(marks.answer(id).unwrap().answer, "a search tool");
         assert!(marks.find("rip").is_none());
     }
 
@@ -392,7 +545,7 @@ mod tests {
         let snap = s.snapshot();
         let (place, _) = Place::new(&snap, "the PTY", (1, 4), 0, true).unwrap();
         let mut marks = Marks::default();
-        marks.add("the PTY", "x", "m", place);
+        mark(&mut marks, "the PTY", "x", "m", place);
         // The agent scrolled its own view by one row.
         let s = shadow(b"\x1b[?1049h\x1b[1;1Hsee the  PTY  here");
         let snap = s.snapshot();
@@ -434,7 +587,7 @@ mod tests {
         let (place, cells) = Place::new(&snap, text, (1, 12), 0, true).unwrap();
         assert_eq!(cells.last(), Some(&(2, 13)));
         let mut marks = Marks::default();
-        marks.add(text, "x", "m", place);
+        mark(&mut marks, text, "x", "m", place);
 
         // Scrolled up by two rows: only the second row of the mark is left.
         let snap = alt(30, 6, &page[2..]);
@@ -460,7 +613,7 @@ mod tests {
         let snap = alt(60, 6, &wide);
         let (place, _) = Place::new(&snap, text, (1, 6), 0, true).unwrap();
         let mut marks = Marks::default();
-        marks.add(text, "x", "m", place);
+        mark(&mut marks, text, "x", "m", place);
         // Narrower: the answer's line wraps, the question stays on row 0.
         let narrow = [
             "> what is a pseudo-terminal",
@@ -477,7 +630,7 @@ mod tests {
         s.advance(b"first\r\n- the pseudo-terminal layer: tmux gives each pane one");
         let (place, _) = Place::new(&s.snapshot(), text, (1, 6), s.history_size(), false).unwrap();
         let mut marks = Marks::default();
-        marks.add(text, "x", "m", place);
+        mark(&mut marks, text, "x", "m", place);
         let mut s = Shadow::new(30, 4);
         s.advance(b"first\r\n- the\r\n  pseudo-terminal layer: tmux\r\n  gives each pane one");
         let v = marks.visible(&s.snapshot(), s.history_size(), false);
@@ -502,7 +655,7 @@ mod tests {
         let snap = s.snapshot();
         let (place, _) = Place::new(&snap, "pseudo-terminal", (3, 6), 0, true).unwrap();
         let mut marks = Marks::default();
-        marks.add("pseudo-terminal", "x", "m", place);
+        mark(&mut marks, "pseudo-terminal", "x", "m", place);
         // Scrolled: the answer is 3 rows lower, the question copy is now nearer
         // to the old place.
         let snap = screen(7).snapshot();
@@ -517,5 +670,47 @@ mod tests {
         let mut s = screen(7);
         s.advance(b"\x1b[8;1H\x1b[2K- a pseudo-terminal, rewritten");
         assert!(marks.visible(&s.snapshot(), 0, true).is_empty());
+    }
+
+    #[test]
+    fn nested_answers_are_found_under_their_parent_only() {
+        let mut marks = Marks::default();
+        let top = marks.save(None, "the PTY", "a pseudo-terminal: job control works", "m");
+        let job = marks.save(Some(top), "job control", "Ctrl+Z, fg, bg", "m");
+        marks.add_range(job, 19..30);
+        marks.add_range(job, 19..30);
+        assert_eq!(marks.find("the  PTY"), Some(top));
+        // Nested words are not words on the screen, and the other way round.
+        assert_eq!(marks.find("job control"), None);
+        assert_eq!(marks.find_child(top, "job\ncontrol"), Some(job));
+        assert_eq!(marks.find_child(job, "job control"), None);
+        assert_eq!(marks.child_ranges(top), vec![(19..30, job)]);
+
+        // Two levels down, then the top answer is explained again: what was
+        // asked about its old text goes, all the way down.
+        let fg = marks.save(Some(job), "fg", "foreground", "m");
+        marks.replace(top, "new text", "deep");
+        assert_eq!(marks.answer(top).unwrap().answer, "new text");
+        assert!(marks.child_ranges(top).is_empty());
+        assert!(marks.answer(job).is_none() && marks.answer(fg).is_none());
+    }
+
+    #[test]
+    fn the_oldest_tree_goes_first_with_its_marks() {
+        let s = shadow(b"one ripgrep");
+        let snap = s.snapshot();
+        let mut marks = Marks::default();
+        let (place, _) = Place::new(&snap, "ripgrep", (0, 4), 0, false).unwrap();
+        let first = mark(&mut marks, "ripgrep", "a", "m", place);
+        let child = marks.save(Some(first), "a", "b", "m");
+        for i in 0..MAX_ANSWERS - 2 {
+            marks.save(None, &format!("w{i}"), "x", "m");
+        }
+        assert!(marks.answer(child).is_some());
+        assert_eq!(marks.visible(&snap, 0, false).len(), 1);
+        marks.save(None, "one more", "x", "m");
+        assert!(marks.answer(first).is_none() && marks.answer(child).is_none());
+        assert!(marks.is_empty());
+        assert_eq!(marks.answers.len(), MAX_ANSWERS - 1);
     }
 }

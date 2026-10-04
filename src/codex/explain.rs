@@ -315,7 +315,14 @@ pub fn explain(server: &AppServer, req: Request, tx: impl Fn(Progress)) {
 
 fn run(server: &AppServer, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
     let (conv, hit) = find_conversation(server, &req);
-    let built = context::build(Agent::Codex, &req.cwd, conv.as_ref(), hit, &req.screen);
+    let built = context::build(
+        Agent::Codex,
+        &req.cwd,
+        conv.as_ref(),
+        hit,
+        &req.screen,
+        req.nested.as_ref(),
+    );
     let model = server.model();
     let developer = format!(
         "You are \"peek\", an explainer embedded in a terminal. The user highlighted a fragment of text \

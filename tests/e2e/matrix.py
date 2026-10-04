@@ -19,8 +19,9 @@ Option as Meta or on Linux) and SGR mouse reports for a drag.
 
 Checks per case: the drag reaches the agent; the shortcut opens a box on the
 dragged text and never reaches the agent; typing with the box open reaches the
-agent; Esc closes it and the screen is as before; with nothing selected, `π` is
-typed into the agent. The explainer is canned (PEEKME_FAKE_EXPLAINER), so no
+agent; a drag over a word in the box and the shortcut open a box inside it,
+and Esc closes only that one; Esc closes it and the screen is as before; with
+nothing selected, `π` is typed into the agent. The explainer is canned (PEEKME_FAKE_EXPLAINER), so no
 model is called.
 
 Needs: a release build (`cargo build --release --bins --examples`), tmux, and for the
@@ -287,6 +288,32 @@ def run_case(env, case, out):
         check(wait(lambda: any("Test explanation" in l for l in t.screen())), "explanation not on screen")
         leaked = [e for e in agent_log("input") if hotkey.hex() in e["hex"]]
         check(not leaked, "the shortcut reached the agent")
+        # 2b. A drag over a word of the answer and the shortcut: a box inside
+        # the box, on that word. Esc closes only the inner box.
+        row = next((r for r, l in enumerate(t.screen()) if "Test explanation" in l), None)
+        if check(row is not None, "no answer row to select in"):
+            col = t.screen()[row].index("explanation")
+            y = row + 1
+            inner = (f"\x1b[<0;{col + 1};{y}M\x1b[<32;{col + 6};{y}M"
+                     f"\x1b[<32;{col + 11};{y}M\x1b[<0;{col + 11};{y}m").encode()
+            t.send(inner)
+            time.sleep(0.3)
+            t.send(hotkey)
+            nested = wait(lambda: events("nested_open"))
+            if check(nested, "the shortcut on a word in the box opened no box inside it"):
+                check(nested[-1].get("words") == "explanation",
+                      f"inner box on the wrong words: {nested[-1].get('words')!r}")
+            check(wait(lambda: any("in ⟦alpha bravo⟧" in l for l in t.screen())),
+                  "the inner box's answer is not on screen")
+            check(any(re.search(r"│ ╭─ peek · explanation", l) for l in t.screen()),
+                  "the inner box is not drawn inside the outer one")
+            sent = [e for e in agent_log("input") if f";{y}M" in e["raw"] or f";{y}m" in e["raw"]]
+            check(not sent, "the drag in the box reached the agent")
+            t.send(b"\x1b")
+            check(wait(lambda: not any("peek · explanation" in l for l in t.screen()), 4),
+                  "Esc did not close the inner box")
+            check(not events("close"), "Esc closed the outer box too")
+            time.sleep(0.3)
         # 3. Typing with the box open goes to the agent.
         t.send(b"x")
         check(wait(lambda: any("x" in e["raw"] for e in agent_log("input"))), "typing did not reach the agent")

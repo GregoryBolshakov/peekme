@@ -2,6 +2,7 @@
 //! open and close it without leaving a trace.
 
 use std::fmt::Write;
+use std::ops::Range;
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -97,9 +98,101 @@ impl Style {
     }
 }
 
-type Line = Vec<(Style, String)>;
+/// One char of the box text: its style and where it is in the answer (none
+/// for what the box adds: indents, the space between words, "…").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Glyph {
+    c: char,
+    style: Style,
+    src: Option<usize>,
+}
+
+type Line = Vec<Glyph>;
+
+/// `text` as glyphs, its first char at `src` of the answer when it is from it.
+fn glyphs(style: Style, text: &str, src: Option<usize>) -> Line {
+    text.chars()
+        .enumerate()
+        .map(|(i, c)| Glyph {
+            c,
+            style,
+            src: src.map(|s| s + i),
+        })
+        .collect()
+}
+
+fn width_of(line: &[Glyph]) -> usize {
+    line.iter().map(|g| g.c.width().unwrap_or(0)).sum()
+}
+
+/// A screen position in a box's text: (body line, column).
+pub type Pos = (usize, usize);
+
+/// What a box draws over its text: the words of its nested answers (char
+/// ranges of the answer), the one under the pointer, and the selection.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Decor {
+    pub marks: Vec<Range<usize>>,
+    pub hover: Option<Range<usize>>,
+    /// From and to, both included, in order.
+    pub selection: Option<(Pos, Pos)>,
+}
+
+/// One box of a nest, outermost first.
+pub struct Level<'a> {
+    pub peek: &'a PeekBox,
+    pub decor: &'a Decor,
+    /// Rows of the box, borders included.
+    pub height: usize,
+    /// The body line under which the next level's box sits.
+    pub anchor: usize,
+}
+
+/// A box a screen row crosses, and the body line of it the row shows (none
+/// on a border, a blank row or a row of an inner box).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Part {
+    pub level: usize,
+    pub line: Option<usize>,
+}
+
+/// What a cell of a nest is: the box, and the text position when it is on text.
+pub fn spot(parts: &[Part], cols: usize, col: usize) -> Option<(usize, Option<Pos>)> {
+    parts.iter().rev().find_map(|p| {
+        let (left, right) = (2 * p.level, cols.saturating_sub(2 * p.level));
+        if !(left..right).contains(&col) {
+            return None;
+        }
+        let text = left + 2..right.saturating_sub(2);
+        Some((
+            p.level,
+            p.line
+                .filter(|_| text.contains(&col))
+                .map(|l| (l, col - text.start)),
+        ))
+    })
+}
+
+/// Text columns of the box at `level` of a nest on a `cols`-wide screen.
+pub fn text_width(cols: usize, level: usize) -> usize {
+    cols.saturating_sub(4 * (level + 1))
+}
+
+/// One screen row of a nest: its bytes, drawn from the box's left edge.
+struct Row {
+    text: String,
+    parts: Vec<Part>,
+}
+
+enum BodyRow {
+    Own(usize),
+    Inner(Row),
+}
+
+const BORDER: &str = "\x1b[0;36m";
 
 /// The content of a peek box.
+#[derive(Clone)]
 pub struct PeekBox {
     pub title: String,
     pub model: String,
@@ -113,6 +206,8 @@ pub struct PeekBox {
     pub deep_available: bool,
     /// The whole chat is big: the next Alt+P confirms sending it.
     pub confirm_deep: bool,
+    /// A short notice in the bottom border.
+    pub note: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +232,7 @@ impl PeekBox {
             child_name: "Codex",
             deep_available: false,
             confirm_deep: false,
+            note: None,
         }
     }
 
@@ -151,26 +247,32 @@ impl PeekBox {
             child_name: "Codex",
             deep_available: false,
             confirm_deep: false,
+            note: None,
         }
     }
 
     fn body_lines(&self, width: usize) -> Vec<Line> {
         let text = sanitize(&self.text);
         match &self.status {
-            Status::Message(m) => wrap(&[(Style::Plain, sanitize(m))], width),
+            Status::Message(m) => wrap(&glyphs(Style::Plain, &sanitize(m), None), width),
             Status::Thinking if self.text.is_empty() => {
-                vec![vec![(Style::Dim, "thinking…".into())]]
+                vec![glyphs(Style::Dim, "thinking…", None)]
             }
             Status::Error(e) => {
                 let mut l = markdown_lines(&text, width);
                 l.extend(wrap(
-                    &[(Style::Error, format!("error: {}", sanitize(e)))],
+                    &glyphs(Style::Error, &format!("error: {}", sanitize(e)), None),
                     width,
                 ));
                 l
             }
             _ => markdown_lines(&text, width),
         }
+    }
+
+    /// Lines of text when it is `width` columns wide.
+    pub fn line_count(&self, width: usize) -> usize {
+        self.body_lines(width).len()
     }
 
     /// Rows the box needs to show all of its text (borders included), at least 3.
@@ -186,93 +288,282 @@ impl PeekBox {
             .saturating_sub(inner)
     }
 
+    /// The answer char shown at `pos` when the text is `width` columns wide.
+    pub fn src_at(&self, width: usize, pos: Pos) -> Option<usize> {
+        let lines = self.body_lines(width);
+        let mut col = 0;
+        for g in lines.get(pos.0)? {
+            let w = g.c.width().unwrap_or(0);
+            if pos.1 < col + w.max(1) {
+                return g.src;
+            }
+            col += w;
+        }
+        None
+    }
+
+    /// The text shown from `from` to `to` (both included), wrapped lines joined
+    /// by a space, and the chars of the answer it covers.
+    pub fn shown(&self, width: usize, from: Pos, to: Pos) -> (String, Option<Range<usize>>) {
+        let lines = self.body_lines(width);
+        let mut text = String::new();
+        let mut src: Option<Range<usize>> = None;
+        for (l, line) in lines.iter().enumerate().take(to.0 + 1).skip(from.0) {
+            if l > from.0 && !text.ends_with(' ') {
+                text.push(' ');
+            }
+            let mut col = 0;
+            for g in line {
+                let at = (l, col);
+                col += g.c.width().unwrap_or(0);
+                if at < from || at > to || (at.1 == 0 && g.c == ' ' && text.is_empty()) {
+                    continue;
+                }
+                text.push(g.c);
+                if let Some(i) = g.src {
+                    src = Some(match src {
+                        Some(r) => r.start.min(i)..r.end.max(i + 1),
+                        None => i..i + 1,
+                    });
+                }
+            }
+        }
+        (text.trim().to_string(), src)
+    }
+
     /// Bytes for the box rows only.
     pub fn draw(&self, out: &mut String, lay: &Layout, cols: usize) {
-        let inner_w = cols.saturating_sub(4);
-        let inner_h = lay.box_height.saturating_sub(2);
-        let lines = self.body_lines(inner_w);
-        let scroll = self.scroll.min(lines.len().saturating_sub(inner_h));
-        let border = "\x1b[0;36m";
+        let level = Level {
+            peek: self,
+            decor: &Decor::default(),
+            height: lay.box_height,
+            anchor: 0,
+        };
+        draw_levels(out, lay, cols, &[level]);
+    }
 
-        // Top border: ╭─ peek · "selection" ──── model ─╮
+    /// The top border: ╭─ peek · "selection" ──── model ─╮
+    fn top_border(&self, width: usize) -> String {
         let right = if self.model.is_empty() {
             String::new()
         } else {
             format!(" {} ", sanitize(&self.model))
         };
-        let budget = cols.saturating_sub(8 + right.width());
+        let budget = width.saturating_sub(8 + right.width());
         let title = format!(
             " peek · {} ",
             clip(&sanitize(&self.title), budget.saturating_sub(9))
         );
-        let fill = cols.saturating_sub(3 + title.width() + right.width());
-        write!(
-            out,
-            "\x1b[{};1H{border}╭─{title}{}{right}╮",
-            lay.box_top + 1,
-            "─".repeat(fill)
-        )
-        .unwrap();
+        let fill = width.saturating_sub(3 + title.width() + right.width());
+        format!("{BORDER}╭─{title}{}{right}╮", "─".repeat(fill))
+    }
 
-        for i in 0..inner_h {
-            write!(out, "\x1b[{};1H{border}│ ", lay.box_top + 2 + i).unwrap();
-            let mut used = 0;
-            if let Some(line) = lines.get(scroll + i) {
-                for (style, text) in line {
-                    out.push_str(style.sgr());
-                    out.push_str(text);
-                    used += text.width();
-                }
+    /// The bottom border with hints. Only the innermost box takes keys.
+    fn bottom_border(
+        &self,
+        width: usize,
+        body: usize,
+        inner_h: usize,
+        scroll: usize,
+        k: usize,
+        innermost: bool,
+    ) -> String {
+        let mut hints: Vec<String> = self.note.iter().map(|n| n.to_string()).collect();
+        if innermost {
+            hints.push("Esc close".to_string());
+            if self.deep_available {
+                hints.push("Alt+P again: use whole chat".into());
             }
-            write!(
-                out,
-                "\x1b[0m{}{border} │",
-                " ".repeat(inner_w.saturating_sub(used))
-            )
-            .unwrap();
+            if self.confirm_deep {
+                hints.push("Alt+P: send anyway".into());
+            }
         }
-
-        // Bottom border with hints.
-        let mut hints = vec!["Esc close".to_string()];
-        if self.deep_available {
-            hints.push("Alt+P again: use whole chat".into());
-        }
-        if self.confirm_deep {
-            hints.push("Alt+P: send anyway".into());
-        }
-        if lines.len() > inner_h {
-            hints.push(format!(
-                "PgUp/PgDn {}/{}",
-                (scroll + inner_h).min(lines.len()),
-                lines.len()
-            ));
+        if body > inner_h {
+            let keys = if innermost { "PgUp/PgDn " } else { "" };
+            hints.push(format!("{keys}{}/{body}", (scroll + inner_h).min(body)));
         }
         match &self.status {
             Status::Thinking | Status::Streaming => hints.push("…".into()),
             _ => {}
         }
-        if self.waiting_updates > 0 {
+        if self.waiting_updates > 0 && k == 0 {
             let n = self.waiting_updates;
             let s = if n == 1 { "" } else { "s" };
             hints.push(format!("{}: {n} update{s} waiting", self.child_name));
         }
-        let hint = clip(&format!(" {} ", hints.join(" · ")), cols.saturating_sub(4));
-        let fill = cols.saturating_sub(3 + hint.width());
-        write!(
-            out,
-            "\x1b[{};1H{border}╰{}{hint}─╯\x1b[0m",
-            lay.box_top + lay.box_height,
-            "─".repeat(fill)
-        )
-        .unwrap();
+        let hint = if hints.is_empty() {
+            String::new()
+        } else {
+            clip(&format!(" {} ", hints.join(" · ")), width.saturating_sub(4))
+        };
+        let fill = width.saturating_sub(3 + hint.width());
+        format!("{BORDER}╰{}{hint}─╯\x1b[0m", "─".repeat(fill))
     }
+}
+
+/// Draw a nest of boxes, `levels[0]` filling `lay`. Returns, per box row, the
+/// boxes and lines it shows.
+pub fn draw_levels(
+    out: &mut String,
+    lay: &Layout,
+    cols: usize,
+    levels: &[Level],
+) -> Vec<Vec<Part>> {
+    if levels.is_empty() {
+        return Vec::new();
+    }
+    let rows = box_rows(levels, 0, cols);
+    for (i, row) in rows.iter().enumerate() {
+        write!(out, "\x1b[{};1H{}", lay.box_top + 1 + i, row.text).unwrap();
+    }
+    rows.into_iter().map(|r| r.parts).collect()
+}
+
+/// How far the box at `k` can scroll: its own lines plus the inner box.
+pub fn scroll_limit(levels: &[Level], k: usize, cols: usize) -> usize {
+    let width = cols.saturating_sub(4 * k);
+    let lines = levels[k].peek.body_lines(width.saturating_sub(4)).len();
+    let inner = levels.get(k + 1).map_or(0, |l| l.height);
+    (lines + inner).saturating_sub(levels[k].height.saturating_sub(2))
+}
+
+/// The rows of box `k`, `width` columns wide, with the boxes inside it.
+fn box_rows(levels: &[Level], k: usize, width: usize) -> Vec<Row> {
+    let lv = &levels[k];
+    let tw = width.saturating_sub(4);
+    let lines = lv.peek.body_lines(tw);
+    let mut inner = (k + 1 < levels.len()).then(|| box_rows(levels, k + 1, tw));
+    let mut body = Vec::new();
+    for i in 0..lines.len() {
+        body.push(BodyRow::Own(i));
+        if i == lv.anchor.min(lines.len() - 1)
+            && let Some(rows) = inner.take()
+        {
+            body.extend(rows.into_iter().map(BodyRow::Inner));
+        }
+    }
+    if let Some(rows) = inner {
+        body.extend(rows.into_iter().map(BodyRow::Inner));
+    }
+    let inner_h = lv.height.saturating_sub(2);
+    let scroll = lv.peek.scroll.min(body.len().saturating_sub(inner_h));
+    let edge = |line| vec![Part { level: k, line }];
+
+    let mut rows = vec![Row {
+        text: lv.peek.top_border(width),
+        parts: edge(None),
+    }];
+    for i in 0..inner_h {
+        rows.push(match body.get(scroll + i) {
+            Some(BodyRow::Own(l)) => {
+                let mut text = format!("{BORDER}│ ");
+                let used = draw_line(&mut text, &lines[*l], *l, lv.decor);
+                write!(
+                    text,
+                    "\x1b[0m{}{BORDER} │",
+                    " ".repeat(tw.saturating_sub(used))
+                )
+                .unwrap();
+                Row {
+                    text,
+                    parts: edge(Some(*l)),
+                }
+            }
+            Some(BodyRow::Inner(row)) => {
+                let mut parts = edge(None);
+                parts.extend(&row.parts);
+                Row {
+                    text: format!("{BORDER}│ {}{BORDER} │", row.text),
+                    parts,
+                }
+            }
+            None => Row {
+                text: format!("{BORDER}│ \x1b[0m{}{BORDER} │", " ".repeat(tw)),
+                parts: edge(None),
+            },
+        });
+    }
+    rows.push(Row {
+        text: lv
+            .peek
+            .bottom_border(width, body.len(), inner_h, scroll, k, k + 1 == levels.len()),
+        parts: edge(None),
+    });
+    rows
+}
+
+/// One body line with the marks and the selection over it; returns its width.
+fn draw_line(out: &mut String, line: &[Glyph], l: usize, decor: &Decor) -> usize {
+    let within = |r: &Range<usize>, i: usize| -> bool {
+        // A gap the box added between two chars of the same words is in them.
+        let src = line[i].src.map(|s| (s, s)).or_else(|| {
+            let before = line[..i].iter().rev().find_map(|g| g.src)?;
+            let after = line[i + 1..].iter().find_map(|g| g.src)?;
+            Some((before, after))
+        });
+        src.is_some_and(|(a, b)| r.contains(&a) && r.contains(&b))
+    };
+    let mut col = 0;
+    let mut pen = String::new();
+    for (i, g) in line.iter().enumerate() {
+        let hover = decor.hover.as_ref().is_some_and(|r| within(r, i));
+        let mark = decor.marks.iter().any(|r| within(r, i));
+        let selected = decor
+            .selection
+            .is_some_and(|(a, b)| a <= (l, col) && (l, col) <= b);
+        let mut sgr = g.style.sgr().to_string();
+        if hover {
+            sgr.push_str("\x1b[4m");
+        } else if mark {
+            sgr.push_str("\x1b[4:4m");
+        }
+        if selected {
+            sgr.push_str("\x1b[7m");
+        }
+        if sgr != pen {
+            out.push_str(&sgr);
+            pen = sgr;
+        }
+        out.push(g.c);
+        col += g.c.width().unwrap_or(0);
+    }
+    col
 }
 
 /// The frame that shows the box: the region repainted with the box inserted and
 /// the surrounding rows shifted away from it.
 pub fn open_frame(snap: &Snapshot, lay: &Layout, peek: &PeekBox) -> String {
+    let level = Level {
+        peek,
+        decor: &Decor::default(),
+        height: lay.box_height,
+        anchor: 0,
+    };
+    nest_frame(snap, lay, &[level], true).0
+}
+
+/// A frame with a nest of boxes, `levels[0]` filling `lay`: all of the region
+/// when `full` (it opened or changed size), else only the box rows. Also
+/// returns what each box row shows.
+pub fn nest_frame(
+    snap: &Snapshot,
+    lay: &Layout,
+    levels: &[Level],
+    full: bool,
+) -> (String, Vec<Vec<Part>>) {
     let mut out = String::from(SYNC_BEGIN);
     out.push_str("\x1b[?25l");
+    if full {
+        shift_rows(&mut out, snap, lay);
+    }
+    let parts = draw_levels(&mut out, lay, snap.cols, levels);
+    hide_cursor_at_rest(&mut out, snap);
+    out.push_str(SYNC_END);
+    (out, parts)
+}
+
+/// The region's rows outside the box, shifted away from it.
+fn shift_rows(out: &mut String, snap: &Snapshot, lay: &Layout) {
     let (top, bottom) = lay.region;
     for r in top..bottom {
         let in_box = r >= lay.box_top && r < lay.box_top + lay.box_height;
@@ -285,14 +576,10 @@ pub fn open_frame(snap: &Snapshot, lay: &Layout, peek: &PeekBox) -> String {
             Some(r + lay.box_height)
         };
         match src.filter(|&s| s < snap.rows.len()) {
-            Some(s) => render::row(&mut out, r, &snap.rows[s]),
+            Some(s) => render::row(out, r, &snap.rows[s]),
             None => write!(out, "\x1b[{};1H\x1b[0m\x1b[2K", r + 1).unwrap(),
         }
     }
-    peek.draw(&mut out, lay, snap.cols);
-    hide_cursor_at_rest(&mut out, snap);
-    out.push_str(SYNC_END);
-    out
 }
 
 /// While the box is open the cursor stays hidden: its row may now be inside the
@@ -304,12 +591,29 @@ fn hide_cursor_at_rest(out: &mut String, snap: &Snapshot) {
 
 /// A frame that only refreshes the box (while text streams in).
 pub fn box_frame(snap: &Snapshot, lay: &Layout, peek: &PeekBox) -> String {
-    let mut out = String::from(SYNC_BEGIN);
-    out.push_str("\x1b[?25l");
-    peek.draw(&mut out, lay, snap.cols);
-    hide_cursor_at_rest(&mut out, snap);
-    out.push_str(SYNC_END);
-    out
+    let level = Level {
+        peek,
+        decor: &Decor::default(),
+        height: lay.box_height,
+        anchor: 0,
+    };
+    nest_frame(snap, lay, &[level], false).0
+}
+
+/// The same placement with a box of `height` rows, as far as the region has
+/// room. The region is unchanged, so one full frame redraws all of it.
+pub fn resize(lay: &Layout, height: usize) -> Layout {
+    let height = height.min(lay.region.1 - lay.region.0);
+    let box_top = if lay.below {
+        lay.box_top
+    } else {
+        lay.region.1 - height
+    };
+    Layout {
+        box_top,
+        box_height: height,
+        ..*lay
+    }
 }
 
 /// Repaint the region exactly as it was when the box opened.
@@ -359,14 +663,18 @@ fn clip(s: &str, max: usize) -> String {
 fn markdown_lines(text: &str, width: usize) -> Vec<Line> {
     let mut lines = Vec::new();
     let mut in_fence = false;
+    let mut at = 0;
     for raw in text.split('\n') {
+        let start = at;
+        let len = raw.chars().count();
+        at += len + 1;
         let trimmed = raw.trim_start();
         if trimmed.starts_with("```") {
             in_fence = !in_fence;
             continue;
         }
         if in_fence {
-            lines.push(vec![(Style::Code, clip(raw, width))]);
+            lines.push(clip_line(glyphs(Style::Code, raw, Some(start)), width));
             continue;
         }
         if raw.trim().is_empty() {
@@ -377,13 +685,14 @@ fn markdown_lines(text: &str, width: usize) -> Vec<Line> {
             Some(_) => (true, trimmed.trim_start_matches('#').trim_start()),
             None => (false, raw),
         };
-        let mut spans = inline_spans(body);
+        // `body` ends where `raw` does.
+        let mut line = inline_glyphs(body, start + len - body.chars().count());
         if heading {
-            for s in &mut spans {
-                s.0 = Style::Bold;
+            for g in &mut line {
+                g.style = Style::Bold;
             }
         }
-        lines.extend(wrap(&spans, width));
+        lines.extend(wrap(&line, width));
     }
     while lines.last().is_some_and(|l| l.is_empty()) {
         lines.pop();
@@ -391,82 +700,102 @@ fn markdown_lines(text: &str, width: usize) -> Vec<Line> {
     lines
 }
 
-fn inline_spans(s: &str) -> Vec<(Style, String)> {
-    let mut spans = Vec::new();
-    let mut cur = String::new();
+/// `line` cut to `max` columns, with "…" when cut.
+fn clip_line(line: Line, max: usize) -> Line {
+    if width_of(&line) <= max {
+        return line;
+    }
+    let mut out = Vec::new();
+    let mut w = 0;
+    for g in &line {
+        let cw = g.c.width().unwrap_or(0);
+        if w + cw + 1 > max {
+            break;
+        }
+        out.push(*g);
+        w += cw;
+    }
+    let style = line[0].style;
+    out.push(Glyph {
+        c: '…',
+        style,
+        src: None,
+    });
+    out
+}
+
+/// `s` without its markdown markers, styled; its first char is char `at` of
+/// the answer.
+fn inline_glyphs(s: &str, at: usize) -> Line {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = Vec::new();
     let mut bold = false;
     let mut code = false;
-    let mut chars = s.chars().peekable();
-    let style = |bold: bool, code: bool| {
-        if code {
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '`' {
+            code = !code;
+            i += 1;
+            continue;
+        }
+        if c == '*' && !code && chars.get(i + 1) == Some(&'*') {
+            bold = !bold;
+            i += 2;
+            continue;
+        }
+        let style = if code {
             Style::Code
         } else if bold {
             Style::Bold
         } else {
             Style::Plain
-        }
-    };
-    while let Some(c) = chars.next() {
-        if c == '`' {
-            spans.push((style(bold, code), std::mem::take(&mut cur)));
-            code = !code;
-        } else if c == '*' && !code && chars.peek() == Some(&'*') {
-            chars.next();
-            spans.push((style(bold, code), std::mem::take(&mut cur)));
-            bold = !bold;
-        } else {
-            cur.push(c);
-        }
+        };
+        out.push(Glyph {
+            c,
+            style,
+            src: Some(at + i),
+        });
+        i += 1;
     }
-    spans.push((style(bold, code), cur));
-    spans.retain(|(_, t)| !t.is_empty());
-    spans
+    out
 }
 
-/// Word-wrap styled spans to `width` columns, keeping each word's style.
-fn wrap(spans: &[(Style, String)], width: usize) -> Vec<Line> {
+/// Word-wrap a line to `width` columns, keeping each word's style.
+fn wrap(line: &[Glyph], width: usize) -> Vec<Line> {
     let width = width.max(8);
-    let indent = spans
-        .first()
-        .map(|(_, t)| {
-            let lead = t.len() - t.trim_start().len();
-            let bullet = ["- ", "* ", "• "]
-                .iter()
-                .any(|b| t.trim_start().starts_with(b));
-            lead + if bullet { 2 } else { 0 }
-        })
-        .unwrap_or(0)
-        .min(width / 2);
+    let lead = line.iter().take_while(|g| g.c.is_whitespace()).count();
+    let start: String = line[lead..].iter().take(2).map(|g| g.c).collect();
+    let bullet = ["- ", "* ", "• "].contains(&start.as_str());
+    let indent = (lead + if bullet { 2 } else { 0 }).min(width / 2);
+    let space = Glyph {
+        c: ' ',
+        style: Style::Plain,
+        src: None,
+    };
+    let pad = |n: usize| vec![space; n];
 
     // Words are split on spaces only, so a word may span several styles
     // ("`main`," is one word): punctuation never starts a line on its own.
     let mut words: Vec<Line> = vec![Vec::new()];
     let mut lead_spaces = 0;
-    for (style, text) in spans {
-        for (i, part) in text.split(' ').enumerate() {
-            if i > 0 {
-                if words.last().is_some_and(|w| !w.is_empty()) {
-                    words.push(Vec::new());
-                } else if words.len() == 1 {
-                    lead_spaces += 1;
-                }
+    for g in line {
+        if g.c == ' ' {
+            if words.last().is_some_and(|w| !w.is_empty()) {
+                words.push(Vec::new());
+            } else if words.len() == 1 {
+                lead_spaces += 1;
             }
-            if !part.is_empty() {
-                push(words.last_mut().unwrap(), *style, part.to_string());
-            }
+        } else {
+            words.last_mut().unwrap().push(*g);
         }
     }
-    let width_of = |w: &Line| w.iter().map(|(_, t)| t.width()).sum::<usize>();
 
     let mut lines: Vec<Line> = vec![Vec::new()];
     let mut col = 0;
     if lead_spaces > 0 {
-        push(
-            &mut lines[0],
-            Style::Plain,
-            " ".repeat(lead_spaces.min(width / 2)),
-        );
         col = lead_spaces.min(width / 2);
+        lines[0] = pad(col);
     }
     for word in words.into_iter().filter(|w| !w.is_empty()) {
         let w = width_of(&word);
@@ -474,51 +803,48 @@ fn wrap(spans: &[(Style, String)], width: usize) -> Vec<Line> {
             col > 0 && !(lead_spaces > 0 && col == lead_spaces.min(width / 2) && lines.len() == 1),
         );
         if col + sep + w > width && col > indent {
-            lines.push(vec![(Style::Plain, " ".repeat(indent))]);
+            lines.push(pad(indent));
             col = indent;
         } else if sep == 1 {
-            push(lines.last_mut().unwrap(), Style::Plain, " ".into());
+            lines.last_mut().unwrap().push(space);
             col += 1;
         }
         if col + w <= width {
             col += w;
-            for (style, text) in word {
-                push(lines.last_mut().unwrap(), style, text);
-            }
+            lines.last_mut().unwrap().extend(word);
             continue;
         }
         // A single word longer than the line: hard-break it.
-        for (style, text) in word {
-            let mut chunk = String::new();
-            for ch in text.chars() {
-                let cw = ch.width().unwrap_or(0);
-                if col + cw > width {
-                    push(lines.last_mut().unwrap(), style, std::mem::take(&mut chunk));
-                    lines.push(Vec::new());
-                    col = 0;
-                }
-                chunk.push(ch);
-                col += cw;
+        for g in word {
+            let cw = g.c.width().unwrap_or(0);
+            if col + cw > width {
+                lines.push(Vec::new());
+                col = 0;
             }
-            push(lines.last_mut().unwrap(), style, chunk);
+            lines.last_mut().unwrap().push(g);
+            col += cw;
         }
     }
     lines
 }
 
-fn push(line: &mut Line, style: Style, text: String) {
-    if text.is_empty() {
-        return;
-    }
-    match line.last_mut() {
-        Some((s, t)) if *s == style => t.push_str(&text),
-        _ => line.push((style, text)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plain(line: &[Glyph]) -> String {
+        line.iter().map(|g| g.c).collect()
+    }
+
+    /// The screen a frame draws, as text rows.
+    fn screen(frame: &str, cols: u16, rows: u16) -> Vec<String> {
+        let mut s = crate::shadow::Shadow::new(cols, rows);
+        s.advance(frame.as_bytes());
+        let snap = s.snapshot();
+        (0..rows as usize)
+            .map(|r| snap.rows_text(r, r + 1).trim_end().to_string())
+            .collect()
+    }
 
     #[test]
     fn layout_keeps_out_of_rows_it_never_saw() {
@@ -562,7 +888,7 @@ mod tests {
         let text = "one straight sequence on top of the current `main`, without merge commits";
         for width in 20..60 {
             for line in markdown_lines(text, width) {
-                let s: String = line.iter().map(|(_, t)| t.as_str()).collect();
+                let s = plain(&line);
                 assert!(
                     !s.trim_start().starts_with(','),
                     "line starts with a comma at width {width}: {s:?}"
@@ -579,21 +905,170 @@ mod tests {
             20,
         );
         assert!(lines.len() > 1);
-        assert!(
+        let styled = |style| -> String {
             lines
                 .iter()
                 .flatten()
-                .any(|(s, t)| *s == Style::Bold && t.contains("orphaned"))
-        );
-        assert!(
-            lines
-                .iter()
-                .flatten()
-                .any(|(s, t)| *s == Style::Code && t.contains("kill(0,"))
-        );
+                .filter(|g| g.style == style)
+                .map(|g| g.c)
+                .collect()
+        };
+        assert!(styled(Style::Bold).contains("orphaned"));
+        assert!(styled(Style::Code).contains("kill(0,"));
         for l in &lines {
-            let w: usize = l.iter().map(|(_, t)| t.width()).sum();
-            assert!(w <= 20, "line too wide: {l:?}");
+            assert!(width_of(l) <= 20, "line too wide: {l:?}");
         }
+    }
+
+    #[test]
+    fn box_text_knows_where_it_is_in_the_answer() {
+        let mut peek = PeekBox::new("x");
+        peek.status = Status::Done;
+        peek.text = "# Head\nAn **orphaned process group** has `no` parent.".into();
+        let lines = peek.body_lines(16);
+        assert_eq!(plain(&lines[0]), "Head");
+        assert_eq!(plain(&lines[1]), "An orphaned");
+        // "orphaned" starts at char 12 of the answer: "# Head\nAn **" is 12 chars.
+        assert_eq!(peek.src_at(16, (1, 3)), Some(12));
+        assert_eq!(peek.src_at(16, (1, 2)), None, "the space the box put there");
+        let (text, src) = peek.shown(16, (1, 3), (2, 6));
+        assert_eq!(text, "orphaned process");
+        let answer: Vec<char> = peek.text.chars().collect();
+        let src = src.unwrap();
+        assert_eq!(answer[src].iter().collect::<String>(), "orphaned process");
+        // Wide chars take two columns.
+        peek.text = "你好 world".into();
+        assert_eq!(peek.src_at(20, (0, 3)), Some(1));
+        assert_eq!(peek.src_at(20, (0, 5)), Some(3));
+    }
+
+    #[test]
+    fn boxes_nest_and_each_scrolls() {
+        let cols = 40;
+        let mut outer = PeekBox::new("the PTY layer");
+        outer.status = Status::Done;
+        outer.text = (1..=8)
+            .map(|i| format!("outer {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut inner = PeekBox::new("job control");
+        inner.status = Status::Done;
+        inner.text = (1..=5)
+            .map(|i| format!("inner {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let decor = Decor::default();
+        let lay = Layout {
+            box_top: 0,
+            box_height: 10,
+            region: (0, 10),
+            below: true,
+        };
+        let draw = |outer: &PeekBox, inner: &PeekBox| {
+            let levels = [
+                Level {
+                    peek: outer,
+                    decor: &decor,
+                    height: 10,
+                    anchor: 1,
+                },
+                Level {
+                    peek: inner,
+                    decor: &decor,
+                    height: 4,
+                    anchor: 0,
+                },
+            ];
+            let mut out = String::new();
+            let parts = draw_levels(&mut out, &lay, cols, &levels);
+            (
+                screen(&out, cols as u16, 10),
+                parts,
+                scroll_limit(&levels, 0, cols),
+                scroll_limit(&levels, 1, cols),
+            )
+        };
+        let (rows, parts, outer_max, inner_max) = draw(&outer, &inner);
+        assert!(rows[0].starts_with("╭─ peek · the PTY layer"));
+        assert_eq!(rows[2], "│ outer 2                              │");
+        assert!(rows[3].starts_with("│ ╭─ peek · job control"), "{rows:#?}");
+        assert_eq!(rows[4], "│ │ inner 1                          │ │");
+        assert!(rows[6].starts_with("│ ╰") && rows[6].contains("PgUp/PgDn 2/5"));
+        assert_eq!(rows[7], "│ outer 3                              │");
+        assert!(rows[9].ends_with("8/12 ─╯"), "{}", rows[9]);
+        assert_eq!((outer_max, inner_max), (4, 3));
+
+        // What a click hits.
+        assert_eq!(spot(&parts[2], cols, 4), Some((0, Some((1, 2)))));
+        assert_eq!(spot(&parts[4], cols, 4), Some((1, Some((0, 0)))));
+        assert_eq!(
+            spot(&parts[4], cols, 1),
+            Some((0, None)),
+            "the outer border"
+        );
+        assert_eq!(
+            spot(&parts[4], cols, 2),
+            Some((1, None)),
+            "the inner border"
+        );
+
+        // The inner box scrolls on its own; the outer one moves it with its line.
+        let mut inner2 = PeekBox {
+            scroll: 3,
+            ..inner.clone()
+        };
+        let (rows, ..) = draw(&outer, &inner2);
+        assert_eq!(rows[4], "│ │ inner 4                          │ │");
+        let outer2 = PeekBox {
+            scroll: 3,
+            ..outer.clone()
+        };
+        inner2.scroll = 0;
+        let (rows, parts, ..) = draw(&outer2, &inner2);
+        // Outer rows 0-2 (two lines, the inner box's top) are scrolled away.
+        assert_eq!(
+            rows[1], "│ │ inner 1                          │ │",
+            "{rows:#?}"
+        );
+        assert_eq!(spot(&parts[1], cols, 4), Some((1, Some((0, 0)))));
+        assert_eq!(rows[4], "│ outer 3                              │");
+    }
+
+    #[test]
+    fn marks_and_the_selection_are_drawn_over_the_text() {
+        let mut peek = PeekBox::new("x");
+        peek.status = Status::Done;
+        peek.text = "see the job control here".into();
+        let decor = Decor {
+            marks: std::iter::once(8..19).collect(),
+            hover: None,
+            selection: Some(((0, 0), (0, 2))),
+        };
+        let lay = layout(10, 0, 0);
+        let mut out = String::new();
+        draw_levels(
+            &mut out,
+            &lay,
+            40,
+            &[Level {
+                peek: &peek,
+                decor: &decor,
+                height: 3,
+                anchor: 0,
+            }],
+        );
+        let mut s = crate::shadow::Shadow::new(40, 10);
+        s.advance(out.as_bytes());
+        let snap = s.snapshot();
+        let row = &snap.rows[lay.box_top + 1];
+        let flagged = |f: Flags| -> String {
+            row.iter()
+                .filter(|c| c.flags.contains(f))
+                .map(|c| c.c)
+                .collect()
+        };
+        use alacritty_terminal::term::cell::Flags;
+        assert_eq!(flagged(Flags::DOTTED_UNDERLINE), "job control");
+        assert_eq!(flagged(Flags::INVERSE), "see");
     }
 }

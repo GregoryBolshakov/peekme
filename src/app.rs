@@ -15,13 +15,15 @@ use crate::agent::Agent;
 use crate::explain::{self, Explainer, Progress};
 use crate::input::{self, Consumed, Kind, Mouse, Token};
 use crate::jobctl;
-use crate::marks::{self, Marks, Place};
+use crate::marks::{self, AnswerId, Marks, Place};
 use crate::osc52::Osc52;
 use crate::overlay::{self, Layout, PeekBox, Status};
 use crate::render::{self, Boundary, SYNC_BEGIN, SYNC_END};
 use crate::select::{self, Located, SelectionSource};
 use crate::shadow::{Shadow, Snapshot};
 use crate::{claude, codex};
+
+mod nest;
 
 enum Msg {
     Output(Vec<u8>),
@@ -47,6 +49,20 @@ struct Open {
     deep: bool,
     /// Where the selection is, to mark it once the answer is complete.
     mark: Option<(Place, Vec<(usize, usize)>)>,
+    /// The saved answer the box shows, once there is one.
+    answer: Option<AnswerId>,
+    /// Boxes opened inside this one, outermost first.
+    nested: Vec<nest::Nested>,
+    /// The box's height before boxes opened inside it, to go back to.
+    base_height: usize,
+    /// Text selected (or being selected) in one of the boxes.
+    drag: Option<nest::Drag>,
+    /// Words of a nested answer under the pointer: (box, chars of its answer).
+    box_hover: Option<(usize, std::ops::Range<usize>)>,
+    /// What each box row shows, from the last time the box was drawn.
+    parts: Vec<Vec<overlay::Part>>,
+    /// peekme turned mouse reports on for the box (the child had them off).
+    own_mouse: bool,
     snap: Snapshot,
     lay: Layout,
     peek: PeekBox,
@@ -62,6 +78,15 @@ struct Open {
     drawn_at: Instant,
     dirty: bool,
 }
+
+/// Mouse reports (button events, SGR form) peekme turns on while a box is open
+/// over a child that has them off, so text in the box can be selected.
+const MOUSE_ON: &str = "\x1b[?1002h\x1b[?1006h";
+const MOUSE_OFF: &str = "\x1b[?1002l";
+const SGR_OFF: &str = "\x1b[?1006l";
+/// Reports still on their way after peekme turned them off are dropped for
+/// this long, so a child that never asked for them gets none.
+const STRAY_MOUSE: Duration = Duration::from_secs(1);
 
 /// Redrawing the box for every streamed token would send ~200 KB per explanation.
 const FRAME: Duration = Duration::from_millis(33);
@@ -339,6 +364,8 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         degraded: false,
         size: (cols, rows),
         marks: Marks::default(),
+        orphans: Default::default(),
+        own_mouse_off: None,
         marks_stale: false,
         marks_all: false,
         held_press: None,
@@ -501,6 +528,10 @@ struct App {
     size: (u16, u16),
     /// Selections that got an answer, drawn with a dotted underline.
     marks: Marks,
+    /// Nested answers whose box closed before they were complete.
+    orphans: std::collections::HashMap<u64, nest::Orphan>,
+    /// When peekme last turned off the mouse reports it turned on for a box.
+    own_mouse_off: Option<Instant>,
     /// The child wrote something since the marks were last drawn.
     marks_stale: bool,
     /// peekme repainted rows itself (closing a box): draw every mark again.
@@ -899,6 +930,21 @@ impl App {
                 self.mouse_seen = true;
             }
             if let Kind::Mouse(m) = t.kind
+                && self.open.is_some()
+                && self.box_mouse(m, &t.bytes, out)?
+            {
+                continue;
+            }
+            if matches!(t.kind, Kind::Mouse(_))
+                && self.open.is_none()
+                && !self.shadow.mouse_mode()
+                && self
+                    .own_mouse_off
+                    .is_some_and(|t| t.elapsed() < STRAY_MOUSE)
+            {
+                continue;
+            }
+            if let Kind::Mouse(m) = t.kind
                 && self.mark_mouse(m, &t.bytes, &mut forward, out, child)?
             {
                 continue;
@@ -917,6 +963,15 @@ impl App {
                     }
                     if self.open.is_some() {
                         self.flush_forward(&mut forward, child)?;
+                        // Text selected in a box: a box inside it.
+                        if self.box_selection().is_some() {
+                            self.open_nested(out)?;
+                            continue;
+                        }
+                        // Boxes inside: Alt+P with nothing selected in them does nothing.
+                        if self.open.as_ref().is_some_and(|o| !o.nested.is_empty()) {
+                            continue;
+                        }
                         // Alt+P again on the same selection: explain with the whole conversation.
                         if self.escalate(out)? {
                             continue;
@@ -927,7 +982,9 @@ impl App {
                 }
                 (Kind::Esc, true) => {
                     self.consumed.consume(&t);
-                    self.close(out, false)?;
+                    if !self.close_innermost(out)? {
+                        self.close(out, false)?;
+                    }
                 }
                 (Kind::PageUp | Kind::PageDown, true) => {
                     self.consumed.consume(&t);
@@ -1467,7 +1524,7 @@ impl App {
         let mut remembered = None;
         let mut strip = None;
         let mut mark = None;
-        let mut saved = false;
+        let mut saved = None;
         let (mut peek, lay) = match (&selection, located) {
             (Some(sel), Some(loc)) => {
                 // Keep the child's live area (input line, status) out of the box's
@@ -1490,12 +1547,14 @@ impl App {
                     self.shadow.history_size(),
                     self.shadow.alt_screen(),
                 );
-                if let Some(m) = self.marks.find(sel) {
+                if let Some(id) = self.marks.find(sel)
+                    && let Some(a) = self.marks.answer(id)
+                {
                     // Asked before: show that answer, no new call, and mark this copy too.
-                    saved = true;
-                    let (answer, model) = (m.answer.clone(), m.model.clone());
+                    saved = Some(id);
+                    let (answer, model) = (a.answer.clone(), a.model.clone());
                     if let Some((place, _)) = &mark {
-                        self.marks.add(sel, &answer, &model, place.clone());
+                        self.marks.add(id, place.clone());
                     }
                     peek.text = answer;
                     peek.model = format!("{model} · saved");
@@ -1505,7 +1564,7 @@ impl App {
                 } else {
                     let max_lines = lay.box_height.saturating_sub(2).clamp(3, 12);
                     if let Some(e) =
-                        self.start_explain(id, loc.screen.clone(), max_lines, false, false)
+                        self.start_explain(id, loc.screen.clone(), max_lines, false, false, None)
                     {
                         peek.status = Status::Error(e);
                     }
@@ -1554,25 +1613,28 @@ impl App {
                 "source": self.selection_source,
                 "hidden": hidden,
                 "withheld": withheld,
-                "saved": saved,
+                "saved": saved.is_some(),
                 "mark": mark.as_ref().map(|(_, c)| c.len()),
                 "alt": self.shadow.alt_screen(),
                 "box_top": lay.box_top,
                 "live_input": strip,
             }),
         );
-        let mut frame = overlay::open_frame(&snap, &lay, &peek);
-        if let Some(top) = strip {
-            frame.push_str(&strip_cursor(&snap, top));
-        }
-        out.write_all(frame.as_bytes())?;
-        out.flush()?;
         let strip_shown = strip.map_or_else(Vec::new, |top| snap.rows[top..].to_vec());
+        // Selecting text in the box needs the mouse reports.
+        let own_mouse = !self.shadow.mouse_mode();
         self.open = Some(Open {
             id,
             selection: remembered,
             deep: false,
             mark,
+            answer: saved,
+            nested: Vec::new(),
+            base_height: 0,
+            drag: None,
+            box_hover: None,
+            parts: Vec::new(),
+            own_mouse,
             snap,
             lay,
             peek,
@@ -1583,6 +1645,12 @@ impl App {
             drawn_at: Instant::now(),
             dirty: false,
         });
+        let mut frame = self.box_bytes(true);
+        if own_mouse {
+            frame.push_str(MOUSE_ON);
+        }
+        out.write_all(frame.as_bytes())?;
+        out.flush()?;
         #[cfg(debug_assertions)]
         if panic_after_open {
             panic!("panic requested by PEEKME_TEST_PANIC");
@@ -1599,6 +1667,7 @@ impl App {
         max_lines: usize,
         deep: bool,
         force: bool,
+        nested: Option<crate::context::Nested>,
     ) -> Option<String> {
         let Some(explainer) = self.explainer.clone() else {
             return Some("explainer disabled".into());
@@ -1610,6 +1679,7 @@ impl App {
             deep,
             force,
             agent_pid: self.agent_pid(),
+            nested,
         };
         let tx = self.tx.clone();
         std::thread::spawn(move || {
@@ -1646,7 +1716,7 @@ impl App {
         crate::event("escalate", serde_json::json!({"selection": sel}));
         self.next_id += 1;
         let id = self.next_id;
-        let err = self.start_explain(id, screen, max_lines, true, force);
+        let err = self.start_explain(id, screen, max_lines, true, force, None);
         let open = self.open.as_mut().unwrap();
         open.id = id;
         open.deep = true;
@@ -1658,10 +1728,7 @@ impl App {
             Some(e) => Status::Error(e),
             None => Status::Thinking,
         };
-        let mut frame = overlay::box_frame(&open.snap, &open.lay, &open.peek);
-        if let Some(top) = open.strip_top {
-            frame.push_str(&strip_cursor(&self.shadow.snapshot(), top));
-        }
+        let frame = self.box_bytes(false);
         out.write_all(frame.as_bytes())?;
         out.flush()?;
         Ok(true)
@@ -1670,6 +1737,7 @@ impl App {
     /// Close the box: repaint the region from the snapshot, then replay held
     /// output so the terminal reaches exactly the child's current state.
     fn close(&mut self, out: &mut dyn Write, skip_repaint: bool) -> Result<()> {
+        self.close_below(0);
         let Some(open) = self.open.take() else {
             return Ok(());
         };
@@ -1687,6 +1755,14 @@ impl App {
             s.push_str(&overlay::close_frame(&open.snap, &open.lay));
             bytes.extend_from_slice(s.as_bytes());
         }
+        if open.own_mouse {
+            bytes.extend_from_slice(MOUSE_OFF.as_bytes());
+            if !self.shadow.sgr_mouse() {
+                bytes.extend_from_slice(SGR_OFF.as_bytes());
+            }
+            self.own_mouse_off = Some(Instant::now());
+        }
+        self.set_pointer(false, &mut bytes)?;
         let held = render::strip_answered_queries(&open.held);
         self.boundary.feed(&held);
         bytes.extend_from_slice(&held);
@@ -1697,24 +1773,10 @@ impl App {
         Ok(())
     }
 
+    /// PgUp/PgDn: the innermost box scrolls.
     fn scroll(&mut self, down: bool, out: &mut dyn Write) -> Result<()> {
-        let Some(open) = &mut self.open else {
-            return Ok(());
-        };
-        let step = open.lay.box_height.saturating_sub(3).max(1);
-        let max = open.peek.max_scroll(open.snap.cols, open.lay.box_height);
-        open.peek.scroll = if down {
-            (open.peek.scroll + step).min(max)
-        } else {
-            open.peek.scroll.saturating_sub(step)
-        };
-        let mut frame = overlay::box_frame(&open.snap, &open.lay, &open.peek);
-        if let Some(top) = open.strip_top {
-            frame.push_str(&strip_cursor(&self.shadow.snapshot(), top));
-        }
-        out.write_all(frame.as_bytes())?;
-        out.flush()?;
-        Ok(())
+        let depth = self.open.as_ref().map_or(0, |o| o.nested.len());
+        self.scroll_level(depth, down, out)
     }
 
     fn on_progress(&mut self, id: u64, p: Progress, out: &mut dyn Write) -> Result<()> {
@@ -1722,7 +1784,7 @@ impl App {
             return Ok(());
         };
         if open.id != id {
-            return Ok(());
+            return self.nested_progress(id, p, out);
         }
         match p {
             Progress::Started { model, source } => {
@@ -1738,8 +1800,17 @@ impl App {
                 if let (Some((sel, _)), Some((place, cells))) = (&open.selection, &open.mark)
                     && !open.peek.text.trim().is_empty()
                 {
-                    self.marks
-                        .add(sel, &open.peek.text, &open.peek.model, place.clone());
+                    let answer = overlay::sanitize(&open.peek.text);
+                    let id = match open.answer {
+                        // Explained again with the whole chat.
+                        Some(id) => {
+                            self.marks.replace(id, &answer, &open.peek.model);
+                            id
+                        }
+                        None => self.marks.save(None, sel, &answer, &open.peek.model),
+                    };
+                    open.answer = Some(id);
+                    self.marks.add(id, place.clone());
                     crate::event(
                         "mark",
                         serde_json::json!({"selection": sel, "cells": cells.len()}),
@@ -1767,10 +1838,7 @@ impl App {
                 if fitted < open.lay.box_height {
                     // Same region, smaller box: one frame redraws every row of it.
                     open.lay = overlay::shrink(&open.lay, fitted);
-                    let mut frame = overlay::open_frame(&open.snap, &open.lay, &open.peek);
-                    if let Some(top) = open.strip_top {
-                        frame.push_str(&strip_cursor(&self.shadow.snapshot(), top));
-                    }
+                    let frame = self.box_bytes(true);
                     out.write_all(frame.as_bytes())?;
                     out.flush()?;
                     return Ok(());
@@ -1794,17 +1862,12 @@ impl App {
     }
 
     fn redraw_box(&mut self, out: &mut dyn Write) -> Result<()> {
-        let Some(open) = &mut self.open else {
+        if self.open.is_none() {
             return Ok(());
-        };
-        let mut frame = overlay::box_frame(&open.snap, &open.lay, &open.peek);
-        if let Some(top) = open.strip_top {
-            frame.push_str(&strip_cursor(&self.shadow.snapshot(), top));
         }
+        let frame = self.box_bytes(false);
         out.write_all(frame.as_bytes())?;
         out.flush()?;
-        open.drawn_at = Instant::now();
-        open.dirty = false;
         Ok(())
     }
 
@@ -2114,6 +2177,222 @@ mod tests {
         assert_eq!(dotted(&shown, 3), "");
     }
 
+    /// The agent takes the mouse; a box on "true colour" is open with `answer`.
+    fn app_with_an_answer(answer: &str, mouse: bool) -> App {
+        let mut app = test_app(40, 24);
+        app.selection = SelectionSource::fixed("true colour");
+        let mut out = Vec::new();
+        app.on_output(SCREEN, &mut out, &mut Vec::new()).unwrap();
+        if mouse {
+            app.on_output(
+                b"\x1b[?1000h\x1b[?1003h\x1b[?1006h",
+                &mut out,
+                &mut Vec::new(),
+            )
+            .unwrap();
+        }
+        app.open_peek(&mut out).unwrap();
+        let id = app.open.as_ref().unwrap().id;
+        app.on_progress(id, Progress::Delta(answer.into()), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        app.selection = SelectionSource::without_system();
+        app
+    }
+
+    /// SGR mouse report at 0-based screen `cell`: `b` button bits, press or release.
+    fn mouse(b: u32, cell: (usize, usize), press: bool) -> Vec<u8> {
+        let end = if press { 'M' } else { 'm' };
+        format!("\x1b[<{b};{};{}{end}", cell.1 + 1, cell.0 + 1).into_bytes()
+    }
+
+    #[test]
+    fn words_in_a_box_open_a_box_inside_it() {
+        let answer = "A pseudo-terminal lets job control work inside tmux panes.";
+        let mut app = app_with_an_answer(answer, true);
+        let mut real = Shadow::new(40, 24);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let top = app.open.as_ref().unwrap().lay.box_top;
+        // Body line 0 is the row under the top border; its text starts at column 2.
+        // "A pseudo-terminal lets " is 23 chars: drag over "job control".
+        let at = |col: usize| (top + 1, 2 + col);
+        let mut drag = mouse(0, at(23), true);
+        drag.extend(mouse(32, at(30), true));
+        drag.extend(mouse(32, at(33), true));
+        drag.extend(mouse(0, at(33), false));
+        app.on_input(&drag, &mut out, &mut child).unwrap();
+        assert!(
+            app.open.is_some(),
+            "a press in the box selects, it does not close"
+        );
+        real.advance(&out);
+        let row: String = real.snapshot().rows[top + 1]
+            .iter()
+            .filter(|c| c.flags.contains(Flags::INVERSE))
+            .map(|c| c.c)
+            .collect();
+        assert_eq!(row, "job control");
+
+        out.clear();
+        let base = app.open.as_ref().unwrap().lay.box_height;
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.nested.len(), 1);
+        let n = &open.nested[0];
+        assert_eq!(
+            (n.words.as_str(), n.range.clone(), n.anchor),
+            ("job control", 23..34, 0)
+        );
+        let id = n.id;
+        app.on_progress(id, Progress::Delta("Ctrl+Z, fg and bg.".into()), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        real.advance(&out);
+        let snap = real.snapshot();
+        assert!(
+            snap.rows_text(top + 2, top + 3)
+                .starts_with("│ ╭─ peek · job control")
+        );
+        assert!(
+            snap.rows_text(top + 3, top + 4)
+                .starts_with("│ │ Ctrl+Z, fg and bg.")
+        );
+        // Each box fits its text: the outer one its 2 lines and the inner box.
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.nested[0].height, 3);
+        assert_eq!(open.lay.box_height, 2 + 2 + 3);
+        let root = app.open.as_ref().unwrap().answer.unwrap();
+        let child_id = app.open.as_ref().unwrap().nested[0].answer.expect("saved");
+        assert_eq!(app.marks.child_ranges(root), vec![(23..34, child_id)]);
+        assert!(child.is_empty(), "the agent got no mouse report and no key");
+
+        // Esc closes the inner box; its words keep a dotted line.
+        out.clear();
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        app.on_idle(&mut out, &mut child).unwrap();
+        let open = app.open.as_ref().expect("only the inner box closed");
+        assert!(open.nested.is_empty());
+        assert_eq!(open.lay.box_height, base, "back to its height");
+        real.advance(&out);
+        let dotted: String = real.snapshot().rows[top + 1]
+            .iter()
+            .filter(|c| c.flags.contains(Flags::DOTTED_UNDERLINE))
+            .map(|c| c.c)
+            .collect();
+        assert_eq!(dotted, "job control");
+
+        // A click on them shows the saved answer, no new call; again closes it.
+        let click = |c| [mouse(0, at(c), true), mouse(0, at(c), false)].concat();
+        app.on_input(&click(25), &mut out, &mut child).unwrap();
+        let n = &app.open.as_ref().unwrap().nested[0];
+        assert_eq!((n.id, n.peek.text.as_str()), (0, "Ctrl+Z, fg and bg."));
+        app.on_input(&click(25), &mut out, &mut child).unwrap();
+        assert!(app.open.as_ref().unwrap().nested.is_empty());
+        assert!(child.is_empty());
+    }
+
+    #[test]
+    fn a_box_inside_a_box_inside_a_box() {
+        let answer = "A pseudo-terminal lets job control work inside tmux panes.";
+        let mut app = app_with_an_answer(answer, true);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let top = app.open.as_ref().unwrap().lay.box_top;
+        let select = |app: &mut App, row: usize, from: usize, to: usize| {
+            let drag = [
+                mouse(0, (row, from), true),
+                mouse(32, (row, to), true),
+                mouse(0, (row, to), false),
+            ]
+            .concat();
+            let (mut child, mut out) = (Vec::new(), Vec::new());
+            app.on_input(&drag, &mut out, &mut child).unwrap();
+            app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+            assert!(child.is_empty());
+        };
+        select(&mut app, top + 1, 2 + 23, 2 + 33);
+        let id = app.open.as_ref().unwrap().nested[0].id;
+        app.on_progress(id, Progress::Delta("Ctrl+Z, fg and bg.".into()), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        // The inner box's text starts at column 4, under its top border.
+        select(&mut app, top + 3, 4 + 8, 4 + 9);
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.nested.len(), 2);
+        assert_eq!(open.nested[1].words, "fg");
+        let ask = app.nested_request(1, &(8..10)).unwrap();
+        assert_eq!(ask.words(), "fg");
+        assert_eq!(
+            ask.trail
+                .iter()
+                .map(|(w, _)| w.as_str())
+                .collect::<Vec<_>>(),
+            ["true colour", "job control"]
+        );
+        // Esc twice: back to the outer box, which is still open.
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        app.on_idle(&mut out, &mut child).unwrap();
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        app.on_idle(&mut out, &mut child).unwrap();
+        assert!(app.open.as_ref().is_some_and(|o| o.nested.is_empty()));
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        app.on_idle(&mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_box_under_the_pointer() {
+        let answer: String = (1..=30)
+            .map(|i| format!("line {i} with job control\n"))
+            .collect();
+        let mut app = app_with_an_answer(&answer, true);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let top = app.open.as_ref().unwrap().lay.box_top;
+        let at = |col: usize| (top + 1, 2 + col);
+        let drag = [
+            mouse(0, at(17), true),
+            mouse(32, at(27), true),
+            mouse(0, at(27), false),
+        ]
+        .concat();
+        app.on_input(&drag, &mut out, &mut child).unwrap();
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        let id = app.open.as_ref().unwrap().nested[0].id;
+        let inner: String = (1..=20).map(|i| format!("inner {i}\n")).collect();
+        app.on_progress(id, Progress::Delta(inner), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        // The inner box starts under body line 0: its first text row is top + 3.
+        app.on_input(&mouse(65, (top + 3, 6), true), &mut out, &mut child)
+            .unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert!(open.nested[0].peek.scroll > 0 && open.peek.scroll == 0);
+        // On the outer box's own border, the outer box scrolls.
+        app.on_input(&mouse(65, (top + 3, 1), true), &mut out, &mut child)
+            .unwrap();
+        assert!(app.open.as_ref().unwrap().peek.scroll > 0);
+        // PgDn goes to the innermost box.
+        let before = app.open.as_ref().unwrap().nested[0].peek.scroll;
+        app.on_input(b"\x1b[5~", &mut out, &mut child).unwrap();
+        assert!(app.open.as_ref().unwrap().nested[0].peek.scroll < before);
+        assert!(child.is_empty());
+    }
+
+    #[test]
+    fn a_box_over_an_agent_without_mouse_reports_turns_them_on_and_off() {
+        let mut app = app_with_an_answer("An answer.", false);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let open = app.open.as_ref().unwrap();
+        assert!(open.own_mouse);
+        // Press far below the box: it closes, and the agent gets nothing.
+        app.on_input(&mouse(0, (23, 0), true), &mut out, &mut child)
+            .unwrap();
+        assert!(app.open.is_none());
+        assert!(String::from_utf8_lossy(&out).contains("\x1b[?1002l\x1b[?1006l"));
+        app.on_input(&mouse(0, (23, 0), false), &mut out, &mut child)
+            .unwrap();
+        assert!(child.is_empty(), "{:?}", String::from_utf8_lossy(&child));
+    }
+
     #[test]
     fn a_click_on_a_mark_opens_its_answer_and_again_closes_it() {
         let mut app = app_with_a_mark();
@@ -2338,6 +2617,8 @@ mod tests {
             degraded: false,
             size: (cols, rows),
             marks: Marks::default(),
+            orphans: Default::default(),
+            own_mouse_off: None,
             marks_stale: false,
             marks_all: false,
             held_press: None,

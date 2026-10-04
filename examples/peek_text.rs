@@ -47,6 +47,7 @@ fn main() {
         deep: has("--deep"),
         force: true,
         agent_pid,
+        nested: None,
     };
     // SAFETY: single-threaded at this point.
     unsafe { std::env::set_var("PEEKME_DEBUG_PROMPT", "1") };

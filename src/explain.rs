@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::agent::Agent;
 use crate::claude::explain::Pool;
 use crate::codex::explain::{self as codex, Slot};
-use crate::context::ScreenSel;
+use crate::context::{Nested, ScreenSel};
 use crate::copilot::explain as copilot;
 
 /// Streamed progress of one explanation.
@@ -39,6 +39,8 @@ pub struct Request {
     pub force: bool,
     /// Process id of the agent, for agents whose session is found by it.
     pub agent_pid: Option<u32>,
+    /// Words of an earlier answer, when the peek is inside another one.
+    pub nested: Option<Nested>,
 }
 
 /// Above this estimate, "the whole chat" asks before sending (a normal
@@ -97,7 +99,13 @@ impl Explainer {
             Explainer::Claude(pool) => crate::claude::explain::explain(pool, req, tx),
             Explainer::Copilot(slot) => copilot::explain(slot, req, tx),
             Explainer::Fake => {
-                let sel = req.screen.selected();
+                let sel = match &req.nested {
+                    Some(n) => {
+                        let parent = n.trail.last().map_or("", |(w, _)| w.as_str());
+                        format!("{}⟧ in ⟦{parent}", n.words())
+                    }
+                    None => req.screen.selected(),
+                };
                 tx(Progress::Started {
                     model: "test".into(),
                     source: if req.deep {

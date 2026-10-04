@@ -235,7 +235,14 @@ pub fn prompt(req: &Request) -> (context::Built, Option<usize>) {
         .and_then(|c| transcript::find(&c, req.agent_pid, &req.cwd))
         .and_then(|p| transcript::load(&p));
     let hit = conv.as_ref().and_then(|c| context::find(c, &req.screen));
-    let compact = context::build(Agent::Claude, &req.cwd, conv.as_ref(), hit, &req.screen);
+    let compact = context::build(
+        Agent::Claude,
+        &req.cwd,
+        conv.as_ref(),
+        hit,
+        &req.screen,
+        req.nested.as_ref(),
+    );
     let (mut built, compact_len) = match (&conv, req.deep) {
         (Some(c), true) => (
             context::build_deep(Agent::Claude, &req.cwd, c, hit, &req.screen),

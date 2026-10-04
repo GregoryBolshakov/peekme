@@ -333,6 +333,63 @@ pub struct Built {
     pub label: &'static str,
 }
 
+/// A peek opened on words of an earlier answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Nested {
+    /// The peeks it is inside, outermost first: the words and their answer.
+    pub trail: Vec<(String, String)>,
+    /// The chars of the last answer that are selected.
+    pub pick: std::ops::Range<usize>,
+}
+
+impl Nested {
+    /// The selected words of the last answer.
+    pub fn words(&self) -> String {
+        let answer = self.trail.last().map_or("", |(_, a)| a.as_str());
+        answer
+            .chars()
+            .skip(self.pick.start)
+            .take(self.pick.len())
+            .collect()
+    }
+}
+
+/// Earlier answers come with this many chars at most.
+const PEEK_MAX: usize = 1500;
+
+fn nested_ask(sel: &ScreenSel, n: &Nested) -> String {
+    let root = one_line(&sel.selected(), 300);
+    let mut s = format!(
+        "\n<peeks note=\"the user selected {OPEN}{root}{CLOSE} in the passage above and asked you about it, \
+         then selected words inside each answer and asked about those; these are your answers, in order\">\n"
+    );
+    for (i, (words, answer)) in n.trail.iter().enumerate() {
+        let words = one_line(words, 200).replace('"', "'");
+        if i + 1 < n.trail.len() {
+            s.push_str(&format!(
+                "<peek words=\"{words}\">\n{}\n</peek>\n",
+                truncate(answer, PEEK_MAX)
+            ));
+        } else {
+            let chars: Vec<char> = answer.chars().collect();
+            let end = n.pick.end.min(chars.len());
+            let start = n.pick.start.min(end);
+            s.push_str(&format!(
+                "<peek words=\"{words}\" note=\"the words selected now are marked here\">\n{}\n</peek>\n",
+                marked_window(&chars, start, end, PASSAGE_SIDE)
+            ));
+        }
+    }
+    let picked = one_line(&n.words(), 300);
+    s.push_str(&format!(
+        "\nExplain {OPEN}{picked}{CLOSE} as it is used in your last answer above. Name the specific thing it \
+         refers to when the answers or the passage show it. Do not repeat what the last answer already says. \
+         If the context does not settle what it refers to, give the most likely reading and say that it is a \
+         guess.\n"
+    ));
+    s
+}
+
 fn ask(sel: &ScreenSel) -> String {
     let selected = one_line(&sel.selected(), 300);
     format!(
@@ -350,6 +407,7 @@ pub fn build(
     conv: Option<&Conversation>,
     hit: Option<Hit>,
     sel: &ScreenSel,
+    nested: Option<&Nested>,
 ) -> Built {
     let mut p = agent.environment(cwd);
 
@@ -428,7 +486,10 @@ pub fn build(
         }
     }
 
-    p.push_str(&ask(sel));
+    match nested {
+        Some(n) => p.push_str(&nested_ask(sel, n)),
+        None => p.push_str(&ask(sel)),
+    }
     Built { prompt: p, label }
 }
 
@@ -591,7 +652,7 @@ mod tests {
             items: vec![item("1", Source::User, "fix the build")],
         };
         assert_eq!(find(&conv, &s), None);
-        let b = build(Agent::Codex, "/home/u/proj", Some(&conv), None, &s);
+        let b = build(Agent::Codex, "/home/u/proj", Some(&conv), None, &s, None);
         assert_eq!(b.label, "screen");
         assert!(b.prompt.contains("Codex CLI, OpenAI's coding agent"));
         assert!(
@@ -652,7 +713,7 @@ mod tests {
         let hit = find(&conv, &s).unwrap();
         assert!(hit.anchored);
         assert!(
-            !build(Agent::Claude, "/p", Some(&conv), Some(hit), &s)
+            !build(Agent::Claude, "/p", Some(&conv), Some(hit), &s, None)
                 .prompt
                 .contains("<screen")
         );
@@ -663,7 +724,7 @@ mod tests {
         );
         let bare = find(&conv, &other).unwrap();
         assert!(!bare.anchored);
-        let b = build(Agent::Claude, "/p", Some(&conv), Some(bare), &other);
+        let b = build(Agent::Claude, "/p", Some(&conv), Some(bare), &other, None);
         assert!(
             b.prompt
                 .contains("Unrecorded: the ⟦shadow emulator⟧ was fast.")
@@ -701,7 +762,7 @@ mod tests {
         );
         let hit = find(&conv, &s).unwrap();
         assert_eq!(hit.item, 3);
-        let b = build(Agent::Codex, "/p", Some(&conv), Some(hit), &s);
+        let b = build(Agent::Codex, "/p", Some(&conv), Some(hit), &s, None);
         assert_eq!(b.label, "conversation");
         assert!(b.prompt.contains("The ⟦shadow emulator⟧ keeps a copy"));
         assert!(b.prompt.contains("- what is a shadow emulator?"));
@@ -716,5 +777,39 @@ mod tests {
             "prompt too long: {}",
             b.prompt.chars().count()
         );
+    }
+
+    #[test]
+    fn a_nested_peek_asks_about_words_of_the_last_answer() {
+        let text: Vec<char> = "tmux gives each pane its own PTY layer here"
+            .chars()
+            .collect();
+        let s = ScreenSel {
+            start: 29,
+            end: 38,
+            text,
+        };
+        let n = Nested {
+            trail: vec![
+                (
+                    "PTY layer".into(),
+                    "A pseudo-terminal lets job control work.".into(),
+                ),
+                (
+                    "job control".into(),
+                    "Ctrl+Z, fg and bg stop and resume jobs.".into(),
+                ),
+            ],
+            pick: 8..10,
+        };
+        assert_eq!(n.words(), "fg");
+        let p = build(Agent::Codex, "/p", None, None, &s, Some(&n)).prompt;
+        assert!(p.contains("\u{27e6}PTY layer\u{27e7}"), "{p}");
+        assert!(p.contains(
+            "<peek words=\"PTY layer\">\nA pseudo-terminal lets job control work.\n</peek>"
+        ));
+        assert!(p.contains("Ctrl+Z, \u{27e6}fg\u{27e7} and bg"), "{p}");
+        assert!(p.contains("Explain \u{27e6}fg\u{27e7} as it is used in your last answer"));
+        assert!(!p.contains("as it is used in the passage"));
     }
 }

@@ -129,6 +129,11 @@ impl Shadow {
         self.term.mode().intersects(TermMode::MOUSE_MODE)
     }
 
+    /// Whether the child asked for mouse reports in SGR form.
+    pub fn sgr_mouse(&self) -> bool {
+        self.term.mode().contains(TermMode::SGR_MOUSE)
+    }
+
     /// Screen rows the child wrote to since the last call, or None when it may
     /// have changed all of them (a scroll, a clear, a resize).
     pub fn take_damage(&mut self) -> Option<Vec<usize>> {
