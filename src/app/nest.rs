@@ -42,6 +42,16 @@ impl Drag {
     }
 }
 
+/// The last click in a box, to tell the second half of a double click.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct BoxClick {
+    at: Instant,
+    level: usize,
+    pos: Pos,
+    /// The click opened a box inside.
+    opened: bool,
+}
+
 /// A nested answer still streaming after its box closed: saved when complete.
 pub(super) struct Orphan {
     parent: AnswerId,
@@ -258,9 +268,7 @@ impl App {
                 let d = *d;
                 if !d.moved {
                     open.drag = None;
-                    if let Some((child, range)) = self.child_at(d.level, d.from) {
-                        self.click_child(d.level, child, range, d.from.0, out)?;
-                    }
+                    self.box_click(d.level, d.from, out)?;
                 }
             }
         }
@@ -272,6 +280,47 @@ impl App {
         self.open.as_ref()?.drag.filter(|d| d.done && d.moved)
     }
 
+    /// A click (no drag) at `pos` of box `level`. On a nested answer's words it
+    /// opens or closes that answer, except as the second half of a double
+    /// click that opened it. A double click elsewhere selects the word.
+    fn box_click(&mut self, level: usize, pos: Pos, out: &mut dyn Write) -> Result<()> {
+        let open = self.open.as_mut().unwrap();
+        let prev = open.last_click.take();
+        let double =
+            prev.filter(|c| c.level == level && c.pos == pos && c.at.elapsed() < DOUBLE_CLICK);
+        let mut click = BoxClick {
+            at: Instant::now(),
+            level,
+            pos,
+            opened: false,
+        };
+        if let Some((child, range)) = self.child_at(level, pos) {
+            if double.is_some_and(|c| c.opened) {
+                return Ok(());
+            }
+            click.opened = self.click_child(level, child, range, pos.0, out)?;
+        } else if double.is_some() {
+            let open = self.open.as_ref().unwrap();
+            let width = overlay::text_width(open.snap.cols, level);
+            let word = Self::level_peek(open, level).and_then(|p| p.word_at(width, pos));
+            if let Some((from, to)) = word {
+                self.open.as_mut().unwrap().drag = Some(Drag {
+                    level,
+                    from,
+                    to,
+                    moved: true,
+                    done: true,
+                });
+                self.draw_box(false, out)?;
+            }
+            return Ok(());
+        }
+        if let Some(open) = &mut self.open {
+            open.last_click = Some(click);
+        }
+        Ok(())
+    }
+
     /// A click on words of box `level` that have a nested answer: open it in a
     /// box under them, or close it when it is open already.
     fn click_child(
@@ -281,7 +330,7 @@ impl App {
         range: Range<usize>,
         line: usize,
         out: &mut dyn Write,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let open = self.open.as_ref().unwrap();
         let shown = open
             .nested
@@ -294,13 +343,15 @@ impl App {
         self.close_below(level);
         if shown {
             self.fit();
-            return self.draw_box(true, out);
+            self.draw_box(true, out)?;
+            return Ok(false);
         }
         let Some(a) = self.marks.answer(child) else {
-            return Ok(());
+            return Ok(false);
         };
         let words = a.text.clone();
-        self.push_level(level, words, range, line, Some(child), out)
+        self.push_level(level, words, range, line, Some(child), out)?;
+        Ok(true)
     }
 
     /// Open a box inside box `level` for the text selected in it.

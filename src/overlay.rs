@@ -302,6 +302,33 @@ impl PeekBox {
         None
     }
 
+    /// The word shown at `pos`: where it starts and where its last char is.
+    pub fn word_at(&self, width: usize, pos: Pos) -> Option<(Pos, Pos)> {
+        let lines = self.body_lines(width);
+        let line = lines.get(pos.0)?;
+        let mut cols = Vec::with_capacity(line.len());
+        let mut col = 0;
+        for g in line {
+            cols.push(col);
+            col += g.c.width().unwrap_or(0);
+        }
+        let i = cols.iter().rposition(|&c| c <= pos.1)?;
+        let word = |g: &Glyph| !g.c.is_whitespace();
+        if !word(&line[i]) {
+            return None;
+        }
+        let a = (0..i)
+            .rev()
+            .take_while(|&k| word(&line[k]))
+            .last()
+            .unwrap_or(i);
+        let b = (i + 1..line.len())
+            .take_while(|&k| word(&line[k]))
+            .last()
+            .unwrap_or(i);
+        Some(((pos.0, cols[a]), (pos.0, cols[b])))
+    }
+
     /// The text shown from `from` to `to` (both included), wrapped lines joined
     /// by a space, and the chars of the answer it covers.
     pub fn shown(&self, width: usize, from: Pos, to: Pos) -> (String, Option<Range<usize>>) {

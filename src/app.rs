@@ -51,6 +51,8 @@ struct Open {
     mark: Option<(Place, Vec<(usize, usize)>)>,
     /// The saved answer the box shows, once there is one.
     answer: Option<AnswerId>,
+    /// History size when the snapshot was taken (rows of marks count from it).
+    history: usize,
     /// Boxes opened inside this one, outermost first.
     nested: Vec<nest::Nested>,
     /// The box's height before boxes opened inside it, to go back to.
@@ -59,6 +61,8 @@ struct Open {
     drag: Option<nest::Drag>,
     /// Words of a nested answer under the pointer: (box, chars of its answer).
     box_hover: Option<(usize, std::ops::Range<usize>)>,
+    /// The last click in one of the boxes.
+    last_click: Option<nest::BoxClick>,
     /// What each box row shows, from the last time the box was drawn.
     parts: Vec<Vec<overlay::Part>>,
     /// peekme turned mouse reports on for the box (the child had them off).
@@ -102,6 +106,20 @@ struct AppSelection {
 /// clipboard writes (Claude's `/copy`) are not selections.
 const SELECTION_AFTER_RELEASE: Duration = Duration::from_secs(2);
 
+/// The snapshot cell shown at screen `cell` while a box laid out as `lay` is
+/// open; none inside the box.
+fn snap_cell(lay: &Layout, cell: (usize, usize)) -> Option<(usize, usize)> {
+    let (r, c) = cell;
+    let (top, bottom) = lay.region;
+    let in_box = (lay.box_top..lay.box_top + lay.box_height).contains(&r);
+    Some(match () {
+        _ if in_box => return None,
+        _ if !(top..bottom).contains(&r) => (r, c),
+        _ if lay.below => (r - lay.box_height, c),
+        _ => (r + lay.box_height, c),
+    })
+}
+
 /// A mark on screen: its text and the cells it covers.
 struct MarkHit {
     text: String,
@@ -116,9 +134,25 @@ struct HeldPress {
     hit: MarkHit,
 }
 
-/// More presses on a mark this soon after a click on it are part of a double
-/// or triple click: the box is open already, they do nothing.
-const MULTI_CLICK: Duration = Duration::from_millis(500);
+/// A second press on the same cell this soon after a click that opened a box
+/// finishes a double click: the box stays open. Any other press is a click of
+/// its own, so closing and opening again is never held back.
+const DOUBLE_CLICK: Duration = Duration::from_millis(350);
+
+/// The last click on a mark, to tell the second half of a double click.
+struct LastClick {
+    at: Instant,
+    cell: (usize, usize),
+    /// The click opened a box (rather than closing one).
+    opened: bool,
+}
+
+impl LastClick {
+    /// `cell` pressed now finishes the double click this one started.
+    fn doubled_by(&self, cell: (usize, usize)) -> bool {
+        self.opened && self.cell == cell && self.at.elapsed() < DOUBLE_CLICK
+    }
+}
 /// A press this soon after the window got focus is the click that brought it
 /// to the front, not a click on a mark.
 const ACTIVATION: Duration = Duration::from_millis(200);
@@ -539,7 +573,7 @@ struct App {
     held_press: Option<HeldPress>,
     /// The release of a press that was swallowed (a double click on a mark).
     swallow_release: bool,
-    last_mark_click: Option<(Instant, String)>,
+    last_mark_click: Option<LastClick>,
     focus_in_at: Option<Instant>,
     /// A mark the user clicked, for the next open instead of the selection.
     clicked: Option<MarkHit>,
@@ -1060,11 +1094,12 @@ impl App {
                 let Some(hit) = self.mark_hit(cell) else {
                     return Ok(false);
                 };
-                if let Some((at, text)) = &self.last_mark_click
-                    && at.elapsed() < MULTI_CLICK
-                    && *text == hit.text
+                // Only one press finishes a double click, and the next starts afresh.
+                if self
+                    .last_mark_click
+                    .take()
+                    .is_some_and(|c| c.doubled_by(cell))
                 {
-                    self.last_mark_click = Some((Instant::now(), hit.text));
                     self.swallow_release = true;
                     return Ok(true);
                 }
@@ -1084,7 +1119,7 @@ impl App {
                 };
                 if cell == Some(h.cell) {
                     self.flush_forward(forward, child)?;
-                    self.click_mark(h.hit, out)?;
+                    self.click_mark(h.hit, h.cell, out)?;
                     return Ok(true);
                 }
                 self.forward_press(&h.bytes, forward, out, child)?;
@@ -1127,45 +1162,46 @@ impl App {
         if self.marks.is_empty() || !self.shadow.mouse_mode() {
             return None;
         }
+        let known = self.known_top();
+        let hit =
+            |snap: &Snapshot, marks: &mut Marks, cell: (usize, usize), history: usize, alt| {
+                if snap.rows.get(cell.0)?.get(cell.1)?.hyperlink().is_some() {
+                    return None;
+                }
+                marks
+                    .visible(snap, history, alt)
+                    .into_iter()
+                    .find(|v| v.cells.contains(&cell) && v.cells.iter().all(|&(r, _)| r >= known))
+                    .map(|v| MarkHit {
+                        text: v.text,
+                        cells: v.cells,
+                    })
+            };
+        let alt = self.shadow.alt_screen();
         if let Some(open) = &self.open {
-            let (text, _) = open.selection.as_ref()?;
-            let (_, cells) = open.mark.as_ref()?;
-            let (top, bottom) = open.lay.region;
-            let box_rows = open.lay.box_top..open.lay.box_top + open.lay.box_height;
-            let shown = cells
-                .iter()
-                .all(|&(r, _)| !(top..bottom).contains(&r) && !box_rows.contains(&r));
-            let is_link = open
-                .snap
-                .rows
-                .get(cell.0)?
-                .get(cell.1)?
-                .hyperlink()
-                .is_some();
-            return (shown && !is_link && cells.contains(&cell) && self.marks.find(text).is_some())
-                .then(|| MarkHit {
-                    text: text.clone(),
-                    cells: cells.clone(),
-                });
+            // The screen shows the snapshot with the box in it and rows moved
+            // away from it: find the snapshot cell under the pointer. A click
+            // on the box's own mark closes it, on another one switches to it.
+            let cell = snap_cell(&open.lay, cell)?;
+            return hit(&open.snap, &mut self.marks, cell, open.history, alt);
         }
         let snap = self.shadow.snapshot();
-        if snap.rows.get(cell.0)?.get(cell.1)?.hyperlink().is_some() {
-            return None;
-        }
-        let known = self.known_top();
-        self.marks
-            .visible(&snap, self.shadow.history_size(), self.shadow.alt_screen())
-            .into_iter()
-            .find(|v| v.cells.contains(&cell) && v.cells.iter().all(|&(r, _)| r >= known))
-            .map(|v| MarkHit {
-                text: v.text,
-                cells: v.cells,
-            })
+        hit(
+            &snap,
+            &mut self.marks,
+            cell,
+            self.shadow.history_size(),
+            alt,
+        )
     }
 
     /// A click on a mark: show its saved answer, or close it if it is open.
-    fn click_mark(&mut self, hit: MarkHit, out: &mut dyn Write) -> Result<()> {
-        self.last_mark_click = Some((Instant::now(), hit.text.clone()));
+    fn click_mark(
+        &mut self,
+        hit: MarkHit,
+        cell: (usize, usize),
+        out: &mut dyn Write,
+    ) -> Result<()> {
         let own = self
             .open
             .as_ref()
@@ -1175,6 +1211,11 @@ impl App {
             "mark_click",
             serde_json::json!({"selection": hit.text, "close": own}),
         );
+        self.last_mark_click = Some(LastClick {
+            at: Instant::now(),
+            cell,
+            opened: !own,
+        });
         self.close(out, false)?;
         if own {
             return Ok(());
@@ -1629,10 +1670,12 @@ impl App {
             deep: false,
             mark,
             answer: saved,
+            history: self.shadow.history_size(),
             nested: Vec::new(),
             base_height: 0,
             drag: None,
             box_hover: None,
+            last_click: None,
             parts: Vec::new(),
             own_mouse,
             snap,
@@ -1766,10 +1809,16 @@ impl App {
         let held = render::strip_answered_queries(&open.held);
         self.boundary.feed(&held);
         bytes.extend_from_slice(&held);
+        // The repaint took the underlines off the rows the box covered or
+        // moved: put them back in the same frame, so they never blink.
+        self.marks_all = true;
+        if !skip_repaint && !self.marks.is_empty() && self.can_draw() {
+            let marks = self.marks_bytes(&mut bytes)?;
+            bytes.extend_from_slice(marks.as_bytes());
+        }
         bytes.extend_from_slice(SYNC_END.as_bytes());
         out.write_all(&bytes)?;
         out.flush()?;
-        self.marks_all = true;
         Ok(())
     }
 
@@ -2286,7 +2335,8 @@ mod tests {
         app.on_input(&click(25), &mut out, &mut child).unwrap();
         let n = &app.open.as_ref().unwrap().nested[0];
         assert_eq!((n.id, n.peek.text.as_str()), (0, "Ctrl+Z, fg and bg."));
-        app.on_input(&click(25), &mut out, &mut child).unwrap();
+        // (The same cell at once would be a double click, which keeps it open.)
+        app.on_input(&click(27), &mut out, &mut child).unwrap();
         assert!(app.open.as_ref().unwrap().nested.is_empty());
         assert!(child.is_empty());
     }
@@ -2413,6 +2463,109 @@ mod tests {
         app.on_input(b"\x1b[<0;22;2M\x1b[<0;22;2m", &mut out, &mut child)
             .unwrap();
         assert!(app.open.is_none());
+        assert!(child.is_empty());
+    }
+
+    #[test]
+    fn marks_under_a_closing_box_are_back_in_the_same_frame() {
+        let mut app = test_app(40, 12);
+        let mut real = Shadow::new(40, 12);
+        let mut out = Vec::new();
+        app.on_output(SCREEN, &mut out, &mut Vec::new()).unwrap();
+        let explain = |app: &mut App, sel: &str, out: &mut Vec<u8>| {
+            app.selection = SelectionSource::fixed(sel);
+            app.open_peek(out).unwrap();
+            let id = app.open.as_ref().unwrap().id;
+            app.on_progress(id, Progress::Delta("x".into()), out)
+                .unwrap();
+            app.on_progress(id, Progress::Done, out).unwrap();
+            app.close(out, false).unwrap();
+        };
+        explain(&mut app, "true colour", &mut out);
+        app.tick(&mut out).unwrap();
+        // A box on the title, row 0, covers row 1 with "true colour" on it.
+        explain(&mut app, "Bold title", &mut out);
+        real.advance(&out);
+        assert_eq!(dotted(&real.snapshot(), 1), "true colour", "no tick needed");
+    }
+
+    #[test]
+    fn quick_clicks_on_a_mark_close_and_open_again() {
+        let mut app = app_with_a_mark();
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let click = |col: usize| [mouse(0, (1, col), true), mouse(0, (1, col), false)].concat();
+        // Open, then at once a click on another cell of the mark closes it,
+        // and the next one opens it again: none of them is held back.
+        app.on_input(&click(23), &mut out, &mut child).unwrap();
+        assert!(app.open.is_some());
+        app.on_input(&click(21), &mut out, &mut child).unwrap();
+        assert!(app.open.is_none(), "a quick click closes");
+        app.on_input(&click(21), &mut out, &mut child).unwrap();
+        assert!(app.open.is_some(), "and the next one opens again");
+        // A double click (same cell, right after it opened) leaves it open;
+        // a third click is a click of its own and closes.
+        app.on_input(&click(21), &mut out, &mut child).unwrap();
+        assert!(app.open.is_some(), "the double click's second press");
+        app.on_input(&click(21), &mut out, &mut child).unwrap();
+        assert!(app.open.is_none(), "no chain of held-back presses");
+        assert!(child.is_empty());
+    }
+
+    #[test]
+    fn a_click_on_another_mark_switches_to_its_answer() {
+        let mut app = app_with_a_mark();
+        let mut out = Vec::new();
+        app.selection = SelectionSource::fixed("indexed colour");
+        app.open_peek(&mut out).unwrap();
+        let id = app.open.as_ref().unwrap().id;
+        app.on_progress(id, Progress::Delta("256 colours.".into()), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        app.selection = SelectionSource::without_system();
+        // The box on "indexed colour" is open below row 1; "true colour" is
+        // on row 1 too, outside the box.
+        assert!(app.open.as_ref().unwrap().lay.below);
+        let mut child = Vec::new();
+        let click = [mouse(0, (1, 24), true), mouse(0, (1, 24), false)].concat();
+        app.on_input(&click, &mut out, &mut child).unwrap();
+        let open = app.open.as_ref().expect("one click switched boxes");
+        assert_eq!(open.peek.text, "24-bit RGB.");
+        assert!(child.is_empty());
+    }
+
+    #[test]
+    fn double_clicks_in_a_box() {
+        let answer = "A pseudo-terminal lets job control work inside tmux panes.";
+        let mut app = app_with_an_answer(answer, true);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let top = app.open.as_ref().unwrap().lay.box_top;
+        let click = |col: usize| {
+            [
+                mouse(0, (top + 1, 2 + col), true),
+                mouse(0, (top + 1, 2 + col), false),
+            ]
+            .concat()
+        };
+        // A double click on a word selects it; Alt+P explains it.
+        app.on_input(&[click(25), click(25)].concat(), &mut out, &mut child)
+            .unwrap();
+        let d = app.box_selection().expect("the word is selected");
+        assert_eq!((d.from, d.to), ((0, 23), (0, 25)));
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.nested[0].words, "job");
+        let id = open.nested[0].id;
+        app.on_progress(id, Progress::Delta("A task.".into()), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        // A double click on its marked words opens the saved answer and keeps
+        // it open; a later click closes it.
+        app.on_input(&[click(24), click(24)].concat(), &mut out, &mut child)
+            .unwrap();
+        assert_eq!(app.open.as_ref().unwrap().nested.len(), 1);
+        app.on_input(&click(24), &mut out, &mut child).unwrap();
+        assert!(app.open.as_ref().unwrap().nested.is_empty());
         assert!(child.is_empty());
     }
 
