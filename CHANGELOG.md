@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0-beta.10 (2026-10-04)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.0-beta.10`.
+
+- Clicks on underlined text answer at once. Before, a click soon after the last one was taken as
+  part of a double click and did nothing, so you could not close a peek and open it again quickly.
+  Now only a second click on the same spot right after opening counts as a double click, and it
+  keeps the box open.
+- With a box open, a click on other underlined text opens its answer in one click.
+- Inside a box, a double click on a word selects it, so Option+P can explain it without a drag.
+- Underlines no longer blink after a box closes.
+
 ## 0.4.0-beta.9 (2026-10-04)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.0-beta.9`.
