@@ -11,7 +11,7 @@ room, like Peek in VS Code. Esc closes it and the screen is exactly as before.
 The explanation comes from a small, fast model and it knows the conversation. If you select
 "its split panes" in an answer that recommends Kitty, it tells you it is about Kitty.
 
-Status: 0.3.5. Tested with Claude Code 2.1.285, Codex 0.159 and Copilot CLI 1.0.89 on Linux, also
+Status: 0.4.0. Tested with Claude Code 2.1.292, Codex 0.159 and Copilot CLI 1.0.89 on Linux, also
 inside tmux and over SSH. On macOS it is tested in Terminal and iTerm2 with a stand-in agent, and
 in Terminal with the real Codex, also inside tmux and over SSH.
 
@@ -64,6 +64,13 @@ Codex since 0.157, Copilot CLI), it makes the selection itself, and peekme uses 
 | Esc | box is open | close the box |
 | typing | box is open | goes to the agent's input line, the box stays open |
 | Enter | box is open | sends your message and closes the box |
+| Alt+P on text in the box | box is open | opens a new box inside it, under that line |
+| click on underlined text | any time | shows the answer from before, with no new request |
+
+Text you already asked about gets a dotted underline, so you can see what you peeked before.
+A click on it opens the saved answer again, a second click closes it. Inside a box you can select
+words and press Alt+P again, and go several levels deep while the window is wide enough. The
+wheel scrolls the box under the pointer, Esc closes the innermost box.
 
 ### On a Mac
 

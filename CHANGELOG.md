@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0 (2026-10-06)
+
+Everything from the 0.4.0 betas below, now in the normal install (`npm i -g peekme`, Homebrew,
+`cargo install peekme`).
+
+- Text you already asked about gets a dotted underline. Click it and the saved answer opens
+  again, with no new request. Click again to close it.
+- Peek inside a peek. Select words in the box and press Alt+P (Option+P on a Mac). A new box
+  opens under that line, and you can go several levels deep.
+- Each box scrolls on its own: the wheel scrolls the box under the pointer, PgUp/PgDn the
+  innermost one, Esc closes the innermost one.
+- Underlines stay on their text after scrolling, resizing and unfolding tool calls in Codex and
+  Claude Code.
+- Mac fixes: Option+P after a drag in Codex, Terminal with mouse reporting off, and Option sent
+  as Alt.
+
 ## 0.4.0-beta.10 (2026-10-04)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.0-beta.10`.
