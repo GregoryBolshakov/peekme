@@ -1,6 +1,6 @@
 [package]
 name = "peekme"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "Select text in Claude Code, Codex CLI or GitHub Copilot CLI output and get a short explanation right under it, inside the terminal"
 authors = ["Gregory Bolshakov"]

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1 (2026-10-07)
+
+- Mac: after `peekme install`, `claude` could stop with `error: unknown option
+  '--internal-jobctl-helper'` and Claude Code never opened. `codex` and `copilot` had the same
+  problem. On macOS peekme's helper process started under the name of the agent link, and
+  peekme passed its own flag on to the agent. Now the helper is found first. The same happened
+  on any system where `claude` was a copy of peekme instead of a link.
+- Tests no longer depend on running inside tmux or over SSH.
+
 ## 0.4.0 (2026-10-06)
 
 Everything from the 0.4.0 betas below, now in the normal install (`npm i -g peekme`, Homebrew,
