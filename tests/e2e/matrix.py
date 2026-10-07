@@ -213,15 +213,28 @@ class Env:
 def build_command(env, case, paths):
     """The argv the "terminal" starts, and the shell line that runs peekme."""
     tmux_dir = os.path.dirname(os.path.abspath(env.tmux))
+    path = shlex.quote(tmux_dir)
+    run = [shlex.quote(PEEKME), shlex.quote(os.path.join(env.bin, case["agent"]))]
+    if case.get("via_link"):
+        # As after `peekme install`: the agent's name is a link to peekme, in
+        # front of the real agent on PATH. On macOS peekme then sees its own
+        # path as `.../claude` (current_exe() keeps the link's name).
+        links = os.path.join(env.work, "links")
+        os.makedirs(links, exist_ok=True)
+        for a in ("claude", "codex", "copilot", "classic"):
+            if not os.path.lexists(os.path.join(links, a)):
+                os.symlink(PEEKME, os.path.join(links, a))
+        path = f"{shlex.quote(links)}:{shlex.quote(env.bin)}:{path}"
+        run = [case["agent"]]
     inner = " ".join([
-        "env", f"PATH={shlex.quote(tmux_dir)}:\"$PATH\"",
+        "env", f"PATH={path}:\"$PATH\"",
         *([f"LD_LIBRARY_PATH={shlex.quote(env.libs)}"] if env.libs else []),
         f"PEEKME_FAKE_EXPLAINER=1", f"PEEKME_EVENT_LOG={shlex.quote(paths['events'])}",
         *[f"{k}={shlex.quote(v)}" for k, v in case.get("env", {}).items()],
         f"FAKEAGENT_LOG={shlex.quote(paths['agent'])}", "TERM_PROGRAM=", "LC_TERMINAL=",
         # Never read this desktop's own selection.
         "DISPLAY=", "WAYLAND_DISPLAY=",
-        shlex.quote(PEEKME), shlex.quote(os.path.join(env.bin, case["agent"])),
+        *run,
     ])
     lib = f"LD_LIBRARY_PATH={shlex.quote(env.libs)} " if env.libs else ""
 

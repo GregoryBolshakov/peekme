@@ -54,7 +54,7 @@ def quit_terminals():
         sh("killall", app)
     # iTerm2 keeps sessions running in its iTermServer helper and reattaches
     # them on the next launch, on top of the new window. End them all.
-    for pattern in ("iTermServer", "fakeagent.py", "target/release/peekme"):
+    for pattern in ("iTermServer", "fakeagent.py", "target/release/peekme", "/links/"):
         sh("pkill", "-f", pattern)
     m.wait(lambda: sh("pgrep", "-x", "iTerm2").returncode and sh("pgrep", "-x", "Terminal").returncode, 5)
     time.sleep(1)  # a relaunch right after the process ends can reach the dying instance
@@ -264,8 +264,9 @@ def main():
             for layer in args.layers.split(","):
                 for mouse in (["off"] if layer == "direct" else ["on"] if layer == "tmux" else ["off"]):
                     for agent in args.agents.split(","):
+                        # Started the way users start it: `claude` is our link (via_link).
                         todo.append(dict(terminal=terminal, option=option, layers=layer, mouse=mouse,
-                                         agent=agent, profile="n/a", n=n))
+                                         agent=agent, profile="n/a", n=n, via_link=True))
                         n += 1
     work = tempfile.mkdtemp(prefix="peekme-macos-")
     out = os.path.abspath(args.out)
