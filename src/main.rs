@@ -39,12 +39,18 @@ fn main() {
     let argv0 = argv.next().unwrap_or_default();
     let mut args: Vec<String> = argv.collect();
 
+    // The helper can start under an agent's name: on macOS current_exe() is
+    // the path we were started with, often our `claude` link, and a copy or a
+    // hard link has that name everywhere. Agents must never get the flag.
+    if args.first().map(String::as_str) == Some(jobctl::HELPER_ARG) {
+        jobctl::helper_main(&args[1..]);
+    }
+
     // Started through one of our links (`codex`, `claude`, made by `peekme install`).
     let as_agent = Agent::from_program(&argv0);
     let mut plain_run = false;
     if as_agent.is_none() {
         match args.first().map(String::as_str) {
-            Some(jobctl::HELPER_ARG) => jobctl::helper_main(&args[1..]),
             Some("-h" | "--help") => {
                 print!("{}", HELP.replace("{version}", env!("CARGO_PKG_VERSION")));
                 return;

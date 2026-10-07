@@ -260,7 +260,8 @@ fn setup(program: &str, args: &[String]) -> Result<Setup> {
         .context("could not open a pseudo-terminal")?;
     // Run the command under the job-control helper (see jobctl.rs) so that
     // Ctrl+Z works; without our own path, run it directly.
-    let exe = std::env::current_exe().ok();
+    // Resolved, so the helper shows up as peekme, not as our agent link.
+    let exe = std::env::current_exe().and_then(|p| p.canonicalize()).ok();
     let mut cmd = match &exe {
         Some(exe) => {
             let mut c = CommandBuilder::new(exe);
@@ -391,6 +392,8 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         boundary: Boundary::default(),
         greek_typed: false,
         told_hidden: false,
+        in_tmux: crate::tmux::inside(),
+        over_ssh: std::env::var_os("SSH_CONNECTION").is_some(),
         mouse_seen: false,
         tx,
         cwd: std::env::current_dir()?.to_string_lossy().into_owned(),
@@ -412,7 +415,7 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         child_pointer: None,
     };
     let mut stdout = std::io::stdout().lock();
-    if crate::tmux::inside() {
+    if app.in_tmux {
         crate::tmux::prepare_copy_mode();
     }
     let mut queue: VecDeque<Msg> = VecDeque::new();
@@ -488,7 +491,7 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
     if app.open.is_some() && !app.degraded {
         let _ = std::panic::catch_unwind(AssertUnwindSafe(|| app.close(&mut stdout, true)));
     }
-    if crate::tmux::inside() {
+    if app.in_tmux {
         crate::tmux::release_copy_mode();
     }
     if let Some(explainer) = &app.explainer {
@@ -553,6 +556,9 @@ struct App {
     told_hidden: bool,
     /// A mouse report came from the terminal (it does pass the mouse on).
     mouse_seen: bool,
+    /// Read from the environment once at start (tests set them).
+    in_tmux: bool,
+    over_ssh: bool,
     tx: Sender<Msg>,
     cwd: String,
     /// Where the child's live area starts, learned from its scroll regions.
@@ -1402,7 +1408,7 @@ impl App {
                         .map(|_| now);
                     self.last_release = Some((now, cell));
                     // Before the agent gets the release, so it cannot copy first.
-                    if crate::tmux::inside() {
+                    if self.in_tmux {
                         self.tmux_baseline = crate::tmux::newest_buffer();
                     }
                 }
@@ -1462,7 +1468,7 @@ impl App {
         }
         // Inside tmux, Claude Code and Codex copy a selection into a tmux
         // buffer instead of reporting it with OSC 52.
-        if crate::tmux::inside()
+        if self.in_tmux
             && let Some(text) = crate::tmux::fresh_buffer(self.tmux_baseline.as_deref(), tmux_age)
         {
             let hint = self.last_release.map(|(_, cell)| cell);
@@ -1499,11 +1505,8 @@ impl App {
     /// on the user's machine, and on a Mac it is not even in the clipboard.
     /// peekme can never see it, so Option+P can never work there.
     fn selection_hidden(&self) -> bool {
-        let remote = std::env::var_os("SSH_CONNECTION").is_some() || cfg!(target_os = "macos");
-        crate::tmux::inside()
-            && remote
-            && !self.shadow.mouse_mode()
-            && crate::tmux::mouse() == Some(false)
+        let remote = self.over_ssh || cfg!(target_os = "macos");
+        self.in_tmux && remote && !self.shadow.mouse_mode() && crate::tmux::mouse() == Some(false)
     }
 
     /// The agent asked for the mouse, but not one mouse report came from the
@@ -1511,10 +1514,7 @@ impl App {
     /// Mouse Reporting off, or every drag made with Option held in iTerm2).
     /// A drag is then the terminal's own selection, which peekme can't read.
     fn mouse_withheld(&self) -> bool {
-        !crate::tmux::inside()
-            && std::env::var_os("SSH_CONNECTION").is_none()
-            && self.shadow.mouse_mode()
-            && !self.mouse_seen
+        !self.in_tmux && !self.over_ssh && self.shadow.mouse_mode() && !self.mouse_seen
     }
 
     /// The agent's own process: with the job-control helper, the helper's child.
@@ -1618,7 +1618,7 @@ impl App {
                     tmux_mouse_message(self.agent)
                 } else if withheld {
                     withheld_mouse_message(self.agent)
-                } else if std::env::var_os("SSH_CONNECTION").is_some() {
+                } else if self.over_ssh {
                     // A terminal's own selection (a drag with Option held, over
                     // an agent that takes the mouse) never leaves the user's
                     // computer: no terminal hands it to a program over SSH.
@@ -2754,6 +2754,8 @@ mod tests {
             boundary: Boundary::default(),
             greek_typed: false,
             told_hidden: false,
+            in_tmux: false,
+            over_ssh: false,
             mouse_seen: false,
             shadow: Shadow::new(cols, rows),
             open: None,
