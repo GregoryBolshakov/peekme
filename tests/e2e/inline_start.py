@@ -11,8 +11,9 @@ first (a few, or a screenful so the screen scrolls), then starts peekme around
 a fake agent in that style, directly, in tmux and over SSH + tmux.
 
 Checks: the box opens right under the selected text as the terminal shows it,
-the earlier shell lines stay as they were while the box is open, and after
-Esc the screen is exactly as before.
+the earlier shell lines stay as they were while the box is open, a drag in the
+box and Alt+P open a box inside it (the agent takes no mouse and tmux has the
+mouse off), and after Esc the screen is exactly as before.
 """
 import os, shlex, sys, tempfile, time
 
@@ -61,6 +62,26 @@ def run(env, layer, shell_lines, n, out):
         changed = [r for r in shell_rows if during[r] != before[r]]
         if changed:
             fails.append(f"shell output painted over on rows {changed}")
+        # The agent takes no mouse and tmux has it off, but peekme turns mouse
+        # reports on while the box is open, and tmux passes them on: a drag
+        # over a word in the box and Alt+P open a box inside it.
+        if m.wait(lambda: any("Test explanation" in l for l in t.screen()), 6):
+            scr = t.screen()
+            row = next(r for r, l in enumerate(scr) if "Test explanation" in l)
+            col, y = scr[row].index("explanation"), row + 1
+            t.send((f"\x1b[<0;{col + 1};{y}M\x1b[<32;{col + 6};{y}M"
+                    f"\x1b[<32;{col + 11};{y}M\x1b[<0;{col + 11};{y}m").encode())
+            time.sleep(0.3)
+            t.send(b"\x1bp")
+            nested = m.wait(lambda: events("nested_open"), 4)
+            if not nested:
+                fails.append("a drag in the box and Alt+P opened no box inside it")
+            elif nested[-1].get("words") != "explanation":
+                fails.append(f"inner box on the wrong words: {nested[-1].get('words')!r}")
+            t.send(b"\x1b")
+            time.sleep(0.4)
+        else:
+            fails.append("explanation not on screen")
         t.send(b"\x1b")
         m.wait(lambda: events("close"), 5)
         time.sleep(0.8)

@@ -11,7 +11,7 @@ cargo build --release --bins --examples
 python3 tests/e2e/matrix.py           # fake agents, 84 cases, about a minute
 python3 tests/e2e/real_agents.py      # real claude, codex, copilot, 34 cases
 python3 tests/e2e/upgrade.py          # an older setup gets the new agents, links to an older copy move
-python3 tests/e2e/inline_start.py     # an agent started under shell output, box in the right rows
+python3 tests/e2e/inline_start.py     # an agent started under shell output, box in the right rows, box inside it
 python3 tests/e2e/copy_mode.py        # Option+P while tmux stays in copy mode after a drag
 ```
 

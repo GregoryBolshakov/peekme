@@ -1,0 +1,62 @@
+name: Bug report
+description: Something in peekme does not work as the README says
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: peekme version
+      description: Output of `peekme --version`. Over SSH, the version on the host where the agent runs.
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent
+      options:
+        - Claude Code (full screen)
+        - Claude Code (classic screen)
+        - Codex CLI
+        - GitHub Copilot CLI
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: agent-version
+    attributes:
+      label: Agent version
+      description: For example the output of `codex --version`.
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal and OS
+      description: For example "iTerm2 3.6, macOS 15" or "GNOME Terminal, Ubuntu 24.04". On a Mac, say if Option is set to send Meta or Esc+.
+  - type: dropdown
+    id: layers
+    attributes:
+      label: Between your terminal and the agent
+      multiple: true
+      options:
+        - Nothing
+        - tmux, mouse on
+        - tmux, mouse off
+        - SSH
+        - Other (please write it above)
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `peekme doctor`
+      render: text
+  - type: textarea
+    id: log
+    attributes:
+      label: Event log
+      description: |
+        Optional, but it shows what peekme decided. Run `export PEEKME_EVENT_LOG=~/peekme-events.jsonl`, start the agent in the same shell, repeat the problem, and attach the file. It holds the text you selected, so remove anything private first.

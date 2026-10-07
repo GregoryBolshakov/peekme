@@ -2839,15 +2839,28 @@ mod tests {
     const CODEX_FULLSCREEN: &[u8] =
         include_bytes!("../tests/fixtures/codex_0157_fullscreen_selection_120x40.bin");
 
+    /// Codex 0.161, the startup screen with "OpenAI Codex" in its header
+    /// selected by a mouse drag. No session, no personal data on screen.
+    const CODEX_0161_FULLSCREEN: &[u8] =
+        include_bytes!("../tests/fixtures/codex_0161_fullscreen_selection_120x40.bin");
+
     #[test]
     fn fullscreen_codex_selection_and_live_area() {
+        codex_selection_and_live_area(CODEX_FULLSCREEN, "83, 6, 9");
+    }
+
+    #[test]
+    fn fullscreen_codex_0161_selection_and_live_area() {
+        codex_selection_and_live_area(CODEX_0161_FULLSCREEN, "OpenAI Codex");
+    }
+
+    fn codex_selection_and_live_area(capture: &[u8], selected: &str) {
         let mut app = test_app(120, 40);
         let mut real = Shadow::new(120, 40);
         let mut child: Vec<u8> = Vec::new();
         let mut out: Vec<u8> = Vec::new();
 
-        app.on_output(CODEX_FULLSCREEN, &mut out, &mut child)
-            .unwrap();
+        app.on_output(capture, &mut out, &mut child).unwrap();
         app.shadow.flush_sync();
         real.advance(&std::mem::take(&mut out));
         real.flush_sync();
@@ -2856,9 +2869,12 @@ mod tests {
         app.open_peek(&mut out).unwrap();
         real.advance(&std::mem::take(&mut out));
         let open = app.open.as_ref().unwrap();
-        assert_eq!(open.peek.title, "83, 6, 9", "Codex's own selection is used");
+        assert_eq!(open.peek.title, selected, "Codex's own selection is used");
         let top = open.strip_top.expect("input area found on the full screen");
         assert!(top > 11 && top < 40);
+        // The row right above the box (1-based), outside it.
+        assert!(open.lay.below && open.lay.box_top > 0);
+        let above = open.lay.box_top;
 
         // Mouse motion is ignored, the wheel scrolls the box, nothing reaches Codex.
         app.on_input(b"\x1b[<35;40;3M\x1b[<65;40;3M", &mut out, &mut child)
@@ -2882,10 +2898,12 @@ mod tests {
                 "live row {r} not updated"
             );
         }
-        // A click closes the box and still reaches Codex.
-        app.on_input(b"\x1b[<0;5;5M", &mut out, &mut child).unwrap();
+        // A click outside the box closes it and still reaches Codex.
+        let click = format!("\x1b[<0;5;{above}M");
+        app.on_input(click.as_bytes(), &mut out, &mut child)
+            .unwrap();
         assert!(app.open.is_none());
-        assert!(child.ends_with(b"\x1b[<0;5;5M"));
+        assert!(child.ends_with(click.as_bytes()));
         real.advance(&std::mem::take(&mut out));
         real.flush_sync();
         assert!(same_screen(&real.snapshot(), &app.shadow.snapshot()));
