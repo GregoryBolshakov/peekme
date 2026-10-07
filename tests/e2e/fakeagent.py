@@ -168,7 +168,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--style", choices=["claude", "copilot", "codex", "classic"], default="claude")
     ap.add_argument("--log", required=True)
+    ap.add_argument("agent_args", nargs="*", help="what the agent itself was given (after --)")
     args = ap.parse_args()
+    # Like the real agents: an option they don't know ends them at once.
+    unknown = [a for a in args.agent_args if a.startswith("--internal")]
+    if unknown:
+        with open(args.log, "a") as f:
+            f.write(json.dumps({"kind": "rejected", "args": args.agent_args, "t": time.time()}) + "\n")
+        sys.exit(f"error: unknown option '{unknown[0]}'")
     agent = Agent(args.style, args.log)
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)

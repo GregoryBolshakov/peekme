@@ -166,7 +166,7 @@ class Env:
             with open(p, "w") as f:
                 f.write(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
                         f"{shlex.quote(os.path.join(HERE, 'fakeagent.py'))} "
-                        f"--style {style} --log \"$FAKEAGENT_LOG\"\n")
+                        f"--style {style} --log \"$FAKEAGENT_LOG\" -- \"$@\"\n")
             os.chmod(p, 0o755)
         self.sshd = None
         if need_ssh:
