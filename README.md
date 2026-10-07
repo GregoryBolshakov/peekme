@@ -6,7 +6,7 @@ Pick me. Select text in [Claude Code](https://github.com/anthropics/claude-code)
 explanation opens right next to that text, inside the terminal. The other lines move to make
 room, like Peek in VS Code. Esc closes it and the screen is exactly as before.
 
-![peekme in Claude Code: ask about detached HEAD, select "git switch -" in the answer, press Alt+P, read the explanation, press Esc](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-claude.gif)
+![peekme in Claude Code: select "planner statistics" in an answer and press Alt+P. In the explanation select "hash join" and press Alt+P again for a box inside the box. Esc closes them, and a click on the underlined words opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-claude.gif)
 
 The explanation comes from a small, fast model and it knows the conversation. If you select
 "its split panes" in an answer that recommends Kitty, it tells you it is about Kitty.
