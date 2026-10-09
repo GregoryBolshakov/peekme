@@ -1024,11 +1024,15 @@ impl App {
                         self.flush_forward(&mut forward, child)?;
                         // Text selected in a box: a box inside it.
                         if self.box_selection().is_some() {
-                            self.open_nested(out)?;
+                            self.open_nested(ask, out)?;
                             continue;
                         }
-                        // Boxes inside: Alt+P with nothing selected in them does nothing.
+                        // Boxes inside: Alt+P with nothing selected in them does
+                        // nothing, Alt+Shift+P asks about the innermost box's words.
                         if self.open.as_ref().is_some_and(|o| !o.nested.is_empty()) {
+                            if ask {
+                                self.ask_in_nested(out)?;
+                            }
                             continue;
                         }
                         // Alt+Shift+P in a box: a question about its selection.
@@ -1828,9 +1832,11 @@ impl App {
         Ok(true)
     }
 
-    /// A question is being typed in the box.
+    /// A question is being typed in the innermost box.
     fn asking(&self) -> bool {
-        self.open.as_ref().is_some_and(|o| o.peek.input.is_some())
+        self.open
+            .as_ref()
+            .is_some_and(|o| o.nested.last().map_or(&o.peek, |n| &n.peek).input.is_some())
     }
 
     /// A key while the question is typed: text goes into it, Backspace,
@@ -1849,7 +1855,13 @@ impl App {
             return Ok(false);
         }
         self.consumed.consume(t);
-        let Some(input) = self.open.as_mut().and_then(|o| o.peek.input.as_mut()) else {
+        let Some(input) = self.open.as_mut().and_then(|o| {
+            o.nested
+                .last_mut()
+                .map_or(&mut o.peek, |n| &mut n.peek)
+                .input
+                .as_mut()
+        }) else {
             return Ok(false);
         };
         let mut submit = false;
@@ -1911,6 +1923,9 @@ impl App {
         let Some(open) = &self.open else {
             return Ok(());
         };
+        if !open.nested.is_empty() {
+            return self.submit_nested_question(out);
+        }
         let question = open.peek.input.as_deref().unwrap_or("").trim().to_string();
         let Some((sel, screen)) = open.selection.clone() else {
             return Ok(());
@@ -3752,5 +3767,67 @@ mod tests {
         app.on_input(b"\x1b", &mut out, &mut child).unwrap();
         assert!(app.open.is_none());
         assert!(child.is_empty());
+    }
+
+    /// Alt+Shift+P on words in a box: a box inside it waits for a question;
+    /// it is sent with the answers around it, and saved with the question.
+    /// Alt+Shift+P with nothing selected asks again about the same words.
+    #[test]
+    fn alt_shift_p_on_words_in_a_box_asks_about_them() {
+        let answer = "A pseudo-terminal lets job control work inside tmux panes.";
+        let mut app = app_with_an_answer(answer, true);
+        let (tx, rx) = mpsc::channel();
+        app.tx = tx;
+        app.explainer = Some(Explainer::Fake);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let top = app.open.as_ref().unwrap().lay.box_top;
+        let at = |col: usize| (top + 1, 2 + col);
+        let mut drag = mouse(0, at(23), true);
+        drag.extend(mouse(32, at(33), true));
+        drag.extend(mouse(0, at(33), false));
+        app.on_input(&drag, &mut out, &mut child).unwrap();
+        app.on_input(b"\x1bP", &mut out, &mut child).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.nested.len(), 1);
+        let n = &open.nested[0];
+        assert_eq!(n.words, "job control");
+        assert_eq!(n.peek.input.as_deref(), Some(""), "waits for a question");
+        assert!(rx.try_recv().is_err(), "nothing sent before the question");
+
+        app.on_input(b"how does fg work?", &mut out, &mut child)
+            .unwrap();
+        app.on_input(b"\r", &mut out, &mut child).unwrap();
+        let wait_done = |app: &mut App, out: &mut Vec<u8>| loop {
+            if let Msg::Peek(id, p) = rx.recv_timeout(Duration::from_secs(5)).expect("progress") {
+                let done = matches!(p, Progress::Done);
+                app.on_progress(id, p, out).unwrap();
+                if done {
+                    break;
+                }
+            }
+        };
+        wait_done(&mut app, &mut out);
+        let n = &app.open.as_ref().unwrap().nested[0];
+        assert_eq!(n.peek.question.as_deref(), Some("how does fg work?"));
+        assert!(
+            n.peek
+                .text
+                .starts_with("Test answer to ⟦how does fg work?⟧ about ⟦job control⟧"),
+            "{}",
+            n.peek.text
+        );
+        let saved = n.answer.and_then(|id| app.marks.answer(id)).expect("saved");
+        assert!(saved.answer.starts_with("› how does fg work?\n\n"));
+
+        // Nothing selected now: Alt+Shift+P asks about the same words again.
+        app.on_input(b"\x1bP", &mut out, &mut child).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.nested.len(), 1);
+        assert_eq!(open.nested[0].words, "job control");
+        assert_eq!(open.nested[0].peek.input.as_deref(), Some(""));
+        // Esc closes only that box.
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        assert!(app.open.as_ref().is_some_and(|o| o.nested.is_empty()));
+        assert!(child.is_empty(), "the agent got no key");
     }
 }

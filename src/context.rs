@@ -359,7 +359,8 @@ impl Nested {
 /// Earlier answers come with this many chars at most.
 const PEEK_MAX: usize = 1500;
 
-fn nested_ask(sel: &ScreenSel, n: &Nested) -> String {
+/// The earlier answers of a peek inside peeks, the picked words marked.
+fn peeks(sel: &ScreenSel, n: &Nested) -> String {
     let root = one_line(&sel.selected(), 300);
     let mut s = format!(
         "\n<peeks note=\"the user selected {OPEN}{root}{CLOSE} in the passage above and asked you about it, \
@@ -382,6 +383,11 @@ fn nested_ask(sel: &ScreenSel, n: &Nested) -> String {
             ));
         }
     }
+    s
+}
+
+fn nested_ask(sel: &ScreenSel, n: &Nested) -> String {
+    let mut s = peeks(sel, n);
     let picked = one_line(&n.words(), 300);
     s.push_str(&format!(
         "\nExplain {OPEN}{picked}{CLOSE} as it is used in your last answer above. Name the specific thing it \
@@ -414,20 +420,46 @@ pub fn ask_system(agent: Agent) -> String {
     )
 }
 
-/// Turn a built prompt into one that asks `question` about the selection: the
-/// closing "explain this" instruction is replaced, the context stays.
-pub fn with_question(built: &mut Built, sel: &ScreenSel, question: &str) {
+/// The input for a question the user typed (the ask box): the context of an
+/// explanation, with the whole conversation when `whole` (the model does not
+/// have it otherwise), the boxes it was asked in, and the question in place of
+/// "explain this".
+#[allow(clippy::too_many_arguments)]
+pub fn build_question(
+    agent: Agent,
+    cwd: &str,
+    conv: Option<&Conversation>,
+    hit: Option<Hit>,
+    sel: &ScreenSel,
+    nested: Option<&Nested>,
+    whole: bool,
+    question: &str,
+) -> Built {
+    let mut built = match conv {
+        Some(c) if whole => build_deep(agent, cwd, c, hit, sel),
+        _ => build(agent, cwd, conv, hit, sel, None),
+    };
     let explain = ask(sel);
     if built.prompt.ends_with(&explain) {
         let keep = built.prompt.len() - explain.len();
         built.prompt.truncate(keep);
     }
-    let selected = one_line(&sel.selected(), 300);
+    let about = match nested {
+        Some(n) => {
+            built.prompt.push_str(&peeks(sel, n));
+            format!(
+                "{OPEN}{}{CLOSE} in your last answer above",
+                one_line(&n.words(), 300)
+            )
+        }
+        None => format!("{OPEN}{}{CLOSE}", one_line(&sel.selected(), 300)),
+    };
     built.prompt.push_str(&format!(
-        "\nThe user selected {OPEN}{selected}{CLOSE} and asks:\n<question>\n{}\n</question>\nAnswer the \
-         question about {OPEN}{selected}{CLOSE} as it is used above.\n",
+        "\nThe user selected {about} and asks:\n<question>\n{}\n</question>\nAnswer the question \
+         about {about}.\n",
         question.trim()
     ));
+    built
 }
 
 /// Assemble the explainer's input.
@@ -847,5 +879,50 @@ mod tests {
         assert!(p.contains("Ctrl+Z, \u{27e6}fg\u{27e7} and bg"), "{p}");
         assert!(p.contains("Explain \u{27e6}fg\u{27e7} as it is used in your last answer"));
         assert!(!p.contains("as it is used in the passage"));
+    }
+
+    #[test]
+    fn a_question_replaces_the_explain_line_also_inside_boxes() {
+        let sel = screen("run it under a pty here", "pty");
+        let top = build_question(
+            Agent::Codex,
+            "/w",
+            None,
+            None,
+            &sel,
+            None,
+            true,
+            "why not a pipe?",
+        );
+        assert!(!top.prompt.contains("\nExplain "), "{}", top.prompt);
+        assert!(
+            top.prompt
+                .contains("<question>\nwhy not a pipe?\n</question>")
+        );
+        assert!(top.prompt.contains("asks:"));
+        let n = Nested {
+            trail: vec![(
+                "pty".into(),
+                "A pseudo-terminal lets job control work.".into(),
+            )],
+            pick: 23..34,
+        };
+        let inner = build_question(
+            Agent::Codex,
+            "/w",
+            None,
+            None,
+            &sel,
+            Some(&n),
+            false,
+            "how?",
+        );
+        assert!(!inner.prompt.contains("\nExplain "), "{}", inner.prompt);
+        assert!(inner.prompt.contains("<peek words=\"pty\""));
+        assert!(
+            inner
+                .prompt
+                .contains("⟦job control⟧ in your last answer above and asks")
+        );
     }
 }

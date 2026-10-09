@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Questions inside boxes. Select words in a box and press Alt+Shift+P (Option+Shift+P on a Mac):
+  a box inside opens for your question, and the answer knows the boxes around it. With boxes
+  open and nothing selected, Alt+Shift+P asks about the words of the innermost box.
+
 ## 0.4.2 (2026-10-09)
 
 - Ask a question about the selection: Alt+Shift+P (Option+Shift+P on a Mac) opens the box empty,

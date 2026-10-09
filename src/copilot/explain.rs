@@ -236,20 +236,16 @@ fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<S
         .and_then(|p| transcript::load(&p));
     let hit = conv.as_ref().and_then(|c| context::find(c, &req.screen));
     if let Some(q) = &req.question {
-        let mut built = match &conv {
-            Some(c) if req.nested.is_none() => {
-                context::build_deep(Agent::Copilot, &req.cwd, c, hit, &req.screen)
-            }
-            _ => context::build(
-                Agent::Copilot,
-                &req.cwd,
-                conv.as_ref(),
-                hit,
-                &req.screen,
-                req.nested.as_ref(),
-            ),
-        };
-        context::with_question(&mut built, &req.screen, q);
+        let mut built = context::build_question(
+            Agent::Copilot,
+            &req.cwd,
+            conv.as_ref(),
+            hit,
+            &req.screen,
+            req.nested.as_ref(),
+            true,
+            q,
+        );
         built.prompt.push_str(&format!(
             "Keep the {OPEN}{CLOSE} marks out of the answer.\n"
         ));

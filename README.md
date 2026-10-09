@@ -83,8 +83,10 @@ box and don't go to the agent.
 
 The question goes to the model your chat runs on, not the small one, together with the whole
 conversation (Codex gets a copy of the thread). So it takes longer and costs more than a normal
-peek. With a box open, Alt+Shift+P asks about the text that box explains. The answer is saved
-with the question, and a click on the underline shows both.
+peek. With a box open, Alt+Shift+P asks about the text that box explains. Inside a box, select
+words and press Alt+Shift+P to ask about them: the question opens in a box inside, and the model
+also gets the answers around it. The answer is saved with the question, and a click on the
+underline shows both.
 
 ### On a Mac
 
@@ -259,7 +261,7 @@ To use peekme with another program, run `peekme -- COMMAND`.
 cargo test
 cargo clippy --all-targets
 cargo run --example vtdump -- capture.bin 120 40 [offset]
-cargo run --example peek_text -- "<screen text>" "<selection>" [--deep] [--ask QUESTION] [--claude|--copilot|--kiro] [--pid PID]
+cargo run --example peek_text -- "<screen text>" "<selection>" [--deep] [--ask QUESTION] [--inside ANSWER WORDS] [--claude|--copilot|--kiro] [--pid PID]
 python3 spikes/capture.py out.bin 120 40 "<script>" -- peekme claude
 python3 spikes/flicker_test.py
 python3 spikes/explain_probe.py

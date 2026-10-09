@@ -334,7 +334,17 @@ fn run(server: &AppServer, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
         None => server.model(),
     };
     if let Some(q) = &req.question {
-        context::with_question(&mut built, &req.screen, q);
+        // The fork carries the conversation; the prompt only needs the passage.
+        built = context::build_question(
+            Agent::Codex,
+            &req.cwd,
+            conv.as_ref(),
+            hit,
+            &req.screen,
+            req.nested.as_ref(),
+            false,
+            q,
+        );
     }
     let developer = if asking {
         context::ask_system(Agent::Codex)

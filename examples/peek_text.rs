@@ -1,7 +1,7 @@
 //! Development helper: run one explanation for a selection inside some screen
 //! text, without a terminal. Prints the prompt sent and the streamed answer.
 //!
-//!     cargo run --example peek_text -- "<screen text>" "<selection>" [--deep] [--ask QUESTION] [--claude|--copilot|--kiro] [--pid PID]
+//!     cargo run --example peek_text -- "<screen text>" "<selection>" [--deep] [--ask QUESTION] [--inside ANSWER WORDS] [--claude|--copilot|--kiro] [--pid PID]
 //!
 //! Codex by default. With `--claude`, `--copilot` or `--kiro`, that agent; `--pid` is the
 //! process id of a running interactive session, whose transcript then gives the
@@ -49,7 +49,18 @@ fn main() {
         deep: has("--deep"),
         force: true,
         agent_pid,
-        nested: None,
+        // `--inside ANSWER WORDS`: a peek inside the box that shows ANSWER.
+        nested: args.iter().position(|a| a == "--inside").map(|i| {
+            let (answer, words) = (&args[i + 1], &args[i + 2]);
+            let at = answer
+                .find(words.as_str())
+                .expect("words not in the answer");
+            let start = answer[..at].chars().count();
+            context::Nested {
+                trail: vec![(selected.clone(), answer.clone())],
+                pick: start..start + words.chars().count(),
+            }
+        }),
         question: args
             .iter()
             .position(|a| a == "--ask")

@@ -22,7 +22,8 @@ dragged text and never reaches the agent; typing with the box open reaches the
 agent; a drag over a word in the box and the shortcut open a box inside it,
 and Esc closes only that one; Esc closes it and the screen is as before; the
 ask shortcut (Option+Shift+P or Alt+Shift+P) opens a box for a typed question,
-the question stays out of the agent and Enter answers it; with
+the question stays out of the agent and Enter answers it, also on words inside
+a box; with
 nothing selected, `π` is typed into the agent. The explainer is canned (PEEKME_FAKE_EXPLAINER), so no
 model is called.
 
@@ -337,6 +338,24 @@ def run_case(env, case, out):
                   "Esc did not close the inner box")
             check(not events("close"), "Esc closed the outer box too")
             time.sleep(0.3)
+            # 2c. The same words with the ask shortcut: a box inside that takes
+            # a question; Esc closes only it.
+            t.send(inner)
+            time.sleep(0.3)
+            t.send(ASK[case["profile"]])
+            asked = wait(lambda: [e for e in events("nested_open") if e.get("ask")], 4)
+            if check(asked, "the ask shortcut on words in the box opened no question box"):
+                t.send(b"how")
+                time.sleep(0.3)
+                t.send(b"\r")
+                check(wait(lambda: any("Test answer to ⟦how⟧ about ⟦explanation⟧" in l
+                                       for l in t.screen())),
+                      "the answer to the question inside the box is not on screen")
+                t.send(b"\x1b")
+                check(wait(lambda: not any("peek · explanation" in l for l in t.screen()), 4),
+                      "Esc did not close the inner question box")
+                check(not events("close"), "Esc closed the outer box too")
+                time.sleep(0.3)
         # 3. Typing with the box open goes to the agent.
         t.send(b"x")
         check(wait(lambda: any("x" in e["raw"] for e in agent_log("input"))), "typing did not reach the agent")

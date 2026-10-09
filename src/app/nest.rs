@@ -350,12 +350,13 @@ impl App {
             return Ok(false);
         };
         let words = a.text.clone();
-        self.push_level(level, words, range, line, Some(child), out)?;
+        self.push_level(level, words, range, line, Some(child), false, out)?;
         Ok(true)
     }
 
-    /// Open a box inside box `level` for the text selected in it.
-    pub(super) fn open_nested(&mut self, out: &mut dyn Write) -> Result<()> {
+    /// Open a box inside box `level` for the text selected in it; with `ask`
+    /// (Alt+Shift+P) it waits for a typed question.
+    pub(super) fn open_nested(&mut self, ask: bool, out: &mut dyn Write) -> Result<()> {
         let Some(d) = self.box_selection() else {
             return Ok(());
         };
@@ -377,11 +378,76 @@ impl App {
         }
         self.close_below(d.level);
         self.open.as_mut().unwrap().drag = None;
-        self.push_level(d.level, words, range, to.0, saved, out)
+        let saved = saved.filter(|_| !ask);
+        self.push_level(d.level, words, range, to.0, saved, ask, out)
+    }
+
+    /// Alt+Shift+P with boxes inside and nothing selected: ask about the
+    /// words the innermost box explains, in its place.
+    pub(super) fn ask_in_nested(&mut self, out: &mut dyn Write) -> Result<()> {
+        let Some(n) = self.open.as_ref().and_then(|o| o.nested.last()) else {
+            return Ok(());
+        };
+        let (level, words, range, line) = (
+            self.open.as_ref().unwrap().nested.len() - 1,
+            n.words.clone(),
+            n.range.clone(),
+            n.anchor,
+        );
+        self.close_below(level);
+        self.push_level(level, words, range, line, None, true, out)
+    }
+
+    /// Enter in the innermost box: answer its typed question, with the boxes
+    /// around it as context.
+    pub(super) fn submit_nested_question(&mut self, out: &mut dyn Write) -> Result<()> {
+        let Some(open) = &self.open else {
+            return Ok(());
+        };
+        let level = open.nested.len() - 1;
+        let n = &open.nested[level];
+        let question = n.peek.input.as_deref().unwrap_or("").trim().to_string();
+        if question.is_empty() {
+            return Ok(());
+        }
+        let (range, height) = (n.range.clone(), n.height);
+        let screen = open.selection.as_ref().map(|(_, s)| s.clone());
+        crate::event(
+            "nested_ask",
+            serde_json::json!({"level": level + 1, "words": n.words, "question": question}),
+        );
+        self.next_id += 1;
+        let id = self.next_id;
+        let err = match (self.nested_request(level, &range), screen) {
+            (Some(nested), Some(screen)) => self.start_explain(
+                id,
+                screen,
+                height.saturating_sub(2).max(3),
+                false,
+                true,
+                Some(nested),
+                Some(question.clone()),
+            ),
+            _ => Some("nothing to ask about".into()),
+        };
+        let n = self.open.as_mut().unwrap().nested.last_mut().unwrap();
+        n.id = id;
+        n.peek.input = None;
+        n.peek.question = Some(question);
+        n.peek.text.clear();
+        n.peek.scroll = 0;
+        n.peek.status = match err {
+            Some(e) => Status::Error(e),
+            None => Status::Thinking,
+        };
+        self.fit();
+        self.draw_box(true, out)
     }
 
     /// Put a new box inside box `level`, under its body line `line`: the saved
-    /// answer `saved`, or a new explanation of `words`.
+    /// answer `saved`, a box waiting for a question (`ask`), or a new
+    /// explanation of `words`.
+    #[allow(clippy::too_many_arguments)]
     fn push_level(
         &mut self,
         level: usize,
@@ -389,6 +455,7 @@ impl App {
         range: Range<usize>,
         line: usize,
         saved: Option<AnswerId>,
+        ask: bool,
         out: &mut dyn Write,
     ) -> Result<()> {
         let open = self.open.as_mut().unwrap();
@@ -411,6 +478,7 @@ impl App {
         let mut id = 0;
         let height = max_h;
         match saved.and_then(|a| self.marks.answer(a)) {
+            _ if ask => peek.input = Some(String::new()),
             Some(a) => {
                 peek.text = a.answer.clone();
                 peek.model = format!("{} · saved", a.model);
@@ -448,7 +516,7 @@ impl App {
         }
         crate::event(
             "nested_open",
-            serde_json::json!({"level": level + 1, "words": words, "saved": saved.is_some()}),
+            serde_json::json!({"level": level + 1, "words": words, "saved": saved.is_some(), "ask": ask}),
         );
         let open = self.open.as_mut().unwrap();
         open.nested.push(Nested {
@@ -567,7 +635,11 @@ impl App {
                         parent,
                         words: n.words,
                         range: n.range,
-                        text: n.peek.text,
+                        // A typed question is saved with its answer.
+                        text: match &n.peek.question {
+                            Some(q) => format!("› {}\n\n{}", overlay::sanitize(q), n.peek.text),
+                            None => n.peek.text,
+                        },
                         model: n.peek.model,
                     },
                 );
@@ -655,10 +727,19 @@ impl App {
             }
             Progress::Done => {
                 n.peek.status = Status::Done;
+                n.peek.ask_available = true;
                 if let Some(parent) = parent
                     && !n.peek.text.trim().is_empty()
                 {
-                    let text = overlay::sanitize(&n.peek.text);
+                    // A typed question is saved with its answer.
+                    let text = match &n.peek.question {
+                        Some(q) => format!(
+                            "› {}\n\n{}",
+                            overlay::sanitize(q),
+                            overlay::sanitize(&n.peek.text)
+                        ),
+                        None => overlay::sanitize(&n.peek.text),
+                    };
                     let id = self
                         .marks
                         .save(Some(parent), &n.words, &text, &n.peek.model);
