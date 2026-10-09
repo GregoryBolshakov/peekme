@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Kiro CLI support. `peekme install` now also sets up `kiro-cli`, and a setup from an older
+  peekme gets it the next time peekme starts. Everything works as in the other agents: select
+  text, press Alt+P (Option+P on a Mac), peek inside a peek, click underlined text for the saved
+  answer, also inside tmux and over SSH.
+- Kiro starts inline and leaves the mouse to the terminal. After `/fullscreen` Kiro makes the
+  selection itself and peekme reads it, also over SSH. Underlined text can be clicked only there.
+- Explanations go through `kiro-cli acp` with your Kiro login, on `claude-haiku-4.5` without
+  tools. About 0.01 Kiro credits each. The sessions are deleted afterwards, so they don't show up
+  in Kiro's session list. Set `PEEKME_KIRO_MODEL` for another model.
+- The model knows the Kiro conversation, read from `~/.kiro/sessions/cli`.
+
 ## 0.4.1 (2026-10-07)
 
 - Mac: after `peekme install`, `claude` could stop with `error: unknown option

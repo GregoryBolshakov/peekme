@@ -9,10 +9,11 @@ pub enum Agent {
     Claude,
     Codex,
     Copilot,
+    Kiro,
 }
 
 impl Agent {
-    pub const ALL: [Agent; 3] = [Agent::Claude, Agent::Codex, Agent::Copilot];
+    pub const ALL: [Agent; 4] = [Agent::Claude, Agent::Codex, Agent::Copilot, Agent::Kiro];
 
     /// The command users type.
     pub fn command(self) -> &'static str {
@@ -20,6 +21,7 @@ impl Agent {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
             Agent::Copilot => "copilot",
+            Agent::Kiro => "kiro-cli",
         }
     }
 
@@ -29,6 +31,7 @@ impl Agent {
             Agent::Claude => "Claude Code",
             Agent::Codex => "Codex",
             Agent::Copilot => "GitHub Copilot CLI",
+            Agent::Kiro => "Kiro CLI",
         }
     }
 
@@ -38,6 +41,7 @@ impl Agent {
             Agent::Claude => "Claude",
             Agent::Codex => "Codex",
             Agent::Copilot => "Copilot",
+            Agent::Kiro => "Kiro",
         }
     }
 
@@ -46,15 +50,16 @@ impl Agent {
             Agent::Claude => "npm i -g @anthropic-ai/claude-code",
             Agent::Codex => "npm i -g @openai/codex",
             Agent::Copilot => "npm i -g @github/copilot",
+            Agent::Kiro => "curl -fsSL https://cli.kiro.dev/install | bash",
         }
     }
 
-    /// "Claude Code, Codex and GitHub Copilot CLI", for messages.
+    /// "Claude Code, Codex, GitHub Copilot CLI and Kiro CLI", for messages.
     pub fn all_names() -> String {
         list(Agent::ALL.iter().map(|a| a.name().to_string()).collect())
     }
 
-    /// "`claude`, `codex` or `copilot`", for messages.
+    /// "`claude`, `codex`, `copilot` or `kiro-cli`", for messages.
     pub fn all_commands(last: &str) -> String {
         let mut v: Vec<String> = Agent::ALL
             .iter()
@@ -77,6 +82,7 @@ impl Agent {
             Agent::Claude => crate::claude::cli::is_interactive(args),
             Agent::Codex => crate::codex::cli::is_interactive(args),
             Agent::Copilot => crate::copilot::cli::is_interactive(args),
+            Agent::Kiro => crate::kiro::cli::is_interactive(args),
         }
     }
 
@@ -94,6 +100,10 @@ impl Agent {
             Agent::Copilot => (
                 "GitHub Copilot CLI, GitHub's coding agent for the terminal",
                 "tool calls and their output, or the Copilot CLI interface itself",
+            ),
+            Agent::Kiro => (
+                "Kiro CLI, Amazon's coding agent for the terminal",
+                "tool calls and their output, or the Kiro CLI interface itself",
             ),
         };
         format!(
@@ -122,11 +132,18 @@ mod tests {
         assert_eq!(Agent::from_program("codex"), Some(Agent::Codex));
         assert_eq!(Agent::from_program("/usr/bin/claude"), Some(Agent::Claude));
         assert_eq!(Agent::from_program("copilot"), Some(Agent::Copilot));
+        assert_eq!(
+            Agent::from_program("/home/u/.local/bin/kiro-cli"),
+            Some(Agent::Kiro)
+        );
         assert_eq!(Agent::from_program("htop"), None);
         assert_eq!(
             Agent::all_names(),
-            "Claude Code, Codex and GitHub Copilot CLI"
+            "Claude Code, Codex, GitHub Copilot CLI and Kiro CLI"
         );
-        assert_eq!(Agent::all_commands("or"), "`claude`, `codex` or `copilot`");
+        assert_eq!(
+            Agent::all_commands("or"),
+            "`claude`, `codex`, `copilot` or `kiro-cli`"
+        );
     }
 }

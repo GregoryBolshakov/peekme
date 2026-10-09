@@ -25,6 +25,7 @@ body:
         - Claude Code (classic screen)
         - Codex CLI
         - GitHub Copilot CLI
+        - Kiro CLI
         - Other
     validations:
       required: true

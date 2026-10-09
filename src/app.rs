@@ -21,7 +21,7 @@ use crate::overlay::{self, Layout, PeekBox, Status};
 use crate::render::{self, Boundary, SYNC_BEGIN, SYNC_END};
 use crate::select::{self, Located, SelectionSource};
 use crate::shadow::{Shadow, Snapshot};
-use crate::{claude, codex};
+use crate::{claude, codex, kiro};
 
 mod nest;
 
@@ -729,6 +729,7 @@ impl App {
         match self.agent {
             // Copilot draws its input box like Claude Code: `❯` between two rules.
             Some(Agent::Claude | Agent::Copilot) => claude::screen::composer_top(snap),
+            Some(Agent::Kiro) => kiro::screen::composer_top(snap),
             _ => codex::screen::composer_top(snap),
         }
     }
@@ -758,6 +759,7 @@ impl App {
         // with the question, so there any change of the box counts.
         let moved = match self.agent {
             Some(Agent::Claude | Agent::Copilot) => claude::screen::composer_top(&now) != Some(top),
+            Some(Agent::Kiro) => kiro::screen::composer_top(&now) != Some(top),
             _ => {
                 self.shadow.alt_screen()
                     && codex::screen::composer_top(&now).is_some_and(|k| k < top)
@@ -1618,6 +1620,14 @@ impl App {
                     tmux_mouse_message(self.agent)
                 } else if withheld {
                     withheld_mouse_message(self.agent)
+                } else if self.over_ssh
+                    && self.agent == Some(Agent::Kiro)
+                    && !self.shadow.mouse_mode()
+                {
+                    "Kiro's inline screen leaves the mouse to your terminal, and over SSH the \
+                     terminal's selection stays on your own computer, so peekme can't see it. \
+                     Type /fullscreen in Kiro, then select and press Alt+P."
+                        .to_string()
                 } else if self.over_ssh {
                     // A terminal's own selection (a drag with Option held, over
                     // an agent that takes the mouse) never leaves the user's
@@ -1985,6 +1995,13 @@ fn viewport_top(bytes: &[u8], rows: usize) -> Option<usize> {
 
 /// Why peekme sees no selection inside tmux with the mouse left to the terminal.
 fn tmux_mouse_message(agent: Option<Agent>) -> String {
+    if agent == Some(Agent::Kiro) {
+        // Kiro inline never asks for the mouse, so no restart is needed.
+        return "Kiro leaves the mouse to the terminal on its inline screen, and tmux has the \
+                mouse off, so peekme cannot see what you select. Turn it on with `tmux set -g \
+                mouse on` (and add `set -g mouse on` to ~/.tmux.conf), or type /fullscreen in Kiro."
+            .into();
+    }
     let who = agent.map_or("The program", Agent::short);
     format!(
         "{who} leaves the mouse to the terminal here, because tmux has the mouse off. So peekme \
@@ -3349,5 +3366,123 @@ mod tests {
         // Copilot's reverse-video tabs are not a selection.
         app.app_selection = None;
         assert!(app.current_selection(&app.shadow.snapshot()).0.is_none());
+    }
+
+    /// Real Kiro CLI 2.28.0 at 120x40: startup, one question with two tool
+    /// calls and the answer; drawn inline, then the same after `/fullscreen`.
+    const KIRO: [&[u8]; 2] = [
+        include_bytes!("../tests/fixtures/kiro_inline_120x40.bin"),
+        include_bytes!("../tests/fixtures/kiro_fullscreen_120x40.bin"),
+    ];
+
+    #[test]
+    fn round_trip_over_real_kiro_output() {
+        for capture in KIRO {
+            let mut base = Shadow::new(120, 40);
+            base.advance(capture);
+            base.flush_sync();
+            let snap = base.snapshot();
+            for first in (0..40).step_by(3) {
+                let mut real = Shadow::new(120, 40);
+                real.advance(capture);
+                real.flush_sync();
+                let lay = overlay::layout(40, first, (first + 1).min(39));
+                let mut peek = PeekBox::new("manifest");
+                peek.text = "Streaming **explanation** text. ".repeat(12);
+                real.advance(overlay::open_frame(&snap, &lay, &peek).as_bytes());
+                real.advance(overlay::close_frame(&snap, &lay).as_bytes());
+                assert!(same_screen(&real.snapshot(), &snap), "row {first}");
+            }
+        }
+    }
+
+    /// Kiro full screen reports a drag with OSC 52 on release; Alt+P explains
+    /// it at the drag's row, with Kiro's input area live under the box.
+    #[test]
+    fn kiro_fullscreen_selection_and_live_area() {
+        let mut app = test_app_for(Agent::Kiro, 120, 40);
+        let mut real = Shadow::new(120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(KIRO[1], &mut out, &mut child).unwrap();
+        app.shadow.flush_sync();
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+
+        // Row 27 (1-based) holds "Cargo.toml — Rust package manifest".
+        app.on_input(
+            b"\x1b[<0;19;27M\x1b[<32;40;27M\x1b[<0;40;27m",
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        assert!(child.ends_with(b"\x1b[<0;40;27m"), "the drag reaches Kiro");
+        // "Rust package manifest" as Kiro copies it.
+        app.on_output(
+            b"\x1b]52;c;UnVzdCBwYWNrYWdlIG1hbmlmZXN0\x07",
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        real.advance(&std::mem::take(&mut out));
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let open = app.open.as_ref().expect("box open");
+        assert_eq!(open.peek.title, "Rust package manifest");
+        // Four rows down to the input area are too few: the box goes above row 27.
+        assert!(!open.lay.below);
+        assert_eq!(open.lay.box_top + open.lay.box_height, 26);
+        assert_eq!(open.peek.child_name, "Kiro");
+        assert_eq!(open.strip_top, Some(31), "Kiro's input area stays live");
+
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+        assert!(same_screen(&real.snapshot(), &app.shadow.snapshot()));
+    }
+
+    /// Kiro inline leaves the mouse to the terminal: Alt+P explains the
+    /// terminal's own selection.
+    #[test]
+    fn kiro_inline_explains_the_terminal_selection() {
+        let mut app = test_app_for(Agent::Kiro, 120, 40);
+        app.selection = SelectionSource::fixed("main.rs — the program entry point");
+        let mut real = Shadow::new(120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(KIRO[0], &mut out, &mut child).unwrap();
+        app.shadow.flush_sync();
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let open = app.open.as_ref().expect("box open");
+        assert_eq!(app.selection_source, "system");
+        assert_eq!(open.peek.title, "main.rs — the program entry point");
+        assert_eq!(
+            open.lay.box_top + open.lay.box_height,
+            26,
+            "right above row 27"
+        );
+        assert!(child.is_empty(), "Alt+P does not reach Kiro");
+
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+        assert!(same_screen(&real.snapshot(), &app.shadow.snapshot()));
+    }
+
+    /// Over SSH, Kiro's inline screen leaves the selection on the user's own
+    /// computer: Alt+P with nothing seen points to `/fullscreen`.
+    #[test]
+    fn kiro_inline_over_ssh_suggests_fullscreen() {
+        let mut app = test_app_for(Agent::Kiro, 120, 40);
+        app.over_ssh = true;
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(KIRO[0], &mut out, &mut child).unwrap();
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        let open = app.open.as_ref().expect("a message box");
+        match &open.peek.status {
+            Status::Message(m) => assert!(m.contains("/fullscreen"), "{m}"),
+            other => panic!("not a message: {other:?}"),
+        }
     }
 }

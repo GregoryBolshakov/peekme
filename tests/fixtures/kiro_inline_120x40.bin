@@ -1,0 +1,177 @@
+[2m⠋ Launching...[0m[K[2J[H[?1000h[?1003h[?1006h[?1006l[?1003l[?1000l]11;?[?2004h[?u[>4;1m[?25l[6n[?2026h[J                            [95m ⢀⣴⣶⣶⣦⡀⠀⠀⠀⠀⢀⣴⣶⣦⣄⡀[39m  [95m ⢀⣴⣶⣶⣦⡀[39m  [95m ⢀⣴⣶⣶⣶⣶⣶⣶⣶⣶⣶⣦⣄⡀[39m   [95m    ⢀⣠⣴⣶⣶⣶⣶⣶⣦⣄⡀[39m[0m
+                            [95m⢰⣿⠋⠁⠈⠙⣿⡆⠀⢀⣾⡿⠁  ⠈⢻⡆[39m [95m⢰⣿⠋⠁⠈⠙⣿⡆[39m [95m⢰⣿⠋⠁        ⠈⠙⠻⣦[39m  [95m   ⣴⡿⠟⠋⠁   ⠈⠙⠻⢿⣦[39m[0m
+                            [95m⢸⣿⠀⠀⠀⠀⣿⣇⣴⡿⠋⠀⠀  ⢀⣼⠇[39m [95m⢸⣿⠀⠀⠀⠀⣿⡇[39m [95m⢸⣿⠀⠀⠀⢠⣤⣤⣤⣤⣄    ⣿⡆[39m [95m  ⣼⡟⠀⠀⠀ ⣀⣀⣀    ⢻⣧[39m[0m
+                            [95m⢸⣿⠀⠀⠀⠀⣿⡿⠋⠀⠀  ⢀⣾⡿⠁[39m  [95m⢸⣿⠀⠀⠀⠀⣿⡇[39m [95m⢸⣿⠀⠀⠀⢸⣿⠉⠉⠉⣿⡇   ⣿⡇ [39m[95m ⣼⡟⠀⠀ ⣰⡿⠟⠛⠻⢿⣆⠀⠀ ⢻⣧[39m[0m
+                            [95m⢸⣿⠀⠀⠀⠀⠙⠁⠀⠀ ⢀⣼⡟⠁[39m    [95m⢸⣿⠀⠀⠀⠀⣿⡇[39m [95m⢸⣿⠀⠀⠀⢸⣿⣶⣶⡶⠋⠀   ⣿⠇[39m [95m⢰⣿⠀⠀⠀⢰⣿⠀⠀⠀  ⣿⡆⠀⠀ ⣿⡆[39m[0m
+                            [95m⢸⣿⠀⠀⠀⠀⠀⠀⠀⠀ ⠹⣷⡀[39m     [95m⢸⣿⠀⠀⠀⠀⣿⡇⠀[39m[95m⢸⣿⠀⠀⠀⠀⠀⠀⠀⠀   ⣠⣼⠟[39m  [95m⢸⣿⠀⠀ ⢸⣿⠀⠀⠀⠀ ⣿⡇⠀⠀ ⣿⡇[39m[0m
+                            [95m⢸⣿⠀⠀⠀⠀⠀⣠⡀⠀⠀ ⠹⣷⡄[39m    [95m⢸⣿⠀⠀⠀⠀⣿⡇⠀[39m[95m⢸⣿⠀⠀⠀⠀⣤⣄  ⠀⠀⠹⣿⡅[39m   [95m⠸⣿⠀⠀ ⠸⣿⠀⠀⠀⠀ ⣿⠇⠀  ⣿⠇[39m[0m
+                            [95m⢸⣿⠀⠀⠀⠀⣾⡟⣷⡀⠀⠀ ⠘⣿⣆[39m   [95m⢸⣿⠀⠀⠀⠀⣿⡇[39m [95m⢸⣿⠀⠀⠀⠀⣿⡟⣷⡀⠀⠀ ⠘⣿⣆[39m  [95m ⢻⣧⠀⠀ ⠹⣷⣦⣤⣤⣾⠏⠀⠀⠀⣼⡟[39m[0m
+                            [95m⢸⣿⠀⠀⠀⠀⣿⡇⠹⣷⡀  ⠀⠈⢻⡇[39m  [95m⢸⣿⠀⠀⠀⠀⣿⡇[39m [95m⢸⣿⠀⠀⠀⠀⣿⡇⠹⣷⡀  ⠀⠈⢻⡇[39m [95m  ⢻⣧⠀⠀⠀ ⠉⠉⠉    ⣼⡟[39m[0m
+                            [95m⠸⣿⣄⡀⢀⣠⣿⠇⠀⠙⣷⡀  ⢀⣼⠇[39m  [95m⠸⣿⣄⡀⢀⣠⣿⠇[39m [95m⠸⣿⣄⡀⢀⣠⣿⠇⠀⠙⣷⡀  ⢀⣼⠇[39m [95m   ⠻⣷⣦⣄⡀   ⢀⣠⣴⣾⠟[39m[0m
+                            [95m ⠈⠻⠿⠿⠟⠁⠀⠀⠀⠈⠻⠿⠿⠟⠁[39m   [95m ⠈⠻⠿⠿⠟⠁[39m  [95m ⠈⠻⠿⠿⠟⠁⠀⠀⠀⠈⠻⠿⠿⠟⠁[39m  [95m   ⠀⠀⠈⠙⠻⠿⠿⠿⠿⠟⠋⠁[39m[0m
+[0m
+                       An early release of [95mKiro CLI V3[39m is now available! Try it out: [95mkiro-cli --v3[39m[0m
+                                              [95mhttps://kiro.dev/docs/cli/v3/[39m[0m
+                                                             [0m
+                  [1mTip: [22mPress [95mEsc[39m or [95mCtrl+C[39m while Kiro is working to interrupt the current turn cleanly.[0m
+[0m
+• [97mI[0m[37mn[0m[37mi[0m[mt[0m[mi[0m[ma[0m[ml[0m[mi[0m[mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[m.[0m
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[95m/tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchpad/kiro[0m
+[95m/kwork[39m[0m
+[0m
+› [7m [0mInitializing · type to queue a message[0m
+                                                                                                     /copy to clipboard[0m
+[0m
+[0m[?2026l[3A[3G[?25l[?2004h[?1004h[3G[?25l[3G[?25l[?2026h[5A[2K• [37mI[0m[97mn[0m[37mi[0m[37mt[0m[mi[0m[ma[0m[ml[0m[mi[0m[mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [37mI[0m[37mn[0m[97mi[0m[37mt[0m[37mi[0m[ma[0m[ml[0m[mi[0m[mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[37mn[0m[37mi[0m[97mt[0m[37mi[0m[37ma[0m[ml[0m[mi[0m[mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[37mi[0m[37mt[0m[97mi[0m[37ma[0m[37ml[0m[mi[0m[mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[mi[0m[37mt[0m[37mi[0m[97ma[0m[37ml[0m[37mi[0m[mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[mi[0m[mt[0m[37mi[0m[37ma[0m[97ml[0m[37mi[0m[37mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[mi[0m[mt[0m[mi[0m[37ma[0m[37ml[0m[97mi[0m[37mz[0m[37mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[mi[0m[mt[0m[mi[0m[ma[0m[37ml[0m[37mi[0m[97mz[0m[37mi[0m[37mn[0m[mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[mi[0m[mt[0m[mi[0m[ma[0m[ml[0m[37mi[0m[37mz[0m[97mi[0m[37mn[0m[37mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[mi[0m[mt[0m[mi[0m[ma[0m[ml[0m[mi[0m[37mz[0m[37mi[0m[97mn[0m[37mg[0m[37m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[mi[0m[mt[0m[mi[0m[ma[0m[ml[0m[mi[0m[mz[0m[37mi[0m[37mn[0m[97mg[0m[37m.[0m[37m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[mi[0m[mt[0m[mi[0m[ma[0m[ml[0m[mi[0m[mz[0m[mi[0m[37mn[0m[37mg[0m[97m.[0m[37m.[0m[37m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[mi[0m[mt[0m[mi[0m[ma[0m[ml[0m[mi[0m[mz[0m[mi[0m[mn[0m[37mg[0m[37m.[0m[97m.[0m[37m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[mi[0m[mt[0m[mi[0m[ma[0m[ml[0m[mi[0m[mz[0m[mi[0m[mn[0m[mg[0m[37m.[0m[37m.[0m[97m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[mi[0m[mt[0m[mi[0m[ma[0m[ml[0m[mi[0m[mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[37m.[0m[37m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[mi[0m[mt[0m[mi[0m[ma[0m[ml[0m[mi[0m[mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[37m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[mi[0m[mt[0m[mi[0m[ma[0m[ml[0m[mi[0m[mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[3G[?25l[3G[?25l[?2026h[5A[2K• [97mI[0m[37mn[0m[37mi[0m[mt[0m[mi[0m[ma[0m[ml[0m[mi[0m[mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [37mI[0m[97mn[0m[37mi[0m[37mt[0m[mi[0m[ma[0m[ml[0m[mi[0m[mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [37mI[0m[37mn[0m[97mi[0m[37mt[0m[37mi[0m[ma[0m[ml[0m[mi[0m[mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[37mn[0m[37mi[0m[97mt[0m[37mi[0m[37ma[0m[ml[0m[mi[0m[mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[37mi[0m[37mt[0m[97mi[0m[37ma[0m[37ml[0m[mi[0m[mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[mi[0m[37mt[0m[37mi[0m[97ma[0m[37ml[0m[37mi[0m[mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K• [mI[0m[mn[0m[mi[0m[mt[0m[37mi[0m[37ma[0m[97ml[0m[37mi[0m[37mz[0m[mi[0m[mn[0m[mg[0m[m.[0m[m.[0m[m.[0m[?2026l[5B[3G[?25l[?2026h[5A[2K[0m
+[2K────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[2K[95mkiro_default[39m · auto[0m
+[2K[95m/tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchpad/kiro[0m
+[2K[95m/kwork[39m[0m
+[2K[0m
+[2K› [7m [0mInitializing · type to queue a message[0m
+[2K                                                                                                     /copy to clipboard[0m
+[2K[0m
+[2K[0m[?2026l[3A[3G[?25l[?2026h[4A[2K[0m
+[2K [1m✨ What's new:[22m Cloud sessions, specs, expanded hooks, and an improved trust model.[0m
+[2K [0m
+[2K ctrl+o to expand[0m
+[2K[0m
+[2K────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[2K[95mkiro_default[39m · auto[0m
+[2K[95m/tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchpad/kiro[0m
+[2K[95m/kwork[39m[0m
+[2K[0m
+[2K› [7m [0mask a question or describe a task ↵[0m
+[2K                                                                                                     /copy to clipboard[0m
+[2K[0m
+[2K[0m[?2026l[3A[3G[?25l[3G[?25l[?2026h[4A[2K[95mkiro_default[39m · auto · [32m◔[39m [32m4%[39m[0m[?2026l[4B[3G[?25l[?2026h[2K› List the files here with your file read tool (not the shell), then in about 6 lines say what each one is for. One[0m
+[2K  short bullet list, inline code, no headings.[7m [0m
+[2K [0m
+[2K[0m
+[2K[0m[?2026l[3A[47G[?25l[?2026h[9A[2K────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[2K  › List the files here with your file read tool (not the shell), then in about 6 lines say what each one is for. One[0m
+[2K    short bullet list, inline code, no headings.[0m
+[2K [0m
+[2K[38;2;255;128;255mᗣ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m
+[2K[0m
+[2K────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[2K[95mkiro_default[39m · auto · [32m◔[39m [32m4%[39m[0m
+[2K[95m/tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchpad/kiro[0m
+[2K[95m/kwork[39m[0m
+[2K[0m
+[2K› List the files here with your file read tool (not the shell), then in about 6 lines say what each one is for. One[0m
+[2K  short bullet list, inline code, no headings.[7m [0m
+[2K [0m
+[2K[0m
+[2K[0m[?2026l[3A[47G[?25l[?2026h[1A[2K› [7m [0mKiro is working · 0s · Type to steer · Ctrl+S to queue[0m
+[2K                                                                                                                       [0m
+[2K[0m
+[2K[0m
+[2K[1A[?2026l[3A[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗤ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗥ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗦ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗢ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗧ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗣ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[3G[?25l[?2026h[2K› [7m [0mKiro is working · 1s · Type to steer · Ctrl+S to queue[0m[?2026l[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗤ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗥ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗦ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K• Read[0m
+[2K  esc to cancel[0m
+[2K[0m
+[2K────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[2K[95mkiro_default[39m · auto · [32m◔[39m [32m4%[39m[0m
+[2K[95m/tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchpad/kiro[0m
+[2K[95m/kwork[39m[0m
+[2K[0m
+[2K› [7m [0mKiro is working · 1s · Type to steer · Ctrl+S to queue[0m
+[2K                                                                                                                       [0m
+[2K[0m
+[2K[0m[?2026l[3A[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[?2026h[2K› [7m [0mKiro is working · 2s · Type to steer · Ctrl+S to queue[0m[?2026l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[?2026h[4A[2K[95mkiro_default[39m · auto · [32m◔[39m [32m1%[39m[0m[?2026l[4B[3G[?25l[?2026h[8A[2K[32m•[39m Read[94m /tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchp[39m[0m
+[2K  [94mad/kiro/kwork[39m[0m
+[2K[38;2;255;128;255mᗣ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m
+[2K[0m
+[2K────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[2K[95mkiro_default[39m · auto · [32m◔[39m [32m1%[39m[0m
+[2K[95m/tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchpad/kiro[0m
+[2K[95m/kwork[39m[0m
+[2K[0m
+[2K› [7m [0mKiro is working · 2s · Type to steer · Ctrl+S to queue[0m
+[2K                                                                                                                       [0m
+[2K[0m
+[2K[0m[?2026l[3A[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗤ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗥ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗦ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗢ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[2K› [7m [0mKiro is working · 3s · Type to steer · Ctrl+S to queue[0m[?2026l[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗧ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗣ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗤ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K• Read[0m
+[2K  esc to cancel[0m
+[2K[0m
+[2K────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[2K[95mkiro_default[39m · auto · [32m◔[39m [32m1%[39m[0m
+[2K[95m/tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchpad/kiro[0m
+[2K[95m/kwork[39m[0m
+[2K[0m
+[2K› [7m [0mKiro is working · 3s · Type to steer · Ctrl+S to queue[0m
+[2K                                                                                                                       [0m
+[2K[0m
+[2K[0m[?2026l[3A[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[?2026h[2K› [7m [0mKiro is working · 4s · Type to steer · Ctrl+S to queue[0m[?2026l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[?2026h[8A[2K• [2mR[0mead[0m[?2026l[8B[3G[?25l[?2026h[8A[2K• [2mR[0m[2me[0mad[0m[?2026l[8B[3G[?25l[?2026h[8A[2K• [2mR[0m[2me[0m[2ma[0md[0m[?2026l[8B[3G[?25l[?2026h[8A[2K[2m•[0m [2mR[0m[2me[0m[2ma[0md[0m[?2026l[8B[3G[?25l[?2026h[8A[2K[2m•[0m [2mR[0m[2me[0m[2ma[0m[2md[0m[?2026l[8B[3G[?25l[?2026h[8A[2K[2m•[0m R[2me[0m[2ma[0m[2md[0m[?2026l[8B[3G[?25l[3G[?25l[?2026h[8A[2K[2m•[0m Re[2ma[0m[2md[0m[?2026l[8B[3G[?25l[?2026h[8A[2K[2m•[0m Rea[2md[0m[?2026l[8B[3G[?25l[?2026h[2K› [7m [0mKiro is working · 5s · Type to steer · Ctrl+S to queue[0m[?2026l[3G[?25l[3G[?25l[?2026h[8A[2K• Read[0m[?2026l[8B[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[3G[?25l[?2026h[8A[2K[32m•[39m Read[94m (3 files)[39m[0m
+[2K    /tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchpad/[0m
+[2K    kiro/kwork/README.md[0m
+[2K    /tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchpad/[0m
+[2K    kiro/kwork/Cargo.toml[0m
+[2K    /tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchpad/[0m
+[2K    kiro/kwork/main.rs[0m
+[2K[38;2;255;128;255mᗣ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m
+[2K[0m
+[2K────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[2K[95mkiro_default[39m · auto · [32m◔[39m [32m1%[39m[0m
+[2K[95m/tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchpad/kiro[0m
+[2K[95m/kwork[39m[0m
+[2K[0m
+[2K› [7m [0mKiro is working · 5s · Type to steer · Ctrl+S to queue[0m
+[2K                                                                                                                       [0m
+[2K[0m
+[2K[0m[?2026l[3A[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗤ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[2K› [7m [0mKiro is working · 6s · Type to steer · Ctrl+S to queue[0m[?2026l[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗥ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗦ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗢ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗧ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗣ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗤ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[7A[2K[38;2;255;128;255mᗥ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m[?2026l[7B[3G[?25l[?2026h[2K› [7m [0mKiro is working · 7s · Type to steer · Ctrl+S to queue[0m[?2026l[3G[?25l[?2026h[7A[2K[0m
+[2K[38;2;255;128;255m•[39m - [94mREADME.md[39m — brief project description identifying this as a tiny demo crate.[0m
+[2K[0m
+[2K────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[2K[95mkiro_default[39m · auto · [32m◔[39m [32m1%[39m[0m
+[2K[95m/tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchpad/kiro[0m
+[2K[95m/kwork[39m[0m
+[2K[0m
+[2K› [7m [0mKiro is working · 7s · Type to steer · Ctrl+S to queue[0m
+[2K                                                                                                                       [0m
+[2K[0m
+[2K[0m[?2026l[3A[3G[?25l[3G[?25l[?2026h[6A[2K  - [94mCargo.toml[39m — Rust package[0m
+[2K[0m
+[2K────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[2K[95mkiro_default[39m · auto · [32m◔[39m [32m1%[39m[0m
+[2K[95m/tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchpad/kiro[0m
+[2K[95m/kwork[39m[0m
+[2K[0m
+[2K› [7m [0mKiro is working · 7s · Type to steer · Ctrl+S to queue[0m
+[2K                                                                                                                       [0m
+[2K[0m
+[2K[0m[?2026l[3A[3G[?25l[?2026h[7A[2K  - [94mCargo.toml[39m — Rust package manifest defining the crate name ([94mdemo[39m[0m[?2026l[7B[3G[?25l[?2026h[7A[2K  - [94mCargo.toml[39m — Rust package manifest defining the crate name ([94mdemo[39m), version ([94m0.1.0[39m), and edition ([94m2021[39m[0m[?2026l[7B[3G[?25l[?2026h[7A[2K  - [94mCargo.toml[39m — Rust package manifest defining the crate name ([94mdemo[39m), version ([94m0.1.0[39m), and edition ([94m2021[39m).[0m
+[2K  - [94mmain.rs[39m — the program entry point; just prints `[0m
+[2K[0m
+[2K────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[2K[95mkiro_default[39m · auto · [32m◔[39m [32m1%[39m[0m
+[2K[95m/tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchpad/kiro[0m
+[2K[95m/kwork[39m[0m
+[2K[0m
+[2K› [7m [0mKiro is working · 7s · Type to steer · Ctrl+S to queue[0m
+[2K                                                                                                                       [0m
+[2K[0m
+[2K[0m[?2026l[3A[3G[?25l[?2026h[7A[2K  - [94mmain.rs[39m — the program entry point; just prints [94m"hello"[39m to stdout.[0m
+[2K [0m
+[2K▸ Credits: turn 0.14 • session 0.14 | Time: 7s[0m
+[2K[38;2;255;128;255mᗣ[39m [38;2;255;128;255mThinking...[39m (esc to cancel)[0m
+[2K[0m
+[2K────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[2K[95mkiro_default[39m · auto · [32m◔[39m [32m1%[39m[0m
+[2K[95m/tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchpad/kiro[0m
+[2K[95m/kwork[39m[0m
+[2K[0m
+[2K› [7m [0mKiro is working · 7s · Type to steer · Ctrl+S to queue[0m
+[2K                                                                                                                       [0m
+[2K[0m
+[2K[0m[?2026l[3A[3G[?25l[3G[?25l[?2026h[7A[2K[0m
+[2K────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[2K[95mkiro_default[39m · auto · [32m◔[39m [32m1%[39m[0m
+[2K[95m/tmp/claude-1000/-home-someone-Documents-Projects-codex-inline-tool/308dd727-86e7-4087-8250-064bf404bad0/scratchpad/kiro[0m
+[2K[95m/kwork[39m[0m
+[2K[0m
+[2K› [7m [0mask a question or describe a task ↵[0m
+[2K                                                                                                     /copy to clipboard[0m
+[2K[0m
+[2K[0m
+[2K[1A[?2026l[3A[3G[?25l

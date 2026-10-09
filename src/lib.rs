@@ -17,6 +17,7 @@ pub mod explain;
 pub mod input;
 pub mod install;
 pub mod jobctl;
+pub mod kiro;
 pub mod launch;
 pub mod marks;
 pub mod osc52;

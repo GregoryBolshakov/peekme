@@ -4,7 +4,7 @@
     python3 tests/e2e/real_agents.py [--only SUBSTRING] [--jobs N] [--out DIR]
 
 Like matrix.py, but the agent is the real `claude` (full screen and classic
-screen), `codex` or `copilot`. The explainer stays canned
+screen), `codex`, `copilot` or `kiro-cli` (inline and after `/fullscreen`). The explainer stays canned
 (PEEKME_FAKE_EXPLAINER), so nothing is sent to a model: the test drags over a
 word on the agent's startup screen, presses the shortcut, and checks peekme's
 event log and the screen. This catches what a fake agent cannot: how each real
@@ -29,7 +29,13 @@ AGENTS = {
     "codex": ("codex", ["-c", "check_for_update_on_startup=false"], "OpenAI Codex", "OpenAI",
               [("Update available", b"\x1b"), ("Hooks need review", b"\x1b")]),
     "copilot": ("copilot", ["--no-auto-update"], "uses AI", "Copilot", [("Do you trust", b"\r")]),
+    # Kiro starts inline and leaves the mouse to the terminal; `/fullscreen`
+    # (typed, then Enter once its menu has caught up) takes the mouse.
+    "kiro-inline": ("kiro-cli", [], "ask a question", "Kiro", []),
+    "kiro-fullscreen": ("kiro-cli", [], "ask a question", "Entered", []),
 }
+# Typed once the agent is ready, and the text that shows it took effect.
+START = {"kiro-fullscreen": ([b"/fullscreen", b"\r"], "Entered fullscreen")}
 
 
 def real_binary(name):
@@ -41,6 +47,30 @@ def real_binary(name):
             if os.path.basename(real) != "peekme":
                 return p
     return None
+
+
+KIRO_SESSIONS = os.path.expanduser("~/.kiro/sessions/cli")
+
+
+def kiro_sessions():
+    try:
+        return {f[:-5] for f in os.listdir(KIRO_SESSIONS) if f.endswith(".json")}
+    except OSError:
+        return set()
+
+
+def delete_empty_kiro_sessions(before):
+    """Every Kiro start opens a session; remove the empty ones this run made."""
+    for sid in kiro_sessions() - before:
+        log = os.path.join(KIRO_SESSIONS, sid + ".jsonl")
+        if os.path.exists(log) and os.path.getsize(log) == 0:
+            subprocess.run([real_binary("kiro-cli") or "kiro-cli", "chat", "--delete-session", sid],
+                           capture_output=True)
+            # Typed lines (`/fullscreen`) are kept beside it and outlive the delete.
+            try:
+                os.remove(os.path.join(KIRO_SESSIONS, sid + ".history"))
+            except OSError:
+                pass
 
 
 def find_word(lines, word, skip_rows=0):
@@ -105,6 +135,13 @@ def run_case(env, case, out):
             time.sleep(0.5)
         if not check(ready in "\n".join(t.screen()), f"{case['agent']} never showed {ready!r}"):
             return name, fails
+        if case["agent"] in START:
+            keys, done = START[case["agent"]]
+            for k in keys:
+                t.send(k)
+                time.sleep(0.8)
+            if not check(m.wait(lambda: any(done in l for l in t.screen()), 10), f"{done!r} never showed"):
+                return name, fails
         time.sleep(2)
         before = t.screen()
         where = find_word(before, word)
@@ -124,7 +161,7 @@ def run_case(env, case, out):
         t.send(b"\x1b")
         check(m.wait(lambda: events("close"), 5), "Esc did not close the box")
         time.sleep(1.0)
-        if case["profile"] == "mac-default" and case["agent"] == "claude-classic":
+        if case["profile"] == "mac-default" and case["agent"] in ("claude-classic", "kiro-inline"):
             # tmux handled the drag: peekme cannot see the click that clears
             # it, so a copy counts for π for 15 s. Wait that out.
             time.sleep(16)
@@ -181,10 +218,10 @@ def main():
     for layer, agent, profile in itertools.product(["direct", "tmux", "ssh+tmux"], AGENTS, m.PROFILES):
         for mouse in (["off"] if layer == "direct" else ["off", "on"]):
             todo.append(dict(layers=layer, agent=agent, profile=profile, mouse=mouse))
-    # Claude's classic screen leaves the mouse to the terminal (or to tmux with
+    # Claude's classic screen and Kiro inline leave the mouse to the terminal (or to tmux with
     # `mouse on`). A pseudo-terminal has no selection of its own, so those
     # cases belong to the macOS job with real terminals.
-    todo = [c for c in todo if not (c["agent"] == "claude-classic" and c["mouse"] == "off")]
+    todo = [c for c in todo if not (c["agent"] in ("claude-classic", "kiro-inline") and c["mouse"] == "off")]
     todo = [c for c in todo if args.only in f"{c['layers']}|mouse-{c['mouse']}|{c['profile']}|{c['agent']}"]
     for i, c in enumerate(todo):
         c["n"] = i
@@ -192,6 +229,7 @@ def main():
     out = args.out or os.path.join(work, "cases")
     env = m.Env(work, need_ssh=any("ssh" in c["layers"] for c in todo))
     failed = []
+    kiro_before = kiro_sessions()
     try:
         with cf.ThreadPoolExecutor(args.jobs) as pool:
             for name, fails in pool.map(lambda c: run_case(env, c, out), todo):
@@ -201,6 +239,7 @@ def main():
                     failed.append(name)
     finally:
         env.stop()
+        delete_empty_kiro_sessions(kiro_before)
     print(f"\n{len(todo) - len(failed)}/{len(todo)} passed. Artifacts: {out}")
     sys.exit(1 if failed else 0)
 

@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """A tiny full-screen TUI that behaves like the agent CLIs toward the terminal.
 
-    python3 fakeagent.py --style claude|copilot|codex --log FILE
+    python3 fakeagent.py --style claude|copilot|codex|kiro --log FILE
 
 It draws on the alternate screen with any-motion SGR mouse on, like Claude Code
-(fullscreen), Copilot CLI and Codex. A mouse drag selects text, and the agent
+(fullscreen), Copilot CLI, Codex and Kiro CLI (after /fullscreen). A mouse drag selects text, and the agent
 reports it the way the real one does:
 
     claude   OSC 52 `c` (clipboard), frames wrapped in ?2026
     copilot  OSC 52 `p!;<b64>;`, no ?2026 frames, modifyOtherKeys 2 requested
     codex    the selection drawn in reverse video, frames wrapped in ?2026
+    kiro     OSC 52 `c`, also inside tmux; frames wrapped in ?2026; the input
+             area is a rule, status lines, then `›` at the left edge
     classic  like Claude Code's classic screen: main screen, no mouse, and only
              relative cursor moves from wherever the cursor was at start
 
@@ -76,6 +78,13 @@ class Agent:
                 line = line[: a - 1] + "\x1b[7m" + line[a - 1 : b] + "\x1b[0m" + line[b:]
             s += f"\x1b[{row};1H{line}"
         rule = "─" * self.cols
+        if self.style == "kiro":
+            s += f"\x1b[{self.rows - 5};1H{rule}"
+            s += f"\x1b[{self.rows - 4};1Hkiro_default · auto · ◔ 1%"
+            s += f"\x1b[{self.rows - 2};1H›  {self.buf}"
+            s += f"\x1b[{self.rows - 1};100H/copy to clipboard"
+            s += f"\x1b[{self.rows - 2};{4 + len(self.buf)}H\x1b[?25h\x1b[?2026l"
+            return self.out(s)
         prompt = "›" if self.style == "codex" else "❯"
         s += f"\x1b[{self.rows - 3};1H{rule}"
         s += f"\x1b[{self.rows - 2};1H{prompt} {self.buf}"
@@ -119,7 +128,8 @@ class Agent:
             r = subprocess.run(["tmux", "load-buffer", "-w", "-"], input=text.encode(),
                                capture_output=True)
             self.record(kind="copied", via="tmux load-buffer", code=r.returncode)
-        elif self.style == "claude":
+        elif self.style in ("claude", "kiro"):
+            # Kiro CLI writes OSC 52 as it is, in tmux too.
             self.out(f"\x1b]52;c;{b64}\x07")
             self.record(kind="copied", via="osc52")
         elif self.style == "copilot":
@@ -166,7 +176,7 @@ class Agent:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--style", choices=["claude", "copilot", "codex", "classic"], default="claude")
+    ap.add_argument("--style", choices=["claude", "copilot", "codex", "classic", "kiro"], default="claude")
     ap.add_argument("--log", required=True)
     ap.add_argument("agent_args", nargs="*", help="what the agent itself was given (after --)")
     args = ap.parse_args()

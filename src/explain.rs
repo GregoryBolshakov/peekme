@@ -8,6 +8,7 @@ use crate::claude::explain::Pool;
 use crate::codex::explain::{self as codex, Slot};
 use crate::context::{Nested, ScreenSel};
 use crate::copilot::explain as copilot;
+use crate::kiro::explain as kiro;
 
 /// Streamed progress of one explanation.
 #[derive(Debug)]
@@ -57,6 +58,8 @@ pub enum Explainer {
     Claude(Arc<Pool>),
     /// Copilot CLI's headless server, one session per explanation.
     Copilot(Arc<copilot::Slot>),
+    /// Kiro CLI's ACP server, one session per explanation.
+    Kiro(Arc<kiro::Slot>),
     /// Canned text, no model: `PEEKME_FAKE_EXPLAINER=1`, for end-to-end tests.
     Fake,
 }
@@ -78,6 +81,7 @@ impl Explainer {
             Agent::Codex => Explainer::Codex(Arc::default()),
             Agent::Claude => Explainer::Claude(Arc::default()),
             Agent::Copilot => Explainer::Copilot(Arc::default()),
+            Agent::Kiro => Explainer::Kiro(Arc::default()),
         }
     }
 
@@ -98,6 +102,7 @@ impl Explainer {
             },
             Explainer::Claude(pool) => crate::claude::explain::explain(pool, req, tx),
             Explainer::Copilot(slot) => copilot::explain(slot, req, tx),
+            Explainer::Kiro(slot) => kiro::explain(slot, req, tx),
             Explainer::Fake => {
                 let sel = match &req.nested {
                     Some(n) => {
@@ -127,6 +132,7 @@ impl Explainer {
             Explainer::Codex(slot) => slot.shutdown(),
             Explainer::Claude(pool) => pool.shutdown(),
             Explainer::Copilot(slot) => slot.shutdown(),
+            Explainer::Kiro(slot) => slot.shutdown(),
             Explainer::Fake => {}
         }
     }

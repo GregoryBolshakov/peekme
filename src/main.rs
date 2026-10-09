@@ -8,22 +8,24 @@ use std::io::IsTerminal;
 
 const HELP: &str = "\
 peekme {version}
-Select text in Claude Code, Codex CLI or GitHub Copilot CLI output with the
-mouse, press Alt+P (Option+P on a Mac), and an explanation from a smaller
-model opens right next to it. Esc closes it.
+Select text in Claude Code, Codex CLI, GitHub Copilot CLI or Kiro CLI output
+with the mouse, press Alt+P (Option+P on a Mac), and an explanation from a
+smaller model opens right next to it. Esc closes it.
 
 USAGE:
-    peekme                     run the first installed of claude, codex, copilot
+    peekme                     run the first installed of claude, codex, copilot, kiro-cli
     peekme claude [ARGS...]    run claude with peekme
     peekme codex [ARGS...]     run codex with peekme
     peekme copilot [ARGS...]   run copilot with peekme
-    peekme install             make typing `claude`, `codex`, `copilot` open them with peekme
+    peekme kiro-cli [ARGS...]  run kiro-cli with peekme
+    peekme install             make typing `claude`, `codex`, `copilot`, `kiro-cli` open them
+                               with peekme
     peekme uninstall           undo `peekme install`
     peekme doctor              check the setup
     peekme -- COMMAND [ARGS]   run any other command with peekme
 
-After `peekme install`, `command claude` (or codex, copilot) runs the agent
-without peekme once.
+After `peekme install`, `command claude` (or codex, copilot, kiro-cli) runs
+the agent without peekme once.
 
 ENVIRONMENT:
     PEEKME_CLAUDE_MODEL  model for Claude Code explanations (default: haiku)
@@ -32,6 +34,8 @@ ENVIRONMENT:
     PEEKME_CODEX_BIN     codex binary used for the explainer (default: the one on PATH)
     PEEKME_COPILOT_MODEL model for Copilot explanations (default: Copilot's Auto)
     PEEKME_COPILOT_BIN   copilot binary used for the explainer (default: the one on PATH)
+    PEEKME_KIRO_MODEL    model for Kiro explanations (default: claude-haiku-4.5)
+    PEEKME_KIRO_BIN      kiro-cli binary used for the explainer (default: the one on PATH)
 ";
 
 fn main() {

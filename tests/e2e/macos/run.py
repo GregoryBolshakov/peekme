@@ -2,7 +2,7 @@
 """End-to-end on macOS with the real Terminal and iTerm2 (for a CI runner).
 
     python3 tests/e2e/macos/run.py [--terminals terminal,iterm2] [--options default,meta]
-                                   [--layers direct,tmux,ssh+tmux] [--agents claude,codex,copilot]
+                                   [--layers direct,tmux,ssh+tmux] [--agents claude,codex,copilot,kiro-cli]
                                    [--out DIR]
 
 Each case opens a terminal window running peekme around the fake agent (see
@@ -252,7 +252,7 @@ def main():
     ap.add_argument("--terminals", default="terminal,iterm2")
     ap.add_argument("--options", default="default,meta")
     ap.add_argument("--layers", default="direct,tmux,ssh+tmux")
-    ap.add_argument("--agents", default="claude,codex,copilot")
+    ap.add_argument("--agents", default="claude,codex,copilot,kiro-cli")
     ap.add_argument("--out", default="macos-e2e-out")
     args = ap.parse_args()
     for tool in ("cliclick", "tmux"):

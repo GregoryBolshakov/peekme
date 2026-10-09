@@ -4,7 +4,7 @@
     python3 tests/e2e/matrix.py [--quick] [--only SUBSTRING] [--jobs N] [--out DIR]
 
 Each case starts `peekme` around a fake agent (tests/e2e/fakeagent.py, named
-claude / copilot / codex so peekme treats it as that agent) inside some layers:
+claude / copilot / codex / kiro-cli so peekme treats it as that agent) inside some layers:
 
     direct         terminal -> peekme
     tmux           terminal -> tmux -> peekme
@@ -47,6 +47,8 @@ PROFILES = {
 DRAG = b"\x1b[<0;3;3M\x1b[<32;8;3M\x1b[<32;13;3M\x1b[<0;13;3m"
 CLICK = b"\x1b[<0;30;6M\x1b[<0;30;6m"
 SELECTED = "alpha bravo"
+# Fake agents by command name -> fakeagent.py style.
+AGENTS = {"claude": "claude", "copilot": "copilot", "codex": "codex", "classic": "classic", "kiro-cli": "kiro"}
 
 
 class Term:
@@ -161,8 +163,9 @@ class Env:
             sys.exit("tmux not found (set E2E_TMUX)")
         self.bin = os.path.join(work, "bin")
         os.makedirs(self.bin)
-        for style in ("claude", "copilot", "codex", "classic"):
-            p = os.path.join(self.bin, style)
+        # The shim is named like the agent's command; its style is how it draws.
+        for name, style in AGENTS.items():
+            p = os.path.join(self.bin, name)
             with open(p, "w") as f:
                 f.write(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
                         f"{shlex.quote(os.path.join(HERE, 'fakeagent.py'))} "
@@ -221,7 +224,7 @@ def build_command(env, case, paths):
         # path as `.../claude` (current_exe() keeps the link's name).
         links = os.path.join(env.work, "links")
         os.makedirs(links, exist_ok=True)
-        for a in ("claude", "codex", "copilot", "classic"):
+        for a in AGENTS:
             if not os.path.lexists(os.path.join(links, a)):
                 os.symlink(PEEKME, os.path.join(links, a))
         path = f"{shlex.quote(links)}:{shlex.quote(env.bin)}:{path}"
@@ -391,7 +394,7 @@ def run_case(env, case, out):
 def cases(quick):
     layers = ["direct", "tmux", "ssh", "ssh+tmux", "tmux+ssh+tmux"]
     out = []
-    for layer, profile, agent in itertools.product(layers, PROFILES, ["claude", "copilot", "codex"]):
+    for layer, profile, agent in itertools.product(layers, PROFILES, ["claude", "copilot", "codex", "kiro-cli"]):
         tmux_variants = [("off", "off")] if "tmux" not in layer else list(
             itertools.product(["off", "on"], ["off", "on"]))
         for mouse, ext in tmux_variants:

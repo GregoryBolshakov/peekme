@@ -8,8 +8,8 @@ clipboard writes travel. These tests run peekme through those layers.
 
 ```
 cargo build --release --bins --examples
-python3 tests/e2e/matrix.py           # fake agents, 84 cases, about a minute
-python3 tests/e2e/real_agents.py      # real claude, codex, copilot, 34 cases
+python3 tests/e2e/matrix.py           # fake agents, 112 cases, about a minute
+python3 tests/e2e/real_agents.py      # real claude, codex, copilot, kiro-cli, 48 cases
 python3 tests/e2e/upgrade.py          # an older setup gets the new agents, links to an older copy move
 python3 tests/e2e/inline_start.py     # an agent started under shell output, box in the right rows, box inside it
 python3 tests/e2e/copy_mode.py        # Option+P while tmux stays in copy mode after a drag
@@ -23,7 +23,7 @@ reports for a drag.
 
 `fakeagent.py` behaves like the real agents toward the terminal: full screen,
 mouse on, the same input box, and it copies a drag the way each agent does
-(OSC 52 for Claude Code and Copilot, reverse video for Codex, and inside tmux
+(OSC 52 for Claude Code, Copilot and Kiro, reverse video for Codex, and inside tmux
 `tmux load-buffer` for Claude Code and Codex). `real_agents.py` uses the real
 CLIs and drags over their startup screen.
 

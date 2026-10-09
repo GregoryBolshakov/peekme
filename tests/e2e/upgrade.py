@@ -13,7 +13,7 @@ Second case: two copies of peekme (an old one from cargo, a new one from npm).
 The old copy's `peekme install` left `codex` pointing at it, so `codex` kept
 starting the old peekme. The first start of the new one moves the link.
 """
-import os, re, shutil, subprocess, sys, tempfile
+import os, re, shlex, shutil, subprocess, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import matrix as m  # noqa: E402
@@ -53,11 +53,16 @@ def main():
     said = start(home)
     links = sorted(os.listdir(bindir))
     text = open(rc).read()
-    if links != ["claude", "codex", "copilot"]:
+    if links != ["claude", "codex", "copilot", "kiro-cli"]:
         fails.append(f"links after the first start: {links}")
-    for agent in ("codex", "claude", "copilot"):
+    for agent in ("codex", "claude", "copilot", "kiro-cli"):
         if f"function {agent} {{" not in text:
             fails.append(f"no `{agent}` function in the block")
+    # bash takes the block, `kiro-cli` (a name with a dash) included.
+    r = subprocess.run(["bash", "-c", f". {shlex.quote(rc)} && type kiro-cli codex"],
+                       capture_output=True, text=True, env=m.clean_env(HOME=home))
+    if r.returncode != 0 or r.stderr:
+        fails.append(f"bash could not load the block: {r.stderr.strip()}")
     if not (text.startswith("export A=1\n") and text.endswith("alias ll='ls -l'\n")):
         fails.append("lines outside the block changed")
     if len(said) != 1:
