@@ -51,6 +51,10 @@ struct Open {
     mark: Option<(Place, Vec<(usize, usize)>)>,
     /// The saved answer the box shows, once there is one.
     answer: Option<AnswerId>,
+    /// A saved answer to the same words that the text being written will
+    /// replace. Until it is complete the box shows no saved answer, so the
+    /// old one's inner marks are not drawn on (or clicked in) the new text.
+    replaces: Option<AnswerId>,
     /// History size when the snapshot was taken (rows of marks count from it).
     history: usize,
     /// Boxes opened inside this one, outermost first.
@@ -1631,6 +1635,7 @@ impl App {
                     // Asked before: show that answer, no new call, and mark this copy too.
                     saved = Some(id);
                     let (answer, model) = (a.answer.clone(), a.model.clone());
+                    peek.question = a.question.clone();
                     if let Some((place, _)) = &mark {
                         self.marks.add(id, place.clone());
                     }
@@ -1721,7 +1726,8 @@ impl App {
             selection: remembered,
             deep: false,
             mark,
-            answer: saved.or(replace),
+            answer: saved,
+            replaces: replace,
             history: self.shadow.history_size(),
             nested: Vec::new(),
             base_height: 0,
@@ -1818,6 +1824,7 @@ impl App {
         let open = self.open.as_mut().unwrap();
         open.id = id;
         open.deep = true;
+        open.replaces = open.answer.take().or(open.replaces);
         open.peek.text.clear();
         open.peek.scroll = 0;
         open.peek.deep_available = false;
@@ -1871,16 +1878,6 @@ impl App {
                 let text = String::from_utf8_lossy(&t.bytes);
                 input.extend(text.chars().map(|c| if c.is_control() { ' ' } else { c }));
             }
-            b"\r" | b"\n" => submit = true,
-            b"\x7f" | b"\x08" => {
-                input.pop();
-            }
-            // Ctrl+U clears, Ctrl+W takes the last word.
-            b"\x15" => input.clear(),
-            b"\x17" => {
-                let keep = input.trim_end().rfind(' ').map_or(0, |i| i + 1);
-                input.truncate(keep);
-            }
             bytes if bytes.first() == Some(&0x1b) => {
                 // Keys in the kitty or modifyOtherKeys form, once the child asked for them.
                 if let Some(k) = input::parse_key(bytes)
@@ -1905,9 +1902,28 @@ impl App {
                     }
                 }
             }
+            // Typed text, which can hold Enter and editing keys too when the
+            // terminal sends several keys in one read.
             bytes => {
-                let text = String::from_utf8_lossy(bytes);
-                input.extend(text.chars().filter(|c| !c.is_control()));
+                for c in String::from_utf8_lossy(bytes).chars() {
+                    match c {
+                        '\r' | '\n' => {
+                            submit = true;
+                            break;
+                        }
+                        '\x7f' | '\x08' => {
+                            input.pop();
+                        }
+                        // Ctrl+U clears, Ctrl+W takes the last word.
+                        '\x15' => input.clear(),
+                        '\x17' => {
+                            let keep = input.trim_end().rfind(' ').map_or(0, |i| i + 1);
+                            input.truncate(keep);
+                        }
+                        c if c.is_control() => {}
+                        c => input.push(c),
+                    }
+                }
             }
         }
         if submit {
@@ -1952,6 +1968,7 @@ impl App {
         let open = self.open.as_mut().unwrap();
         open.id = id;
         open.deep = true;
+        open.replaces = open.answer.take().or(open.replaces);
         open.peek.input = None;
         open.peek.question = Some(question);
         open.peek.text.clear();
@@ -2059,17 +2076,8 @@ impl App {
                 if let (Some((sel, _)), Some((place, cells))) = (&open.selection, &open.mark)
                     && !open.peek.text.trim().is_empty()
                 {
-                    // A typed question is saved with its answer, so a click
-                    // on the words shows both.
-                    let answer = match &open.peek.question {
-                        Some(q) => format!(
-                            "› {}\n\n{}",
-                            overlay::sanitize(q),
-                            overlay::sanitize(&open.peek.text)
-                        ),
-                        None => overlay::sanitize(&open.peek.text),
-                    };
-                    let id = match open.answer {
+                    let answer = overlay::sanitize(&open.peek.text);
+                    let id = match open.answer.or(open.replaces.take()) {
                         // Explained again with the whole chat.
                         Some(id) => {
                             self.marks.replace(id, &answer, &open.peek.model);
@@ -2078,6 +2086,9 @@ impl App {
                         None => self.marks.save(None, sel, &answer, &open.peek.model),
                     };
                     open.answer = Some(id);
+                    // A typed question is saved with its answer, so a click
+                    // on the words shows both.
+                    self.marks.set_question(id, open.peek.question.clone());
                     self.marks.add(id, place.clone());
                     crate::event(
                         "mark",
@@ -3742,9 +3753,15 @@ mod tests {
             .marks
             .find("true colour")
             .and_then(|id| app.marks.answer(id));
-        assert!(
-            saved.is_some_and(|a| a.answer.starts_with("› why so π bright\n\n")),
-            "the question is saved with the answer"
+        let saved = saved.expect("saved");
+        assert_eq!(
+            saved.question.as_deref(),
+            Some("why so π bright"),
+            "saved with its question"
+        );
+        assert_eq!(
+            saved.answer,
+            "Test answer to ⟦why so π bright⟧ about ⟦true colour⟧."
         );
         assert!(child.is_empty());
     }
@@ -3817,7 +3834,8 @@ mod tests {
             n.peek.text
         );
         let saved = n.answer.and_then(|id| app.marks.answer(id)).expect("saved");
-        assert!(saved.answer.starts_with("› how does fg work?\n\n"));
+        assert_eq!(saved.question.as_deref(), Some("how does fg work?"));
+        assert!(saved.answer.starts_with("Test answer to"));
 
         // Nothing selected now: Alt+Shift+P asks about the same words again.
         app.on_input(b"\x1bP", &mut out, &mut child).unwrap();
@@ -3829,5 +3847,119 @@ mod tests {
         app.on_input(b"\x1b", &mut out, &mut child).unwrap();
         assert!(app.open.as_ref().is_some_and(|o| o.nested.is_empty()));
         assert!(child.is_empty(), "the agent got no key");
+    }
+
+    /// Words of an answer that were peeked inside keep a dotted line in the
+    /// box, but only while the box shows that answer: a new answer to the
+    /// same selection (Alt+P again for the whole chat, or a typed question)
+    /// must not show the old answer's lines while it streams.
+    #[test]
+    fn a_new_answer_does_not_show_the_old_answers_inner_marks() {
+        let answer = "A pseudo-terminal lets job control work inside tmux panes.";
+        for again in [&b"\x1bp"[..], b"\x1bP"] {
+            let mut app = app_with_an_answer(answer, true);
+            let (mut child, mut out) = (Vec::new(), Vec::new());
+            let top = app.open.as_ref().unwrap().lay.box_top;
+            let at = |col: usize| (top + 1, 2 + col);
+            // A peek inside the box on "job control", answered.
+            let mut drag = mouse(0, at(23), true);
+            drag.extend(mouse(32, at(33), true));
+            drag.extend(mouse(0, at(33), false));
+            app.on_input(&drag, &mut out, &mut child).unwrap();
+            app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+            let id = app.open.as_ref().unwrap().nested[0].id;
+            app.on_progress(id, Progress::Delta("Ctrl+Z, fg and bg.".into()), &mut out)
+                .unwrap();
+            app.on_progress(id, Progress::Done, &mut out).unwrap();
+            // Close both boxes, select the same text again, open its saved answer.
+            app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+            app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+            assert!(app.open.is_none());
+            app.selection = SelectionSource::fixed("true colour");
+            app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+            let mut real = Shadow::new(40, 24);
+            real.advance(SCREEN);
+            real.advance(&std::mem::take(&mut out));
+            let top = app.open.as_ref().unwrap().lay.box_top;
+            assert_eq!(
+                dotted(&real.snapshot(), top + 1),
+                "job control",
+                "saved answer, its marks"
+            );
+            // A new answer: the whole chat (Alt+P again) or a typed question.
+            app.on_input(again, &mut out, &mut child).unwrap();
+            if again == b"\x1bP" {
+                app.on_input(b"why?\r", &mut out, &mut child).unwrap();
+            }
+            let id = app.open.as_ref().unwrap().id;
+            app.on_progress(
+                id,
+                Progress::Delta("Something else entirely, not about jobs at all.".into()),
+                &mut out,
+            )
+            .unwrap();
+            app.on_idle(&mut out, &mut child).unwrap();
+            real.advance(&std::mem::take(&mut out));
+            let snap = real.snapshot();
+            let top = app.open.as_ref().unwrap().lay.box_top;
+            let h = app.open.as_ref().unwrap().lay.box_height;
+            for r in top..top + h {
+                assert_eq!(
+                    dotted(&snap, r),
+                    "",
+                    "old inner mark on row {r} ({:?})",
+                    again
+                );
+            }
+        }
+    }
+
+    /// An answer to a typed question shows the question above it, also when
+    /// opened again from its mark, and a peek inside it keeps its line on
+    /// the right words (the question is not part of the answer's text).
+    #[test]
+    fn a_saved_question_answer_keeps_its_inner_marks_in_place() {
+        let mut app = test_app(40, 24);
+        app.selection = SelectionSource::fixed("true colour");
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(SCREEN, &mut out, &mut child).unwrap();
+        app.on_output(b"\x1b[?1000h\x1b[?1003h\x1b[?1006h", &mut out, &mut child)
+            .unwrap();
+        app.on_input(b"\x1bP", &mut out, &mut child).unwrap();
+        app.on_input(b"why?\r", &mut out, &mut child).unwrap();
+        let id = app.open.as_ref().unwrap().id;
+        let answer = "A pseudo-terminal lets job control work inside tmux panes.";
+        app.on_progress(id, Progress::Delta(answer.into()), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        // The answer's first line is under the question line and a blank one.
+        let top = app.open.as_ref().unwrap().lay.box_top;
+        let at = |col: usize| (top + 3, 2 + col);
+        let mut drag = mouse(0, at(23), true);
+        drag.extend(mouse(32, at(33), true));
+        drag.extend(mouse(0, at(33), false));
+        app.on_input(&drag, &mut out, &mut child).unwrap();
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        let n = &app.open.as_ref().unwrap().nested[0];
+        assert_eq!(n.words, "job control");
+        let id = n.id;
+        app.on_progress(id, Progress::Delta("Ctrl+Z.".into()), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        app.on_input(b"\x1b\x1b", &mut out, &mut child).unwrap();
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+        // Open the saved answer again.
+        app.selection = SelectionSource::fixed("true colour");
+        out.clear();
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.peek.question.as_deref(), Some("why?"));
+        assert_eq!(open.peek.text, answer);
+        let mut real = Shadow::new(40, 24);
+        real.advance(SCREEN);
+        real.advance(&out);
+        let top = open.lay.box_top;
+        assert_eq!(dotted(&real.snapshot(), top + 3), "job control");
     }
 }

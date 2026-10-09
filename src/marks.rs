@@ -45,6 +45,9 @@ pub struct Answer {
     /// The words it explains.
     pub text: String,
     pub answer: String,
+    /// The question the user typed, when the answer is to one (Alt+Shift+P).
+    /// Kept apart from the text, whose char positions the marks inside use.
+    pub question: Option<String>,
     pub model: String,
     /// The answer whose words these are; none for words on the screen.
     pub parent: Option<AnswerId>,
@@ -241,6 +244,7 @@ impl Marks {
             Answer {
                 text: text.into(),
                 answer: answer.into(),
+                question: None,
                 model: model.into(),
                 parent,
                 children: Vec::new(),
@@ -287,9 +291,17 @@ impl Marks {
             return;
         };
         a.answer = answer.into();
+        a.question = None;
         a.model = model.into();
         for c in std::mem::take(&mut a.children) {
             self.remove(c.id);
+        }
+    }
+
+    /// The typed question answer `id` answers.
+    pub fn set_question(&mut self, id: AnswerId, question: Option<String>) {
+        if let Some(a) = self.answers.get_mut(&id) {
+            a.question = question;
         }
     }
 

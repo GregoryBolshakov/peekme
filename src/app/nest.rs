@@ -58,6 +58,7 @@ pub(super) struct Orphan {
     words: String,
     range: Range<usize>,
     text: String,
+    question: Option<String>,
     model: String,
 }
 
@@ -481,6 +482,7 @@ impl App {
             _ if ask => peek.input = Some(String::new()),
             Some(a) => {
                 peek.text = a.answer.clone();
+                peek.question = a.question.clone();
                 peek.model = format!("{} · saved", a.model);
                 peek.status = Status::Done;
             }
@@ -635,11 +637,8 @@ impl App {
                         parent,
                         words: n.words,
                         range: n.range,
-                        // A typed question is saved with its answer.
-                        text: match &n.peek.question {
-                            Some(q) => format!("› {}\n\n{}", overlay::sanitize(q), n.peek.text),
-                            None => n.peek.text,
-                        },
+                        text: n.peek.text,
+                        question: n.peek.question,
                         model: n.peek.model,
                     },
                 );
@@ -731,18 +730,12 @@ impl App {
                 if let Some(parent) = parent
                     && !n.peek.text.trim().is_empty()
                 {
-                    // A typed question is saved with its answer.
-                    let text = match &n.peek.question {
-                        Some(q) => format!(
-                            "› {}\n\n{}",
-                            overlay::sanitize(q),
-                            overlay::sanitize(&n.peek.text)
-                        ),
-                        None => overlay::sanitize(&n.peek.text),
-                    };
+                    let text = overlay::sanitize(&n.peek.text);
                     let id = self
                         .marks
                         .save(Some(parent), &n.words, &text, &n.peek.model);
+                    // A typed question is saved with its answer.
+                    self.marks.set_question(id, n.peek.question.clone());
                     self.marks.add_range(id, n.range.clone());
                     n.answer = Some(id);
                     crate::event("nested_mark", serde_json::json!({"words": n.words}));
@@ -777,6 +770,7 @@ impl App {
                 if !o.text.trim().is_empty() && self.marks.answer(o.parent).is_some() {
                     let text = overlay::sanitize(&o.text);
                     let child = self.marks.save(Some(o.parent), &o.words, &text, &o.model);
+                    self.marks.set_question(child, o.question);
                     self.marks.add_range(child, o.range);
                 }
             }

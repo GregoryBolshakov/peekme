@@ -5,6 +5,10 @@
 - Questions inside boxes. Select words in a box and press Alt+Shift+P (Option+Shift+P on a Mac):
   a box inside opens for your question, and the answer knows the boxes around it. With boxes
   open and nothing selected, Alt+Shift+P asks about the words of the innermost box.
+- Fixed: after a peek inside a box, a new answer for the same text (Alt+P again, or a question)
+  showed the old dotted lines on the new text until it finished.
+- Fixed: a question typed fast and sent with Enter in the same keystroke batch was not sent.
+- Fixed: a saved answer to a question, opened again, had its dotted lines in the wrong place.
 
 ## 0.4.2 (2026-10-09)
 
