@@ -208,6 +208,12 @@ pub struct PeekBox {
     pub confirm_deep: bool,
     /// A short notice in the bottom border.
     pub note: Option<&'static str>,
+    /// The question being typed (Alt+Shift+P), until Enter sends it.
+    pub input: Option<String>,
+    /// The question the text answers, shown above it.
+    pub question: Option<String>,
+    /// Offer Alt+Shift+P to ask a question about the selection.
+    pub ask_available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,6 +239,9 @@ impl PeekBox {
             deep_available: false,
             confirm_deep: false,
             note: None,
+            input: None,
+            question: None,
+            ask_available: false,
         }
     }
 
@@ -248,10 +257,40 @@ impl PeekBox {
             deep_available: false,
             confirm_deep: false,
             note: None,
+            input: None,
+            question: None,
+            ask_available: false,
         }
     }
 
     fn body_lines(&self, width: usize) -> Vec<Line> {
+        if let Some(input) = &self.input {
+            let mut l = wrap(
+                &glyphs(Style::Dim, "Your question about this text:", None),
+                width,
+            );
+            let mut line = glyphs(Style::Bold, "› ", None);
+            line.extend(glyphs(Style::Plain, &sanitize(input), None));
+            line.extend(glyphs(Style::Dim, "▏", None));
+            l.extend(wrap(&line, width));
+            return l;
+        }
+        let mut l = match &self.question {
+            Some(q) => {
+                let mut l = wrap(
+                    &glyphs(Style::Dim, &format!("› {}", sanitize(q)), None),
+                    width,
+                );
+                l.push(Vec::new());
+                l
+            }
+            None => Vec::new(),
+        };
+        l.extend(self.answer_lines(width));
+        l
+    }
+
+    fn answer_lines(&self, width: usize) -> Vec<Line> {
         let text = sanitize(&self.text);
         match &self.status {
             Status::Message(m) => wrap(&glyphs(Style::Plain, &sanitize(m), None), width),
@@ -396,10 +435,16 @@ impl PeekBox {
         innermost: bool,
     ) -> String {
         let mut hints: Vec<String> = self.note.iter().map(|n| n.to_string()).collect();
-        if innermost {
+        if innermost && self.input.is_some() {
+            hints.push("Enter ask".into());
+            hints.push("Esc cancel".into());
+        } else if innermost {
             hints.push("Esc close".to_string());
             if self.deep_available {
                 hints.push("Alt+P again: use whole chat".into());
+            }
+            if self.ask_available {
+                hints.push("Alt+Shift+P: ask".into());
             }
             if self.confirm_deep {
                 hints.push("Alt+P: send anyway".into());

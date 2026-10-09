@@ -1,7 +1,7 @@
 //! Development helper: run one explanation for a selection inside some screen
 //! text, without a terminal. Prints the prompt sent and the streamed answer.
 //!
-//!     cargo run --example peek_text -- "<screen text>" "<selection>" [--deep] [--claude|--copilot|--kiro] [--pid PID]
+//!     cargo run --example peek_text -- "<screen text>" "<selection>" [--deep] [--ask QUESTION] [--claude|--copilot|--kiro] [--pid PID]
 //!
 //! Codex by default. With `--claude`, `--copilot` or `--kiro`, that agent; `--pid` is the
 //! process id of a running interactive session, whose transcript then gives the
@@ -50,6 +50,11 @@ fn main() {
         force: true,
         agent_pid,
         nested: None,
+        question: args
+            .iter()
+            .position(|a| a == "--ask")
+            .and_then(|i| args.get(i + 1))
+            .cloned(),
     };
     // SAFETY: single-threaded at this point.
     unsafe { std::env::set_var("PEEKME_DEBUG_PROMPT", "1") };

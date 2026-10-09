@@ -42,6 +42,9 @@ pub struct Request {
     pub agent_pid: Option<u32>,
     /// Words of an earlier answer, when the peek is inside another one.
     pub nested: Option<Nested>,
+    /// A question the user typed about the selection (Alt+Shift+P): answered
+    /// by the chat's own model, with the whole conversation.
+    pub question: Option<String>,
 }
 
 /// Above this estimate, "the whole chat" asks before sending (a normal
@@ -111,6 +114,21 @@ impl Explainer {
                     }
                     None => req.screen.selected(),
                 };
+                if let Some(q) = &req.question {
+                    tx(Progress::Started {
+                        model: "test-ask".into(),
+                        source: "whole conversation",
+                    });
+                    for part in [
+                        "Test answer ",
+                        &format!("to ⟦{q}⟧ "),
+                        &format!("about ⟦{sel}⟧."),
+                    ] {
+                        tx(Progress::Delta(part.to_string()));
+                    }
+                    tx(Progress::Done);
+                    return;
+                }
                 tx(Progress::Started {
                     model: "test".into(),
                     source: if req.deep {

@@ -66,6 +66,7 @@ the selection itself, and peekme uses that selection.
 | typing | box is open | goes to the agent's input line, the box stays open |
 | Enter | box is open | sends your message and closes the box |
 | Alt+P on text in the box | box is open | opens a new box inside it, under that line |
+| Alt+Shift+P (Mac: Option+Shift+P) | any time | type a question about the selected text first, Enter sends it |
 | click on underlined text | any time | shows the answer from before, with no new request |
 
 Text you already asked about gets a dotted underline, so you can see what you peeked before.
@@ -73,11 +74,24 @@ A click on it opens the saved answer again, a second click closes it. Inside a b
 words and press Alt+P again, and go several levels deep while the window is wide enough. The
 wheel scrolls the box under the pointer, Esc closes the innermost box.
 
+### Ask a question
+
+Sometimes a short explanation is not what you need. Select the text and press Alt+Shift+P
+(Option+Shift+P on a Mac) instead. The box opens empty and you type your question, for example
+"why not use a mutex here?". Enter sends it, Esc cancels. While you type, the keys stay in the
+box and don't go to the agent.
+
+The question goes to the model your chat runs on, not the small one, together with the whole
+conversation (Codex gets a copy of the thread). So it takes longer and costs more than a normal
+peek. With a box open, Alt+Shift+P asks about the text that box explains. The answer is saved
+with the question, and a click on the underline shows both.
+
 ### On a Mac
 
 Option+P works as it is, with no terminal setting, also over SSH and inside tmux. A Mac
 terminal sends Option+P as the character `π`. When something is selected, peekme takes `π` as
-the shortcut. When nothing is selected, `π` is typed as usual, so you never lose the letter. If
+the shortcut. When nothing is selected, `π` is typed as usual, so you never lose the letter.
+Option+Shift+P types `∏` and works the same way for questions. If
 you type Greek, `π` stays a letter. If your terminal sends Option as Meta, Option+P works too.
 
 When the agent draws full screen, peekme gets the selection from the agent. Otherwise (Claude
@@ -187,6 +201,10 @@ more.
 | `PEEKME_COPILOT_BIN` | copilot binary to use for explanations. Default is `copilot` |
 | `PEEKME_KIRO_MODEL` | model for Kiro CLI explanations. Default is `claude-haiku-4.5` |
 | `PEEKME_KIRO_BIN` | kiro-cli binary to use for explanations. Default is `kiro-cli` |
+| `PEEKME_CLAUDE_ASK_MODEL` | model for typed questions in Claude Code. Default is the chat's model |
+| `PEEKME_CODEX_ASK_MODEL` | model for typed questions in Codex. Default is the thread's model |
+| `PEEKME_COPILOT_ASK_MODEL` | model for typed questions in Copilot CLI. Default is the chat's model |
+| `PEEKME_KIRO_ASK_MODEL` | model for typed questions in Kiro CLI. Default is the chat's model |
 | `PEEKME_SELECTION` | use this text instead of the mouse selection, for testing |
 
 ### How `claude`, `codex`, `copilot` and `kiro-cli` get peekme
@@ -241,7 +259,7 @@ To use peekme with another program, run `peekme -- COMMAND`.
 cargo test
 cargo clippy --all-targets
 cargo run --example vtdump -- capture.bin 120 40 [offset]
-cargo run --example peek_text -- "<screen text>" "<selection>" [--deep] [--claude|--copilot|--kiro] [--pid PID]
+cargo run --example peek_text -- "<screen text>" "<selection>" [--deep] [--ask QUESTION] [--claude|--copilot|--kiro] [--pid PID]
 python3 spikes/capture.py out.bin 120 40 "<script>" -- peekme claude
 python3 spikes/flicker_test.py
 python3 spikes/explain_probe.py

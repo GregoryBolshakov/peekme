@@ -221,6 +221,12 @@ impl Slot {
 /// Everything the explainer is told, and where it came from; with the
 /// compact prompt's size too when the whole conversation was asked for.
 pub fn prompt(req: &Request) -> (context::Built, Option<usize>) {
+    prompt_and_model(req).0
+}
+
+/// The prompt, and for a typed question the model to answer it:
+/// `PEEKME_COPILOT_ASK_MODEL`, else the chat's own model (None: Auto).
+fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<String>) {
     let pids = req
         .agent_pid
         .map(crate::launch::process_tree)
@@ -229,6 +235,31 @@ pub fn prompt(req: &Request) -> (context::Built, Option<usize>) {
         .and_then(|c| transcript::find(&c, &pids, &req.cwd))
         .and_then(|p| transcript::load(&p));
     let hit = conv.as_ref().and_then(|c| context::find(c, &req.screen));
+    if let Some(q) = &req.question {
+        let mut built = match &conv {
+            Some(c) if req.nested.is_none() => {
+                context::build_deep(Agent::Copilot, &req.cwd, c, hit, &req.screen)
+            }
+            _ => context::build(
+                Agent::Copilot,
+                &req.cwd,
+                conv.as_ref(),
+                hit,
+                &req.screen,
+                req.nested.as_ref(),
+            ),
+        };
+        context::with_question(&mut built, &req.screen, q);
+        built.prompt.push_str(&format!(
+            "Keep the {OPEN}{CLOSE} marks out of the answer.\n"
+        ));
+        let model = std::env::var("PEEKME_COPILOT_ASK_MODEL")
+            .ok()
+            .filter(|m| !m.trim().is_empty())
+            .or_else(|| conv.and_then(|c| c.model))
+            .filter(|m| m != "auto");
+        return ((built, None), model);
+    }
     let compact = context::build(
         Agent::Copilot,
         &req.cwd,
@@ -248,7 +279,7 @@ pub fn prompt(req: &Request) -> (context::Built, Option<usize>) {
         "Answer in at most {} short lines; keep the {OPEN}{CLOSE} marks out of the answer.\n",
         req.max_lines
     ));
-    (built, compact_len)
+    ((built, compact_len), None)
 }
 
 pub fn explain(slot: &Slot, req: Request, tx: impl Fn(Progress)) {
@@ -258,7 +289,9 @@ pub fn explain(slot: &Slot, req: Request, tx: impl Fn(Progress)) {
 }
 
 fn run(slot: &Slot, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
-    let (built, compact_len) = prompt(&req);
+    let ((built, compact_len), ask_model) = prompt_and_model(&req);
+    let asking = req.question.is_some();
+    let model = || if asking { ask_model.clone() } else { model() };
     if let Some(compact) = compact_len
         && !req.force
     {
@@ -287,14 +320,21 @@ fn run(slot: &Slot, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
     let sid = uuid_v4();
     let events = server.subscribe(&sid);
     let result = (|| -> Result<()> {
+        let system = if asking {
+            context::ask_system(Agent::Copilot)
+        } else {
+            SYSTEM.to_string()
+        };
         let mut params = json!({
             "sessionId": sid,
             "clientName": "peekme",
             "availableTools": [],
             "streaming": true,
-            "reasoningEffort": "none",
-            "systemMessage": {"mode": "replace", "content": SYSTEM},
+            "systemMessage": {"mode": "replace", "content": system},
         });
+        if !asking {
+            params["reasoningEffort"] = json!("none");
+        }
         if let Some(m) = model() {
             params["model"] = json!(m);
         }

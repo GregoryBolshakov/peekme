@@ -78,6 +78,7 @@ pub fn parse(id: &str, jsonl: &str) -> Conversation {
     let mut conv = Conversation {
         id: id.to_string(),
         title: None,
+        model: None,
         items: Vec::new(),
     };
     let mut calls: HashMap<String, String> = HashMap::new();
@@ -101,6 +102,9 @@ pub fn parse(id: &str, jsonl: &str) -> Conversation {
         match v.get("type").and_then(Value::as_str) {
             Some("session.title_changed") => {
                 conv.title = Some(text("title")).filter(|t| !t.is_empty())
+            }
+            Some("session.model_change") => {
+                conv.model = Some(text("newModel")).filter(|m| !m.is_empty())
             }
             Some("user.message") => push(&mut conv, turn, Source::User, text("content")),
             Some("assistant.message") => {
@@ -186,6 +190,7 @@ mod tests {
 {"type":"assistant.message","agentId":"sub","data":{"messageId":"m2","content":"sub-agent chatter"},"id":"7"}
 {"type":"assistant.message","data":{"messageId":"m3","content":"The `syn` crate dominates.","turnId":"0"},"id":"8"}
 {"type":"session.title_changed","data":{"title":"Slow build"},"id":"9"}
+{"type":"session.model_change","data":{"cause":"user","newModel":"claude-sonnet-4.5"},"id":"10"}
 not json
 "#;
 
@@ -193,6 +198,7 @@ not json
     fn parses_copilot_events() {
         let c = parse("s1", JSONL);
         assert_eq!(c.title.as_deref(), Some("Slow build"));
+        assert_eq!(c.model.as_deref(), Some("claude-sonnet-4.5"));
         let got: Vec<(Source, &str)> = c
             .items
             .iter()

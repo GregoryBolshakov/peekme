@@ -315,7 +315,7 @@ pub fn explain(server: &AppServer, req: Request, tx: impl Fn(Progress)) {
 
 fn run(server: &AppServer, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
     let (conv, hit) = find_conversation(server, &req);
-    let built = context::build(
+    let mut built = context::build(
         Agent::Codex,
         &req.cwd,
         conv.as_ref(),
@@ -323,20 +323,37 @@ fn run(server: &AppServer, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
         &req.screen,
         req.nested.as_ref(),
     );
-    let model = server.model();
-    let developer = format!(
-        "You are \"peek\", an explainer embedded in a terminal. The user highlighted a fragment of text \
+    let asking = req.question.is_some();
+    // A question runs on the chat's own model (without a thread: Codex's
+    // configured default).
+    let model = match &req.question {
+        Some(_) => std::env::var("PEEKME_CODEX_ASK_MODEL")
+            .ok()
+            .filter(|m| !m.trim().is_empty())
+            .or_else(|| conv.as_ref().and_then(|c| c.model.clone())),
+        None => server.model(),
+    };
+    if let Some(q) = &req.question {
+        context::with_question(&mut built, &req.screen, q);
+    }
+    let developer = if asking {
+        context::ask_system(Agent::Codex)
+    } else {
+        format!(
+            "You are \"peek\", an explainer embedded in a terminal. The user highlighted a fragment of text \
          (marked {open}like this{close}) and wants to understand it. Explain what the fragment means where it \
          appears: define the terms, name the specific thing it refers to when the context shows it, say what \
          any code does there, and why it matters for the user's task. At most {lines} short lines. No \
          preamble, no headings. Do not use tools, do not run commands, do not read files: answer from the \
          provided context and general knowledge only.",
-        open = context::OPEN,
-        close = context::CLOSE,
-        lines = req.max_lines
-    );
+            open = context::OPEN,
+            close = context::CLOSE,
+            lines = req.max_lines
+        )
+    };
 
     if req.deep
+        && !asking
         && !req.force
         && let Some(conv) = &conv
         && let Some((tokens, ratio)) = too_big_for_deep(conv, &built.prompt)
@@ -344,7 +361,7 @@ fn run(server: &AppServer, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
         tx(Progress::TooBig { tokens, ratio });
         return Ok(());
     }
-    let deep_thread = conv.as_ref().filter(|_| req.deep);
+    let deep_thread = conv.as_ref().filter(|_| req.deep || asking);
     let (method, mut params, source) = match deep_thread {
         Some(conv) => {
             let mut p = json!({
@@ -356,7 +373,11 @@ fn run(server: &AppServer, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
                 "approvalPolicy": "never",
                 "developerInstructions": developer,
             });
-            if let Some(turn) = hit.and_then(|h| conv.items[h.item].turn.clone()) {
+            // A question may be about anything in the chat: the whole thread.
+            if let Some(turn) = hit
+                .and_then(|h| conv.items[h.item].turn.clone())
+                .filter(|_| !asking)
+            {
                 p["lastTurnId"] = json!(turn);
             }
             ("thread/fork", p, "full conversation")
@@ -408,7 +429,11 @@ fn run(server: &AppServer, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
     let result = (|| -> Result<()> {
         server.request(
             "turn/start",
-            json!({"threadId": thread, "input": [{"type": "text", "text": built.prompt}], "effort": "low"}),
+            if asking {
+                json!({"threadId": thread, "input": [{"type": "text", "text": built.prompt}]})
+            } else {
+                json!({"threadId": thread, "input": [{"type": "text", "text": built.prompt}], "effort": "low"})
+            },
         )?;
         loop {
             let msg = events
@@ -523,7 +548,43 @@ fn fetch_conversation(server: &AppServer, thread: &Value) -> Option<Conversation
         }
     }
     items.reverse();
-    Some(Conversation { id, title, items })
+    Some(Conversation {
+        id,
+        title,
+        model: thread_model(thread),
+        items,
+    })
+}
+
+/// The model a thread runs on: the server says so for a loaded thread,
+/// otherwise its rollout file does (`session_meta`, then each `turn_context`
+/// after a `/model`).
+fn thread_model(thread: &Value) -> Option<String> {
+    if let Some(m) = thread.get("model").and_then(Value::as_str) {
+        return Some(m.to_string());
+    }
+    let text = std::fs::read_to_string(thread.get("path")?.as_str()?).ok()?;
+    rollout_model(&text)
+}
+
+fn rollout_model(rollout: &str) -> Option<String> {
+    rollout
+        .lines()
+        .rev()
+        .filter(|l| l.contains("\"model\""))
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| {
+            matches!(
+                v.get("type").and_then(Value::as_str),
+                Some("session_meta" | "turn_context")
+            )
+        })
+        .filter_map(|v| {
+            v.pointer("/payload/model")
+                .and_then(Value::as_str)
+                .map(String::from)
+        })
+        .next()
 }
 
 fn conv_item(entry: &Value) -> Option<ConvItem> {
@@ -583,6 +644,20 @@ mod tests {
         let (tokens, ratio) = too_big_for_deep(&big, &"p".repeat(4_000)).unwrap();
         assert_eq!(tokens, 133_000);
         assert_eq!(ratio, 14);
+    }
+
+    #[test]
+    fn the_thread_model_is_the_last_one_in_the_rollout() {
+        let rollout = r#"{"type":"session_meta","payload":{"id":"t","model":"gpt-6.1-sol"}}
+{"type":"response_item","payload":{"type":"message","content":"the \"model\" said"}}
+{"type":"turn_context","payload":{"model":"gpt-6-luna","effort":"high"}}
+"#;
+        assert_eq!(rollout_model(rollout).as_deref(), Some("gpt-6-luna"));
+        assert_eq!(rollout_model("{}"), None);
+        assert_eq!(
+            thread_model(&json!({"model": "gpt-6.1-sol", "path": "/nonexistent"})).as_deref(),
+            Some("gpt-6.1-sol")
+        );
     }
 
     #[test]

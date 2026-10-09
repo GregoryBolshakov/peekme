@@ -67,11 +67,19 @@ pub fn load(path: &Path) -> Option<Conversation> {
     let text = std::fs::read_to_string(path).ok()?;
     let id = path.file_stem()?.to_string_lossy().into_owned();
     let mut conv = parse(&id, &text);
-    conv.title = std::fs::read_to_string(path.with_extension("json"))
+    let meta = std::fs::read_to_string(path.with_extension("json"))
         .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v.get("title").and_then(Value::as_str).map(String::from))
-        .filter(|t| !t.is_empty());
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let field = |p: &str| {
+        meta.as_ref()
+            .and_then(|v| v.pointer(p))
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+            .map(String::from)
+    };
+    conv.title = field("/title");
+    // Set once the first answer came, `auto` unless a model was picked.
+    conv.model = field("/session_state/rts_model_state/model_info/model_id");
     Some(conv)
 }
 
@@ -81,6 +89,7 @@ pub fn parse(id: &str, jsonl: &str) -> Conversation {
     let mut conv = Conversation {
         id: id.to_string(),
         title: None,
+        model: None,
         items: Vec::new(),
     };
     let mut calls: HashMap<String, String> = HashMap::new();
@@ -241,6 +250,15 @@ not json
         let other = find(&root, &[7], "/work/app");
         assert!(other.is_some() && other != Some(dir.join("ccc.jsonl")));
         assert_eq!(find(&root, &[7], "/elsewhere"), None);
+        // The chat's model and title come from the metadata.
+        std::fs::write(
+            dir.join("aaa.json"),
+            r#"{"cwd":"/work/app","title":"Fix it","session_state":{"rts_model_state":{"model_info":{"model_id":"claude-haiku-4.5"}}}}"#,
+        )
+        .unwrap();
+        let conv = load(&dir.join("aaa.jsonl")).unwrap();
+        assert_eq!(conv.model.as_deref(), Some("claude-haiku-4.5"));
+        assert_eq!(conv.title.as_deref(), Some("Fix it"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

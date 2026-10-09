@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Ask a question about the selection: Alt+Shift+P (Option+Shift+P on a Mac) opens the box empty,
+  you type the question and press Enter. The answer comes from the model your chat runs on, with
+  the whole conversation. Set `PEEKME_CLAUDE_ASK_MODEL`, `PEEKME_CODEX_ASK_MODEL`,
+  `PEEKME_COPILOT_ASK_MODEL` or `PEEKME_KIRO_ASK_MODEL` for another model. With a box open,
+  Alt+Shift+P asks about the text that box explains.
 - Kiro CLI support. `peekme install` now also sets up `kiro-cli`, and a setup from an older
   peekme gets it the next time peekme starts. Everything works as in the other agents: select
   text, press Alt+P (Option+P on a Mac), peek inside a peek, click underlined text for the saved

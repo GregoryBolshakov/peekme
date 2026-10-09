@@ -279,6 +279,12 @@ impl Slot {
 /// Everything the explainer is told, and where it came from; with the
 /// compact prompt's size too when the whole conversation was asked for.
 pub fn prompt(req: &Request) -> (context::Built, Option<usize>) {
+    prompt_and_model(req).0
+}
+
+/// The prompt, and for a typed question the model to answer it:
+/// `PEEKME_KIRO_ASK_MODEL`, else the chat's own model, else Auto.
+fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<String>) {
     let pids = req
         .agent_pid
         .map(crate::launch::process_tree)
@@ -287,6 +293,32 @@ pub fn prompt(req: &Request) -> (context::Built, Option<usize>) {
         .and_then(|c| transcript::find(&c, &pids, &req.cwd))
         .and_then(|p| transcript::load(&p));
     let hit = conv.as_ref().and_then(|c| context::find(c, &req.screen));
+    if let Some(q) = &req.question {
+        let mut built = match &conv {
+            Some(c) if req.nested.is_none() => {
+                context::build_deep(Agent::Kiro, &req.cwd, c, hit, &req.screen)
+            }
+            _ => context::build(
+                Agent::Kiro,
+                &req.cwd,
+                conv.as_ref(),
+                hit,
+                &req.screen,
+                req.nested.as_ref(),
+            ),
+        };
+        context::with_question(&mut built, &req.screen, q);
+        built.prompt = format!("{}\n\n{}", context::ask_system(Agent::Kiro), built.prompt);
+        built.prompt.push_str(&format!(
+            "Keep the {OPEN}{CLOSE} marks out of the answer.\n"
+        ));
+        let model = std::env::var("PEEKME_KIRO_ASK_MODEL")
+            .ok()
+            .filter(|m| !m.trim().is_empty())
+            .or_else(|| conv.and_then(|c| c.model))
+            .unwrap_or_else(|| "auto".into());
+        return ((built, None), Some(model));
+    }
     let compact = context::build(
         Agent::Kiro,
         &req.cwd,
@@ -307,7 +339,7 @@ pub fn prompt(req: &Request) -> (context::Built, Option<usize>) {
         "Answer in at most {} short lines; keep the {OPEN}{CLOSE} marks out of the answer.\n",
         req.max_lines
     ));
-    (built, compact_len)
+    ((built, compact_len), None)
 }
 
 pub fn explain(slot: &Slot, req: Request, tx: impl Fn(Progress)) {
@@ -317,7 +349,7 @@ pub fn explain(slot: &Slot, req: Request, tx: impl Fn(Progress)) {
 }
 
 fn run(slot: &Slot, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
-    let (built, compact_len) = prompt(&req);
+    let ((built, compact_len), ask_model) = prompt_and_model(&req);
     if let Some(compact) = compact_len
         && !req.force
     {
@@ -338,6 +370,9 @@ fn run(slot: &Slot, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
         );
     }
     let server = slot.get()?;
+    if let Some(m) = &ask_model {
+        return ask(&server, &built, Some(m), tx).map_err(|e| anyhow!(e.message));
+    }
     match ask(&server, &built, None, tx) {
         // The default model is not on every plan: fall back to Kiro's Auto.
         Err(e) if !model().1 && !e.started && e.message.contains("is not available") => {

@@ -20,7 +20,9 @@ Option as Meta or on Linux) and SGR mouse reports for a drag.
 Checks per case: the drag reaches the agent; the shortcut opens a box on the
 dragged text and never reaches the agent; typing with the box open reaches the
 agent; a drag over a word in the box and the shortcut open a box inside it,
-and Esc closes only that one; Esc closes it and the screen is as before; with
+and Esc closes only that one; Esc closes it and the screen is as before; the
+ask shortcut (Option+Shift+P or Alt+Shift+P) opens a box for a typed question,
+the question stays out of the agent and Enter answers it; with
 nothing selected, `π` is typed into the agent. The explainer is canned (PEEKME_FAKE_EXPLAINER), so no
 model is called.
 
@@ -42,6 +44,11 @@ PROFILES = {
     # What the terminal sends for the shortcut.
     "mac-default": "π".encode(),      # Terminal, iTerm2, Ghostty... with Option not set as Meta
     "meta": b"\x1bp",                 # Option as Meta / Esc+, and Linux terminals' Alt
+}
+# The ask shortcut (Option+Shift+P / Alt+Shift+P): type a question first.
+ASK = {
+    "mac-default": "∏".encode(),
+    "meta": b"\x1bP",
 }
 # Drag over "alpha bravo" on the agent's first text row (1-based cells).
 DRAG = b"\x1b[<0;3;3M\x1b[<32;8;3M\x1b[<32;13;3M\x1b[<0;13;3m"
@@ -341,6 +348,28 @@ def run_case(env, case, out):
         time.sleep(0.6)
         after = t.screen()
         check(after[:ROWS // 2] == before[:ROWS // 2], "screen not restored after Esc")
+        # 4b. The ask shortcut on a fresh drag: a box that takes a typed
+        # question (keys stay out of the agent), Enter answers it.
+        n_in = len(agent_log("input"))
+        t.send(DRAG)
+        wait(lambda: len(agent_log("selected")) >= 2, 4)
+        time.sleep(0.3)
+        t.send(ASK[case["profile"]])
+        asked = wait(lambda: [e for e in events("open") if e.get("ask")], 4)
+        if check(asked, "the ask shortcut opened no question box"):
+            check(asked[-1].get("found") and asked[-1].get("selection") == SELECTED,
+                  f"question box on the wrong selection: {asked[-1].get('selection')!r}")
+            t.send("why π".encode())
+            time.sleep(0.3)
+            t.send(b"\r")
+            check(wait(lambda: any("Test answer to ⟦why π⟧" in l for l in t.screen())),
+                  "the answer to the typed question is not on screen")
+            typed = [e for e in agent_log("input")[n_in:]
+                     if "why" in e["raw"] or e["raw"] == "\r" or "∏" in e["raw"]]
+            check(not typed, f"the question reached the agent: {typed}")
+            t.send(b"\x1b")
+            check(wait(lambda: len(events("close")) >= 2), "Esc did not close the question box")
+            time.sleep(0.6)
         # 5. A click clears the selection. Right away (users are quick, and
         # that is when a stale copy could still be taken), the shortcut must
         # not explain the old text: π is typed, Alt+P shows the hint.

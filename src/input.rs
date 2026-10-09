@@ -19,9 +19,13 @@ pub struct Token {
 pub enum Kind {
     /// The peek hotkey (Alt+P), press or repeat.
     Hotkey,
+    /// The ask hotkey (Alt+Shift+P): type a question about the selection.
+    AskHotkey,
     /// `π`, which is what Option+P types on a Mac unless the terminal sends
     /// Option as Alt. The app decides whether it is the hotkey or a letter.
     OptionP,
+    /// `∏`, Option+Shift+P on a Mac: the ask hotkey or a letter, like `π`.
+    OptionShiftP,
     /// Escape key press.
     Esc,
     PageUp,
@@ -104,6 +108,9 @@ pub type KeyId = (u8, u32);
 /// keyboard apart from others.
 pub const MAC_OPTION_P: char = 'π';
 
+/// What Option+Shift+P types on a Mac keyboard (US and most Latin layouts).
+pub const MAC_OPTION_SHIFT_P: char = '∏';
+
 /// Splits a chunk into tokens. An incomplete trailing escape sequence is
 /// returned in `carry` so the caller can prepend it to the next read.
 pub fn tokenize(input: &[u8], carry: &mut Vec<u8>, in_paste: &mut bool) -> Vec<Token> {
@@ -129,11 +136,23 @@ pub fn tokenize(input: &[u8], carry: &mut Vec<u8>, in_paste: &mut bool) -> Vec<T
             });
             return;
         }
-        // Option+P arrives as the character itself, possibly inside a run of text.
-        let mut buf = [0u8; 4];
-        let pi = MAC_OPTION_P.encode_utf8(&mut buf).as_bytes();
+        // Option+P (and +Shift) arrive as the character itself, possibly
+        // inside a run of text.
+        let (mut b1, mut b2) = ([0u8; 4], [0u8; 4]);
+        let marks = [
+            (MAC_OPTION_P.encode_utf8(&mut b1).as_bytes(), Kind::OptionP),
+            (
+                MAC_OPTION_SHIFT_P.encode_utf8(&mut b2).as_bytes(),
+                Kind::OptionShiftP,
+            ),
+        ];
         let mut rest = text;
-        while let Some(at) = rest.windows(pi.len()).position(|w| w == pi) {
+        while let Some((at, (mark, kind))) = (0..rest.len()).find_map(|i| {
+            marks
+                .iter()
+                .find(|(m, _)| rest[i..].starts_with(m))
+                .map(|m| (i, *m))
+        }) {
             if at > 0 {
                 out.push(Token {
                     bytes: rest[..at].to_vec(),
@@ -141,10 +160,10 @@ pub fn tokenize(input: &[u8], carry: &mut Vec<u8>, in_paste: &mut bool) -> Vec<T
                 });
             }
             out.push(Token {
-                bytes: pi.to_vec(),
-                kind: Kind::OptionP,
+                bytes: mark.to_vec(),
+                kind,
             });
-            rest = &rest[at + pi.len()..];
+            rest = &rest[at + mark.len()..];
         }
         if !rest.is_empty() {
             out.push(Token {
@@ -187,6 +206,15 @@ pub fn tokenize(input: &[u8], carry: &mut Vec<u8>, in_paste: &mut bool) -> Vec<T
                         kind: if *in_paste { Kind::Key } else { Kind::Esc },
                     });
                     i += 1;
+                } else if &data[i..] == b"\x1bP" && !*in_paste {
+                    // Alt+Shift+P. The same bytes start a DCS string, but
+                    // terminals send a whole reply in one write, never the
+                    // bare introducer.
+                    out.push(Token {
+                        bytes: b"\x1bP".to_vec(),
+                        kind: Kind::AskHotkey,
+                    });
+                    i += 2;
                 } else {
                     carry.extend_from_slice(&data[i..]);
                     i = data.len();
@@ -349,9 +377,17 @@ fn classify(bytes: &[u8]) -> Kind {
         // is the composed character, some terminals with Option reported as Alt.
         let is_mac_option_p =
             k.id == (b'u', MAC_OPTION_P as u32) && k.mods & !(SHIFT_LOCKS | ALT) == 0;
+        let is_mac_option_shift_p =
+            k.id == (b'u', MAC_OPTION_SHIFT_P as u32) && k.mods & !(SHIFT_LOCKS | ALT) == 0;
+        // Alt+Shift+P: kitty reports `p` with Shift, modifyOtherKeys the `P`.
+        let is_ask = k.id.0 == b'u'
+            && ((is_p && k.mods == ALT | SHIFT_LOCKS)
+                || (k.id.1 == 80 && (k.mods == ALT || k.mods == ALT | SHIFT_LOCKS)));
         return match (k.id, k.mods) {
             _ if is_p && k.id.0 == b'u' && k.mods == ALT => Kind::Hotkey,
+            _ if is_ask => Kind::AskHotkey,
             _ if is_mac_option_p => Kind::OptionP,
+            _ if is_mac_option_shift_p => Kind::OptionShiftP,
             ((b'u', 27), 0) => Kind::Esc,
             ((b'~', 5), 0) => Kind::PageUp,
             ((b'~', 6), 0) => Kind::PageDown,
@@ -428,6 +464,21 @@ mod tests {
     #[test]
     fn legacy_and_kitty_hotkey() {
         assert_eq!(kinds(b"\x1bp"), vec![Kind::Hotkey]);
+        // Alt+Shift+P in each encoding, and Option+Shift+P on a Mac.
+        assert_eq!(kinds(b"\x1bP"), vec![Kind::AskHotkey]);
+        assert_eq!(kinds(b"\x1b[112;4u"), vec![Kind::AskHotkey]);
+        assert_eq!(kinds(b"\x1b[27;4;80~"), vec![Kind::AskHotkey]);
+        assert_eq!(kinds(b"\x1b[27;3;80~"), vec![Kind::AskHotkey]);
+        assert_eq!(
+            kinds("a∏b".as_bytes()),
+            vec![Kind::Key, Kind::OptionShiftP, Kind::Key]
+        );
+        assert_eq!(
+            kinds("∏π".as_bytes()),
+            vec![Kind::OptionShiftP, Kind::OptionP]
+        );
+        // A DCS reply from the terminal is not the key.
+        assert_eq!(kinds(b"\x1bP1$r0m\x1b\\"), vec![Kind::Passive]);
         assert_eq!(kinds(b"\x1b[112;3u"), vec![Kind::Hotkey]);
         assert_eq!(kinds(b"\x1b[112;3:1u"), vec![Kind::Hotkey]);
         assert_eq!(kinds(b"\x1b[112;3:3u"), vec![Kind::Release]);

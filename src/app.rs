@@ -165,6 +165,8 @@ struct PendingOpen {
 struct PendingHotkey {
     since: Instant,
     option_p: Option<Vec<u8>>,
+    /// Alt+Shift+P: the box asks for a question first.
+    ask: bool,
 }
 
 const HOTKEY_AFTER_DRAG: Duration = Duration::from_secs(1);
@@ -410,6 +412,7 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         last_mark_click: None,
         focus_in_at: None,
         clicked: None,
+        ask_next: false,
         hover: None,
         pointer_on: false,
         child_pointer: None,
@@ -583,6 +586,8 @@ struct App {
     focus_in_at: Option<Instant>,
     /// A mark the user clicked, for the next open instead of the selection.
     clicked: Option<MarkHit>,
+    /// The next box asks for a question instead of explaining (Alt+Shift+P).
+    ask_next: bool,
     /// Cells of the mark under the pointer, drawn with a solid underline.
     hover: Option<Vec<(usize, usize)>>,
     /// peekme set the pointer shape (OSC 22) to a hand.
@@ -918,10 +923,15 @@ impl App {
                 b"\x1b[201~" => pasting = false,
                 _ => {}
             }
+            // While a question is typed, every key is part of it.
+            if self.asking() && self.ask_key(&t, pasting, out)? {
+                continue;
+            }
             if t.kind == Kind::Key && !pasting && types_greek(&t.bytes) {
                 self.greek_typed = true;
             }
-            if t.kind == Kind::OptionP {
+            if matches!(t.kind, Kind::OptionP | Kind::OptionShiftP) {
+                let ask = t.kind == Kind::OptionShiftP;
                 let mut hotkey = self.option_p_is_hotkey();
                 if !hotkey && !self.greek_typed && self.hotkey_follows_drag() {
                     self.flush_forward(&mut forward, child)?;
@@ -932,6 +942,7 @@ impl App {
                     self.pending_hotkey = Some(PendingHotkey {
                         since: Instant::now(),
                         option_p: Some(t.bytes),
+                        ask,
                     });
                     continue;
                 }
@@ -954,7 +965,11 @@ impl App {
                         "mouse": self.shadow.mouse_mode(),
                     }),
                 );
-                t.kind = if hotkey { Kind::Hotkey } else { Kind::Key };
+                t.kind = match (hotkey, ask) {
+                    (true, false) => Kind::Hotkey,
+                    (true, true) => Kind::AskHotkey,
+                    (false, _) => Kind::Key,
+                };
                 if !hotkey {
                     self.selection.settle();
                 }
@@ -992,7 +1007,8 @@ impl App {
                 continue;
             }
             match (t.kind, self.open.is_some()) {
-                (Kind::Hotkey, _) => {
+                (Kind::Hotkey | Kind::AskHotkey, _) => {
+                    let ask = t.kind == Kind::AskHotkey;
                     self.consumed.consume(&t);
                     self.clicked = None;
                     if self.open.is_none() && self.hotkey_follows_drag() && !self.has_selection() {
@@ -1000,6 +1016,7 @@ impl App {
                         self.pending_hotkey = Some(PendingHotkey {
                             since: Instant::now(),
                             option_p: None,
+                            ask,
                         });
                         continue;
                     }
@@ -1014,12 +1031,17 @@ impl App {
                         if self.open.as_ref().is_some_and(|o| !o.nested.is_empty()) {
                             continue;
                         }
+                        // Alt+Shift+P in a box: a question about its selection.
+                        if ask && self.ask_in_box(out)? {
+                            continue;
+                        }
                         // Alt+P again on the same selection: explain with the whole conversation.
                         if self.escalate(out)? {
                             continue;
                         }
                         self.close(out, false)?;
                     }
+                    self.ask_next = ask;
                     self.request_open(out)?;
                 }
                 (Kind::Esc, true) => {
@@ -1366,6 +1388,7 @@ impl App {
                 );
             }
             self.clicked = None;
+            self.ask_next = pending.ask;
             self.request_open(out)?;
         } else if timed_out {
             let pending = self.pending_hotkey.take().unwrap();
@@ -1383,6 +1406,7 @@ impl App {
                     }),
                 );
             } else {
+                self.ask_next = pending.ask;
                 self.request_open(out)?;
             }
         }
@@ -1553,6 +1577,7 @@ impl App {
         let panic_after_open = std::env::var_os("PEEKME_TEST_PANIC").is_some();
         self.next_id += 1;
         let id = self.next_id;
+        let ask = std::mem::take(&mut self.ask_next);
 
         let (selection, located) = match self.clicked.take() {
             Some(hit) => {
@@ -1568,6 +1593,7 @@ impl App {
         let mut strip = None;
         let mut mark = None;
         let mut saved = None;
+        let mut replace = None;
         let (mut peek, lay) = match (&selection, located) {
             (Some(sel), Some(loc)) => {
                 // Keep the child's live area (input line, status) out of the box's
@@ -1590,7 +1616,12 @@ impl App {
                     self.shadow.history_size(),
                     self.shadow.alt_screen(),
                 );
-                if let Some(id) = self.marks.find(sel)
+                if ask {
+                    // Nothing is sent before the question is typed. A saved
+                    // answer for these words gets the new one.
+                    peek.input = Some(String::new());
+                    replace = self.marks.find(sel);
+                } else if let Some(id) = self.marks.find(sel)
                     && let Some(a) = self.marks.answer(id)
                 {
                     // Asked before: show that answer, no new call, and mark this copy too.
@@ -1606,9 +1637,15 @@ impl App {
                     lay = overlay::shrink(&lay, peek.fitted_height(snap.cols).max(3));
                 } else {
                     let max_lines = lay.box_height.saturating_sub(2).clamp(3, 12);
-                    if let Some(e) =
-                        self.start_explain(id, loc.screen.clone(), max_lines, false, false, None)
-                    {
+                    if let Some(e) = self.start_explain(
+                        id,
+                        loc.screen.clone(),
+                        max_lines,
+                        false,
+                        false,
+                        None,
+                        None,
+                    ) {
                         peek.status = Status::Error(e);
                     }
                 }
@@ -1665,6 +1702,7 @@ impl App {
                 "hidden": hidden,
                 "withheld": withheld,
                 "saved": saved.is_some(),
+                "ask": ask,
                 "mark": mark.as_ref().map(|(_, c)| c.len()),
                 "alt": self.shadow.alt_screen(),
                 "box_top": lay.box_top,
@@ -1679,7 +1717,7 @@ impl App {
             selection: remembered,
             deep: false,
             mark,
-            answer: saved,
+            answer: saved.or(replace),
             history: self.shadow.history_size(),
             nested: Vec::new(),
             base_height: 0,
@@ -1713,6 +1751,7 @@ impl App {
 
     /// Start an explanation in the background; returns an error message if the
     /// explainer isn't available.
+    #[allow(clippy::too_many_arguments)]
     fn start_explain(
         &self,
         id: u64,
@@ -1721,6 +1760,7 @@ impl App {
         deep: bool,
         force: bool,
         nested: Option<crate::context::Nested>,
+        question: Option<String>,
     ) -> Option<String> {
         let Some(explainer) = self.explainer.clone() else {
             return Some("explainer disabled".into());
@@ -1733,6 +1773,7 @@ impl App {
             force,
             agent_pid: self.agent_pid(),
             nested,
+            question,
         };
         let tx = self.tx.clone();
         std::thread::spawn(move || {
@@ -1769,7 +1810,7 @@ impl App {
         crate::event("escalate", serde_json::json!({"selection": sel}));
         self.next_id += 1;
         let id = self.next_id;
-        let err = self.start_explain(id, screen, max_lines, true, force, None);
+        let err = self.start_explain(id, screen, max_lines, true, force, None, None);
         let open = self.open.as_mut().unwrap();
         open.id = id;
         open.deep = true;
@@ -1784,6 +1825,149 @@ impl App {
         let frame = self.box_bytes(false);
         out.write_all(frame.as_bytes())?;
         out.flush()?;
+        Ok(true)
+    }
+
+    /// A question is being typed in the box.
+    fn asking(&self) -> bool {
+        self.open.as_ref().is_some_and(|o| o.peek.input.is_some())
+    }
+
+    /// A key while the question is typed: text goes into it, Backspace,
+    /// Ctrl+U and Ctrl+W edit it, Enter sends it. Esc, the mouse and the
+    /// terminal's replies are handled as usual (returns false).
+    fn ask_key(&mut self, t: &Token, pasting: bool, out: &mut dyn Write) -> Result<bool> {
+        if matches!(
+            t.kind,
+            Kind::Esc
+                | Kind::Mouse(_)
+                | Kind::Passive
+                | Kind::Release
+                | Kind::PageUp
+                | Kind::PageDown
+        ) {
+            return Ok(false);
+        }
+        self.consumed.consume(t);
+        let Some(input) = self.open.as_mut().and_then(|o| o.peek.input.as_mut()) else {
+            return Ok(false);
+        };
+        let mut submit = false;
+        match t.bytes.as_slice() {
+            b"\x1b[200~" | b"\x1b[201~" => {}
+            _ if pasting => {
+                let text = String::from_utf8_lossy(&t.bytes);
+                input.extend(text.chars().map(|c| if c.is_control() { ' ' } else { c }));
+            }
+            b"\r" | b"\n" => submit = true,
+            b"\x7f" | b"\x08" => {
+                input.pop();
+            }
+            // Ctrl+U clears, Ctrl+W takes the last word.
+            b"\x15" => input.clear(),
+            b"\x17" => {
+                let keep = input.trim_end().rfind(' ').map_or(0, |i| i + 1);
+                input.truncate(keep);
+            }
+            bytes if bytes.first() == Some(&0x1b) => {
+                // Keys in the kitty or modifyOtherKeys form, once the child asked for them.
+                if let Some(k) = input::parse_key(bytes)
+                    && k.id.0 == b'u'
+                    && k.event != 3
+                    && k.mods & !1 == 0
+                {
+                    match k.id.1 {
+                        13 => submit = true,
+                        8 | 127 => {
+                            input.pop();
+                        }
+                        c => {
+                            if let Some(ch) = char::from_u32(c).filter(|ch| !ch.is_control()) {
+                                if k.mods & 1 == 1 {
+                                    input.extend(ch.to_uppercase());
+                                } else {
+                                    input.push(ch);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            bytes => {
+                let text = String::from_utf8_lossy(bytes);
+                input.extend(text.chars().filter(|c| !c.is_control()));
+            }
+        }
+        if submit {
+            self.submit_question(out)?;
+        } else {
+            self.redraw_box(out)?;
+        }
+        Ok(true)
+    }
+
+    /// Enter: answer the typed question in the box, with the chat's model.
+    fn submit_question(&mut self, out: &mut dyn Write) -> Result<()> {
+        let Some(open) = &self.open else {
+            return Ok(());
+        };
+        let question = open.peek.input.as_deref().unwrap_or("").trim().to_string();
+        let Some((sel, screen)) = open.selection.clone() else {
+            return Ok(());
+        };
+        if question.is_empty() {
+            return Ok(());
+        }
+        let max_lines = open.lay.box_height.saturating_sub(2).max(3);
+        crate::event(
+            "ask",
+            serde_json::json!({"selection": sel, "question": question}),
+        );
+        self.next_id += 1;
+        let id = self.next_id;
+        let err = self.start_explain(
+            id,
+            screen,
+            max_lines,
+            false,
+            true,
+            None,
+            Some(question.clone()),
+        );
+        let open = self.open.as_mut().unwrap();
+        open.id = id;
+        open.deep = true;
+        open.peek.input = None;
+        open.peek.question = Some(question);
+        open.peek.text.clear();
+        open.peek.scroll = 0;
+        open.peek.deep_available = false;
+        open.peek.ask_available = false;
+        open.peek.confirm_deep = false;
+        open.peek.status = match err {
+            Some(e) => Status::Error(e),
+            None => Status::Thinking,
+        };
+        self.redraw_box(out)
+    }
+
+    /// Alt+Shift+P with a box open: ask about the words that box explains,
+    /// in a new box of full size (the old one may have shrunk to its answer).
+    /// Returns false when the box explains no selection.
+    fn ask_in_box(&mut self, out: &mut dyn Write) -> Result<bool> {
+        let Some(open) = &self.open else {
+            return Ok(false);
+        };
+        let (Some((sel, _)), Some((_, cells))) = (&open.selection, &open.mark) else {
+            return Ok(false);
+        };
+        self.clicked = Some(MarkHit {
+            text: sel.clone(),
+            cells: cells.clone(),
+        });
+        self.close(out, false)?;
+        self.ask_next = true;
+        self.request_open(out)?;
         Ok(true)
     }
 
@@ -1855,11 +2039,21 @@ impl App {
             }
             Progress::Done => {
                 open.peek.status = Status::Done;
-                open.peek.deep_available = !open.deep;
+                open.peek.deep_available = !open.deep && open.peek.question.is_none();
+                open.peek.ask_available = open.selection.is_some();
                 if let (Some((sel, _)), Some((place, cells))) = (&open.selection, &open.mark)
                     && !open.peek.text.trim().is_empty()
                 {
-                    let answer = overlay::sanitize(&open.peek.text);
+                    // A typed question is saved with its answer, so a click
+                    // on the words shows both.
+                    let answer = match &open.peek.question {
+                        Some(q) => format!(
+                            "› {}\n\n{}",
+                            overlay::sanitize(q),
+                            overlay::sanitize(&open.peek.text)
+                        ),
+                        None => overlay::sanitize(&open.peek.text),
+                    };
                     let id = match open.answer {
                         // Explained again with the whole chat.
                         Some(id) => {
@@ -2798,6 +2992,7 @@ mod tests {
             last_mark_click: None,
             focus_in_at: None,
             clicked: None,
+            ask_next: false,
             hover: None,
             pointer_on: false,
             child_pointer: None,
@@ -3484,5 +3679,78 @@ mod tests {
             Status::Message(m) => assert!(m.contains("/fullscreen"), "{m}"),
             other => panic!("not a message: {other:?}"),
         }
+    }
+
+    /// Alt+Shift+P: the box asks for a question first; Enter sends it with
+    /// the selection, and the answer is saved with the question.
+    #[test]
+    fn alt_shift_p_asks_a_typed_question() {
+        let mut app = test_app(40, 24);
+        let (tx, rx) = mpsc::channel();
+        app.tx = tx;
+        app.explainer = Some(Explainer::Fake);
+        app.selection = SelectionSource::fixed("true colour");
+        let (mut out, mut child) = (Vec::new(), Vec::new());
+        app.on_output(SCREEN, &mut out, &mut child).unwrap();
+        app.on_input(b"\x1bP", &mut out, &mut child).unwrap();
+        let open = app.open.as_ref().expect("a box");
+        assert_eq!(open.peek.input.as_deref(), Some(""), "waits for a question");
+        assert!(rx.try_recv().is_err(), "nothing sent before the question");
+        // Typing (π too), Backspace, a paste, Ctrl+W: all in the box, none to the child.
+        app.on_input(b"why soo", &mut out, &mut child).unwrap();
+        app.on_input(b"\x7f", &mut out, &mut child).unwrap();
+        app.on_input(b" \xcf\x80 xx", &mut out, &mut child).unwrap();
+        app.on_input(b"\x17\x1b[200~bright\r\n\x1b[201~", &mut out, &mut child)
+            .unwrap();
+        assert!(child.is_empty(), "keys reached the child: {child:?}");
+        let typed = app.open.as_ref().unwrap().peek.input.clone();
+        assert_eq!(typed.as_deref(), Some("why so π bright  "));
+        app.on_input(b"\r", &mut out, &mut child).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.peek.input, None);
+        assert_eq!(open.peek.question.as_deref(), Some("why so π bright"));
+        loop {
+            if let Msg::Peek(id, p) = rx.recv_timeout(Duration::from_secs(5)).expect("progress") {
+                let done = matches!(p, Progress::Done);
+                app.on_progress(id, p, &mut out).unwrap();
+                if done {
+                    break;
+                }
+            }
+        }
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(
+            open.peek.text,
+            "Test answer to ⟦why so π bright⟧ about ⟦true colour⟧."
+        );
+        let saved = app
+            .marks
+            .find("true colour")
+            .and_then(|id| app.marks.answer(id));
+        assert!(
+            saved.is_some_and(|a| a.answer.starts_with("› why so π bright\n\n")),
+            "the question is saved with the answer"
+        );
+        assert!(child.is_empty());
+    }
+
+    /// Alt+Shift+P in a box that explained something: a new box asks about
+    /// the same words; Esc while typing closes it and nothing is sent.
+    #[test]
+    fn alt_shift_p_in_a_box_asks_about_its_words() {
+        let mut app = app_with_an_answer("short", false);
+        let (mut out, mut child) = (Vec::new(), Vec::new());
+        app.on_input(b"\x1bP", &mut out, &mut child).unwrap();
+        let open = app.open.as_ref().expect("a box");
+        assert_eq!(open.peek.input.as_deref(), Some(""));
+        assert_eq!(open.peek.title, "true colour");
+        assert!(
+            open.lay.box_height > 3,
+            "full size again, not the shrunk box"
+        );
+        app.on_input(b"x", &mut out, &mut child).unwrap();
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+        assert!(child.is_empty());
     }
 }

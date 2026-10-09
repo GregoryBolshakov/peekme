@@ -10,7 +10,9 @@ const HELP: &str = "\
 peekme {version}
 Select text in Claude Code, Codex CLI, GitHub Copilot CLI or Kiro CLI output
 with the mouse, press Alt+P (Option+P on a Mac), and an explanation from a
-smaller model opens right next to it. Esc closes it.
+smaller model opens right next to it. Esc closes it. Alt+Shift+P (Option+Shift+P)
+asks first: type a question about the selection, and the chat's own model
+answers it with the whole conversation.
 
 USAGE:
     peekme                     run the first installed of claude, codex, copilot, kiro-cli
@@ -36,6 +38,9 @@ ENVIRONMENT:
     PEEKME_COPILOT_BIN   copilot binary used for the explainer (default: the one on PATH)
     PEEKME_KIRO_MODEL    model for Kiro explanations (default: claude-haiku-4.5)
     PEEKME_KIRO_BIN      kiro-cli binary used for the explainer (default: the one on PATH)
+    PEEKME_CLAUDE_ASK_MODEL, PEEKME_CODEX_ASK_MODEL, PEEKME_COPILOT_ASK_MODEL,
+    PEEKME_KIRO_ASK_MODEL
+                         model for typed questions (default: the chat's own model)
 ";
 
 fn main() {

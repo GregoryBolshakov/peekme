@@ -80,6 +80,7 @@ pub fn parse(id: &str, jsonl: &str) -> Conversation {
     let mut conv = Conversation {
         id: id.to_string(),
         title: None,
+        model: None,
         items: Vec::new(),
     };
     let mut calls: HashMap<String, String> = HashMap::new();
@@ -141,6 +142,12 @@ pub fn parse(id: &str, jsonl: &str) -> Conversation {
                 }
             }
             Some("assistant") => {
+                // The chat's model; `<synthetic>` marks messages Claude Code wrote itself.
+                if let Some(m) = v.pointer("/message/model").and_then(Value::as_str)
+                    && !m.starts_with('<')
+                {
+                    conv.model = Some(m.to_string());
+                }
                 let Some(Value::Array(blocks)) = v.pointer("/message/content") else {
                     continue;
                 };
@@ -242,7 +249,8 @@ mod tests {
 {"type":"user","promptId":"p1","message":{"role":"user","content":[{"tool_use_id":"tu1","type":"tool_result","content":"Finished in 93s"}]}}
 {"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"subagent chatter"}]}}
 {"type":"user","isMeta":true,"message":{"role":"user","content":"meta"}}
-{"type":"assistant","message":{"content":[{"type":"text","text":"The `syn` crate dominates."}]}}
+{"type":"assistant","message":{"model":"claude-opus-4-1-20250805","content":[{"type":"text","text":"The `syn` crate dominates."}]}}
+{"type":"assistant","message":{"model":"<synthetic>","content":[]}}
 {"type":"ai-title","aiTitle":"Slow build"}
 not json
 "#;
@@ -251,6 +259,7 @@ not json
     fn parses_claude_jsonl() {
         let c = parse("s1", JSONL);
         assert_eq!(c.title.as_deref(), Some("Slow build"));
+        assert_eq!(c.model.as_deref(), Some("claude-opus-4-1-20250805"));
         let got: Vec<(Source, &str)> = c
             .items
             .iter()

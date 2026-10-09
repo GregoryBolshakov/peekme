@@ -52,6 +52,8 @@ pub struct ConvItem {
 pub struct Conversation {
     pub id: String,
     pub title: Option<String>,
+    /// The model the chat itself runs on, when the agent records it.
+    pub model: Option<String>,
     pub items: Vec<ConvItem>,
 }
 
@@ -400,6 +402,34 @@ fn ask(sel: &ScreenSel) -> String {
     )
 }
 
+/// Instructions for a question the user typed about a selection (the ask
+/// box), in place of "explain the selection".
+pub fn ask_system(agent: Agent) -> String {
+    format!(
+        "You are \"peek\", built into the user's terminal next to their {} session. The user highlighted \
+         a fragment of text (marked {OPEN}like this{CLOSE}) and typed a question about it. Answer that \
+         question directly, from the conversation, the passage and general knowledge. Be complete but \
+         brief, no preamble. Do not use tools, do not run commands, do not read files.",
+        agent.name()
+    )
+}
+
+/// Turn a built prompt into one that asks `question` about the selection: the
+/// closing "explain this" instruction is replaced, the context stays.
+pub fn with_question(built: &mut Built, sel: &ScreenSel, question: &str) {
+    let explain = ask(sel);
+    if built.prompt.ends_with(&explain) {
+        let keep = built.prompt.len() - explain.len();
+        built.prompt.truncate(keep);
+    }
+    let selected = one_line(&sel.selected(), 300);
+    built.prompt.push_str(&format!(
+        "\nThe user selected {OPEN}{selected}{CLOSE} and asks:\n<question>\n{}\n</question>\nAnswer the \
+         question about {OPEN}{selected}{CLOSE} as it is used above.\n",
+        question.trim()
+    ));
+}
+
 /// Assemble the explainer's input.
 pub fn build(
     agent: Agent,
@@ -593,6 +623,7 @@ mod tests {
         let conv = Conversation {
             id: "t".into(),
             title: None,
+            model: None,
             items: vec![
                 item("1", Source::User, "compare the apps"),
                 item("1", Source::Agent, "The Desktop app on Linux is new."),
@@ -622,6 +653,7 @@ mod tests {
         let conv = Conversation {
             id: "t".into(),
             title: None,
+            model: None,
             items: vec![item(
                 "1",
                 Source::Agent,
@@ -649,6 +681,7 @@ mod tests {
         let conv = Conversation {
             id: "t".into(),
             title: Some("Fix the build".into()),
+            model: None,
             items: vec![item("1", Source::User, "fix the build")],
         };
         assert_eq!(find(&conv, &s), None);
@@ -669,6 +702,7 @@ mod tests {
         let conv = Conversation {
             id: "t".into(),
             title: Some("design".into()),
+            model: None,
             items: vec![
                 item("1", Source::User, "first question"),
                 item("1", Source::Tool("Bash: ls".into()), &"x".repeat(5000)),
@@ -704,6 +738,7 @@ mod tests {
         let conv = Conversation {
             id: "t".into(),
             title: None,
+            model: None,
             items: vec![
                 item("1", Source::User, "q"),
                 item("1", Source::Agent, "A shadow emulator keeps a copy."),
@@ -741,6 +776,7 @@ mod tests {
         let conv = Conversation {
             id: "t".into(),
             title: Some("peekme design".into()),
+            model: None,
             items: vec![
                 item("1", Source::User, "what is a shadow emulator?"),
                 item(
