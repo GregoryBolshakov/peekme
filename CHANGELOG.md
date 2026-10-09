@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.3 (2026-10-09)
 
 - Questions inside boxes. Select words in a box and press Alt+Shift+P (Option+Shift+P on a Mac):
   a box inside opens for your question, and the answer knows the boxes around it. With boxes
