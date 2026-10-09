@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.2 (2026-10-09)
 
 - Ask a question about the selection: Alt+Shift+P (Option+Shift+P on a Mac) opens the box empty,
   you type the question and press Enter. The answer comes from the model your chat runs on, with
