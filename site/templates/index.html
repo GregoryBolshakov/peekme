@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+
+{% block head %}
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"peekme","applicationCategory":"DeveloperApplication","operatingSystem":"Linux, macOS","softwareVersion":"{{ config.extra.version }}","url":"{{ config.base_url }}","downloadUrl":"{{ config.extra.repo }}/releases/latest","codeRepository":"{{ config.extra.repo }}","license":"https://opensource.org/licenses/MIT","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"description":"{{ config.description }}"}
+</script>
+{% endblock head %}
+
+{% block content %}
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">For Claude Code, Codex CLI, GitHub Copilot CLI and Kiro CLI</p>
+    <h1>Explain any text in your coding agent's terminal</h1>
+    <p class="lead">Select words in your agent's answer and press <kbd>Alt+P</kbd>. A short explanation opens right under them. <kbd>Esc</kbd> closes it, and the screen is exactly as before.</p>
+    <div class="cta">
+      <a class="btn primary" href="#install">Install</a>
+      <a class="btn" href="{{ config.extra.repo }}">Star on GitHub</a>
+    </div>
+    <p class="small muted">Free and open source. No account and no API key: peekme uses your agent's own login. On a Mac the keys are <kbd>Option+P</kbd> and <kbd>Option+Shift+P</kbd>.</p>
+
+    <div class="demo" data-tabs>
+      <div class="tabs" role="tablist" aria-label="Agent">
+        {% for a in config.extra.agents %}<button role="tab" aria-selected="{% if loop.first %}true{% else %}false{% endif %}" data-src="{{ get_url(path='media/' ~ a.media ~ '.mp4') }}" data-poster="{{ get_url(path='media/' ~ a.media ~ '.webp') }}" data-caption='{{ a.caption | safe }}'>{{ a.name | replace(from="GitHub ", to="") }}</button>
+        {% endfor %}</div>
+      <figure class="term">
+        <div class="term-bar"><span></span><span></span><span></span></div>
+        <video autoplay muted loop playsinline preload="auto" poster="{{ get_url(path='media/claude.webp') }}" width="1028" height="599" aria-label="peekme demo">
+          <source src="{{ get_url(path='media/claude.mp4') }}" type="video/mp4">
+        </video>
+        <figcaption class="muted">{{ config.extra.agents[0].caption | safe }}</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="band">
+  <div class="wrap">
+    <h2 class="sec">What it does</h2>
+    {{ m::feature(clip="feature-peek", title="Peek: Alt+P", text=`Select text and press Alt+P. A small, fast model explains it in a few lines, under the text you selected. The other lines move down to make room, like Peek in VS Code. The model knows the conversation: select "its split panes" in an answer that recommends Kitty, and it tells you about Kitty.`) }}
+    {{ m::feature(clip="feature-ask", title="Ask, and boxes inside boxes", text=`Alt+Shift+P opens the box empty, and you type your own question, for example "what value should I set it to?". The model your chat runs on answers it, with the whole conversation. Select words inside a box and press Alt+P or Alt+Shift+P again: a new box opens inside it, under that line. You can go several levels deep.`, flip=true) }}
+    {{ m::feature(clip="feature-saved", title="Saved answers", text=`Text you asked about gets a dotted underline. Click it later and the answer opens again at once, with no new request. A second click closes it.`) }}
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2 class="sec">Same keys in four agents</h2>
+    <p class="muted center">You install peekme once. The keys and the boxes are the same in every agent, and an agent you install later gets peekme too.</p>
+    <div class="agents">
+      {% for a in config.extra.agents %}
+      <a class="agent-card" href="{{ get_url(path='@/' ~ a.page ~ '.md') }}">
+        <img src="{{ get_url(path='media/' ~ a.media ~ '.webp') }}" alt="peekme in {{ a.name }}" width="1028" height="599" loading="lazy">
+        <span class="agent-name">{{ a.name }}</span>
+        <code>{{ a.cmd }}</code>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="band">
+  <div class="wrap narrow">
+    <h2 class="sec">Already have /btw?</h2>
+    <p>Claude Code has <code>/btw</code>, Codex has <code>/side</code>, Copilot CLI has <code>/ask</code>. They are good for a question about the work. peekme is for the words in front of you. You don't type or copy the term, the answer opens right next to it, a box can open inside a box, and the answer stays on the screen as an underline. The two work well together.</p>
+    <p><a href="{{ get_url(path='@/side-questions.md') }}">peekme and the built-in side questions, compared</a></p>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap narrow">
+    <h2 class="sec">Install</h2>
+    {{ m::install() }}
+    <p>Open a new terminal and start your agent as always: <code>claude</code>, <code>codex</code>, <code>copilot</code> or <code>kiro-cli</code>. That's all. <code>peekme doctor</code> checks the setup and <code>peekme uninstall</code> removes it. <a href="{{ get_url(path='@/docs/install.md') }}">Install details</a></p>
+  </div>
+</section>
+
+<section class="band">
+  <div class="wrap facts">
+    <div>
+      <h2>Where it works</h2>
+      <p>Linux and macOS, x86_64 and ARM. Any terminal app, also inside tmux and over SSH. On Wayland through XWayland. Not on Windows yet.</p>
+    </div>
+    <div>
+      <h2>What it costs</h2>
+      <p>Nothing extra to buy. Explanations go through your agent's own login and use a little of your plan each time. Nothing starts before the first <kbd>Alt+P</kbd>.</p>
+    </div>
+    <div>
+      <h2>What it sends</h2>
+      <p>The selected words and a few KB of the conversation around them, to the same model provider your agent already uses. There is no peekme server. <a href="{{ get_url(path='@/privacy.md') }}">Privacy</a></p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap narrow">
+    <h2 class="sec">Questions</h2>
+    <details><summary>Does it change my agent?</summary><p>No. peekme starts your agent in a pseudo-terminal and passes everything through unchanged. It only draws its box over a few rows while the box is open. Run <code>command claude</code> to start plain Claude Code once (the same for the other agents), and <code>peekme uninstall</code> to remove peekme.</p></details>
+    <details><summary>Which model explains?</summary><p>A peek uses a small, fast model through your agent: Haiku in Claude Code, the model your Codex account lists as fast, Copilot's Auto, and claude-haiku-4.5 in Kiro. A typed question uses the model your chat runs on. Both can be changed, see <a href="{{ get_url(path='@/docs/settings.md') }}">Settings</a>.</p></details>
+    <details><summary>How fast is it?</summary><p>The answer starts to appear after about 1 to 2 seconds. A typed question goes to a bigger model with the whole conversation, so it takes longer.</p></details>
+    <details><summary>Do I need to change terminal settings on a Mac?</summary><p>No. Option+P works as it is, also over SSH and inside tmux. A Mac terminal types <code>π</code> for Option+P, and peekme takes it as the shortcut only when text is selected. <a href="{{ get_url(path='@/docs/macos.md') }}">More about macOS</a></p></details>
+    <details><summary>What if the explanation is not enough?</summary><p>Press Alt+P again while the box is open. The model then gets the whole conversation instead of the parts around the selection. For a long chat peekme shows the size first and sends it only after one more Alt+P.</p></details>
+    <details><summary>Can I select text that scrolled away?</summary><p>Not yet. peekme explains text that is on the screen now.</p></details>
+    <details><summary>Can I use it with another program?</summary><p>Yes, run <code>peekme -- COMMAND</code>. The explanations need one of the four agents' logins.</p></details>
+  </div>
+</section>
+
+<section class="band end">
+  <div class="wrap narrow center">
+    <h2 class="sec">Try it in your next session</h2>
+    <pre class="cmd"><code>npm i -g peekme && peekme install</code></pre>
+    <div class="cta center">
+      <a class="btn primary" href="{{ config.extra.repo }}">Star on GitHub</a>
+      <a class="btn" href="{{ get_url(path='@/docs/_index.md') }}">Read the docs</a>
+    </div>
+  </div>
+</section>
+{% endblock content %}

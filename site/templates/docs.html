@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+{% set docs = get_section(path="docs/_index.md") %}
+<div class="wrap docs">
+  <nav class="docs-nav" aria-label="Docs">
+    <a href="{{ docs.permalink }}"{% if section and section.path == docs.path %} aria-current="page"{% endif %}>Overview</a>
+    {% for d in docs.pages %}<a href="{{ d.permalink }}"{% if page and page.path == d.path %} aria-current="page"{% endif %}>{{ d.extra.nav | default(value=d.title) }}</a>{% endfor %}
+    <a href="{{ get_url(path='@/how-it-works.md') }}">How it works</a>
+    <a href="{{ get_url(path='@/changelog.md') }}">Changelog</a>
+  </nav>
+  <article class="prose">
+    {% if page %}
+      <h1>{{ page.title }}</h1>
+      {% if page.extra.lead %}<p class="lead">{{ page.extra.lead | safe }}</p>{% endif %}
+      {{ page.content | safe }}
+    {% else %}
+      <h1>{{ section.title }}</h1>
+      {{ section.content | safe }}
+      <ul class="doc-list">
+      {% for d in section.pages %}<li><a href="{{ d.permalink }}">{{ d.title }}</a><span class="muted"> {{ d.description }}</span></li>{% endfor %}
+      </ul>
+    {% endif %}
+  </article>
+</div>
+{% endblock content %}

@@ -1,0 +1,47 @@
+name: site
+
+# Builds peekme.dev from site/ and publishes it on GitHub Pages.
+on:
+  push:
+    branches: [main]
+    paths: ["site/**", "README.md", "CHANGELOG.md", "Cargo.toml", "src/**", ".github/workflows/site.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: README and site agree
+        run: python3 site/check.py
+      - name: Install Zola
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL https://github.com/getzola/zola/releases/download/v0.22.1/zola-v0.22.1-x86_64-unknown-linux-gnu.tar.gz | tar xz -C "$HOME/.local/bin" zola
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/zola" --version
+      - name: Build
+        run: site/build.sh
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site/public
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

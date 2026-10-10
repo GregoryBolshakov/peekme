@@ -1,0 +1,24 @@
+# peekme
+
+> peekme explains text you select in a coding agent's terminal. It runs in front of Claude Code, Codex CLI, GitHub Copilot CLI and Kiro CLI. Select words in the agent's output and press Alt+P (Option+P on a Mac): a short explanation opens right under them, inside the terminal, and Esc puts the screen back exactly as it was. Alt+Shift+P asks your own question about the selection. Free and open source (MIT or Apache-2.0), written in Rust, for Linux and macOS, also inside tmux and over SSH.
+
+Install: `npm i -g peekme && peekme install` (or `brew install gregorybolshakov/tap/peekme`, or `cargo install peekme`), then open a new terminal and start the agent as always. No API key: explanations go through the agent's own CLI and login. Unlike the agents' built-in side questions (Claude Code /btw, Codex /side, Copilot CLI /ask), you select the words instead of typing a question, the answer opens next to them, boxes can open inside boxes, and answers stay on the screen as clickable underlines.
+
+## Pages
+
+- [Home](https://peekme.dev/): what peekme does, demo, install
+- [Claude Code](https://peekme.dev/claude-code/): peekme in Claude Code, models, full screen and classic screen
+- [Codex CLI](https://peekme.dev/codex/): peekme in Codex CLI, app-server, tmux mouse
+- [GitHub Copilot CLI](https://peekme.dev/copilot-cli/): peekme in Copilot CLI
+- [Kiro CLI](https://peekme.dev/kiro-cli/): peekme in Kiro CLI, /fullscreen
+- [/btw, /side, /ask and peekme](https://peekme.dev/side-questions/): comparison with built-in side questions
+- [Install](https://peekme.dev/docs/install/): all install methods, what peekme install changes, uninstall
+- [Keys](https://peekme.dev/docs/keys/): every key and click
+- [Settings](https://peekme.dev/docs/settings/): environment variables and models
+- [macOS](https://peekme.dev/docs/macos/): Option+P, clipboard, SSH from a Mac
+- [tmux and SSH](https://peekme.dev/docs/tmux-ssh/)
+- [Troubleshooting](https://peekme.dev/docs/troubleshooting/): peekme doctor, known limits
+- [How it works](https://peekme.dev/how-it-works/): pseudo-terminal, screen copy, what the model gets
+- [Privacy](https://peekme.dev/privacy/): what text is sent and where
+- [Changelog](https://peekme.dev/changelog/)
+- [Source on GitHub](https://github.com/GregoryBolshakov/peekme)

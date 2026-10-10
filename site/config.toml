@@ -1,0 +1,43 @@
+base_url = "https://peekme.dev"
+title = "peekme"
+description = "Select text in Claude Code, Codex CLI, GitHub Copilot CLI or Kiro CLI output, press Alt+P, and read a short explanation right under it, inside the terminal."
+default_language = "en"
+compile_sass = false
+build_search_index = false
+generate_feeds = false
+
+[markdown]
+smart_punctuation = false
+external_links_target_blank = false
+
+[extra]
+version = "0.4.3"
+repo = "https://github.com/GregoryBolshakov/peekme"
+
+[[extra.agents]]
+page = "claude-code"
+caption = 'Claude Code: peek at "HOT updates", then ask "What value should I set it to?" about "fillfactor" in a box inside the box. A click on the underline opens the saved answer.'
+media = "claude"
+name = "Claude Code"
+cmd = "claude"
+
+[[extra.agents]]
+page = "codex"
+caption = 'Codex CLI: peek at "fixup", then ask "Can I do this without opening an editor?" about "fixup commit". A click on the underline opens the saved answer.'
+media = "codex"
+name = "Codex CLI"
+cmd = "codex"
+
+[[extra.agents]]
+page = "copilot-cli"
+caption = 'GitHub Copilot CLI: peek at "Dominator trees", then ask "How do I spot it in the snapshot?" about "retaining object". A click on the underline opens the saved answer.'
+media = "copilot"
+name = "GitHub Copilot CLI"
+cmd = "copilot"
+
+[[extra.agents]]
+page = "kiro-cli"
+caption = 'Kiro CLI: peek at "VM filesystem translation layer", then ask "Is it the same with WSL 2?" about "Docker Desktop". A click on the underline opens the saved answer.'
+media = "kiro"
+name = "Kiro CLI"
+cmd = "kiro-cli"

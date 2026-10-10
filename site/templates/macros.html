@@ -1,0 +1,32 @@
+{% macro feature(clip, title, text, flip=false) %}
+<div class="feature{% if flip %} flip{% endif %}">
+  <div class="feature-text">
+    <h3>{{ title }}</h3>
+    <p>{{ text }}</p>
+  </div>
+  <figure class="term small">
+    <video muted loop playsinline preload="none" data-lazy poster="{{ get_url(path='media/' ~ clip ~ '.webp') }}" width="1028" height="599" aria-label="{{ title }}">
+      <source src="{{ get_url(path='media/' ~ clip ~ '.mp4') }}" type="video/mp4">
+    </video>
+  </figure>
+</div>
+{% endmacro feature %}
+
+{% macro install() %}
+<div class="install" data-tabs-install>
+  <div class="tabs" role="tablist" aria-label="Install with">
+    <button role="tab" aria-selected="true" data-pane="npm">npm</button>
+    <button role="tab" aria-selected="false" data-pane="brew">Homebrew</button>
+    <button role="tab" aria-selected="false" data-pane="sh">Shell script</button>
+    <button role="tab" aria-selected="false" data-pane="cargo">Cargo</button>
+  </div>
+  <div class="pane" data-pane="npm"><pre class="cmd"><code>npm i -g peekme
+peekme install</code></pre></div>
+  <div class="pane" data-pane="brew" hidden><pre class="cmd"><code>brew install gregorybolshakov/tap/peekme
+peekme install</code></pre></div>
+  <div class="pane" data-pane="sh" hidden><pre class="cmd"><code>curl -LsSf https://github.com/GregoryBolshakov/peekme/releases/latest/download/peekme-installer.sh | sh
+peekme install</code></pre></div>
+  <div class="pane" data-pane="cargo" hidden><pre class="cmd"><code>cargo install peekme
+peekme install</code></pre></div>
+</div>
+{% endmacro install %}

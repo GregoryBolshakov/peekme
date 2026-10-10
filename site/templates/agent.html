@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block head %}
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"peekme for {{ page.extra.agent }}","applicationCategory":"DeveloperApplication","operatingSystem":"Linux, macOS","softwareVersion":"{{ config.extra.version }}","url":"{{ page.permalink }}","codeRepository":"{{ config.extra.repo }}","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"description":"{{ page.description }}"}
+</script>
+{% endblock head %}
+{% block content %}
+<section class="hero agent-hero">
+  <div class="wrap">
+    <p class="eyebrow">peekme for {{ page.extra.agent }}</p>
+    <h1>{{ page.title }}</h1>
+    <p class="lead">{{ page.extra.lead | safe }}</p>
+    <div class="cta">
+      <a class="btn primary" href="#install">Install</a>
+      <a class="btn" href="{{ config.extra.repo }}">Star on GitHub</a>
+    </div>
+    <figure class="term">
+      <div class="term-bar"><span></span><span></span><span></span></div>
+      <video autoplay muted loop playsinline preload="auto" poster="{{ get_url(path='media/' ~ page.extra.media ~ '.webp') }}" width="1028" height="599" aria-label="peekme in {{ page.extra.agent }}">
+        <source src="{{ get_url(path='media/' ~ page.extra.media ~ '.mp4') }}" type="video/mp4">
+      </video>
+      {% for a in config.extra.agents %}{% if a.page == page.slug %}<figcaption class="muted">{{ a.caption | safe }}</figcaption>{% endif %}{% endfor %}
+    </figure>
+  </div>
+</section>
+<section id="install">
+  <div class="wrap narrow">
+    <h2 class="sec">Install</h2>
+    {{ m::install() }}
+    <p>Open a new terminal and run <code>{{ page.extra.cmd }}</code> as always. peekme is now in front of it.</p>
+  </div>
+</section>
+<article class="wrap narrow prose agent-body">
+  {{ page.content | safe }}
+  <p class="others">peekme also works in
+  {% for a in config.extra.agents %}{% if a.page != page.slug %}<a href="{{ get_url(path='@/' ~ a.page ~ '.md') }}">{{ a.name }}</a>{% if not loop.last %}, {% endif %}{% endif %}{% endfor %}, with the same keys.</p>
+</article>
+{% endblock content %}
