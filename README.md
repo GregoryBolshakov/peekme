@@ -4,33 +4,44 @@ Pick me. Select text in [Claude Code](https://github.com/anthropics/claude-code)
 [Codex CLI](https://github.com/openai/codex),
 [GitHub Copilot CLI](https://github.com/github/copilot-cli) or [Kiro CLI](https://kiro.dev/cli/) output, press **Alt+P** (**Option+P** on a Mac), and a short
 explanation opens right next to that text, inside the terminal. The other lines move to make
-room, like Peek in VS Code. Esc closes it and the screen is exactly as before.
+room, like Peek in VS Code. Or press **Alt+Shift+P** and type your own question first. Esc
+closes the box and the screen is exactly as before.
 
-![peekme in Claude Code: select "planner statistics" in an answer and press Alt+P. In the explanation select "hash join" and press Alt+P again for a box inside the box. Esc closes them, and a click on the underlined words opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-claude.gif)
-
-The explanation comes from a small, fast model and it knows the conversation. If you select
-"its split panes" in an answer that recommends Kitty, it tells you it is about Kitty.
+![peekme in Claude Code: select "HOT updates" and press Alt+P for a short explanation. In the box select "fillfactor", press Alt+Shift+P and ask "What value should I set it to?". Esc closes both boxes, and a click on the underlined words opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-claude.gif)
 
 Status: 0.4.3. Tested with Claude Code 2.1.292, Codex 0.161, Copilot CLI 1.0.93 and Kiro CLI 2.28 on Linux, also
 inside tmux and over SSH. On macOS it is tested in Terminal and iTerm2 with a stand-in agent, and
 in Terminal with the real Codex, also inside tmux and over SSH.
 
+## What it does
+
+- **Peek: Alt+P** (Option+P). Select text and press Alt+P. A short explanation opens under the
+  text. It comes from a small, fast model, and the model knows the conversation: if you select
+  "its split panes" in an answer that recommends Kitty, it tells you it is about Kitty.
+- **Ask: Alt+Shift+P** (Option+Shift+P). Select text, press Alt+Shift+P and type your own
+  question, for example "why not use a mutex here?". Enter sends it. The answer comes from the
+  model your chat runs on, with the whole conversation, so it is slower and better than a peek.
+- **Boxes inside boxes.** In an open box, select words and press Alt+P or Alt+Shift+P again. A
+  new box opens inside, under that line. You can go several levels deep.
+- **Saved answers.** Text you asked about gets a dotted underline. Click it and the answer opens
+  again, with no new request.
+
 ## One peekme for all your agents
 
-Many developers have more than one agent CLI and switch between them during the day. peekme
-works the same way in each of them. You install it once, and the key and the box are the same
-everywhere. Claude Code, Codex CLI,
-GitHub Copilot CLI and Kiro CLI work today, and more agents are planned. If one agent gets its own way to
-explain a selection some day, it will work in that agent only. peekme keeps working in all of
-them.
+You install peekme once, and the keys and the boxes are the same in Claude Code, Codex CLI,
+GitHub Copilot CLI and Kiro CLI. More agents are planned.
 
 Codex CLI:
 
-![peekme in Codex CLI: select "noisy commits" in the answer, press Alt+P, read the explanation, press Esc](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo.gif)
+![peekme in Codex CLI: select "fixup" and press Alt+P. In the box select "fixup commit", press Alt+Shift+P and ask "Can I do this without opening an editor?". Esc closes both boxes, a click on the underline opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo.gif)
 
 GitHub Copilot CLI:
 
-![peekme in GitHub Copilot CLI: ask about set -euo pipefail, select "pipefail" in the answer, press Alt+P, read the explanation, press Esc](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-copilot.gif)
+![peekme in GitHub Copilot CLI: select "Dominator trees" and press Alt+P. In the box select "retaining object", press Alt+Shift+P and ask "How do I spot it in the snapshot?". Esc closes both boxes, a click on the underline opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-copilot.gif)
+
+Kiro CLI:
+
+![peekme in Kiro CLI: select "VM filesystem translation layer" and press Alt+P. In the box select "Docker Desktop", press Alt+Shift+P and ask "Is it the same with WSL 2?". Esc closes both boxes, a click on the underline opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-kiro.gif)
 
 ## Install
 
@@ -59,34 +70,57 @@ the selection itself, and peekme uses that selection.
 
 | Key | When | What it does |
 |---|---|---|
-| Alt+P (Mac: Option+P) | any time | explain the selected text |
+| Alt+P (Mac: Option+P) | text is selected | explain it |
+| Alt+Shift+P (Mac: Option+Shift+P) | text is selected | type a question about it first, Enter sends it |
 | Alt+P again | box is open, same selection | explain again using the whole conversation |
-| PgUp / PgDn, mouse wheel | box is open | scroll a long explanation |
-| Esc | box is open | close the box |
+| Alt+P or Alt+Shift+P on text in the box | box is open | open a new box inside it, under that line |
+| click on underlined text | any time | show the saved answer, with no new request |
+| PgUp / PgDn, mouse wheel | box is open | scroll a long answer |
+| Esc | box is open | close the innermost box |
 | typing | box is open | goes to the agent's input line, the box stays open |
 | Enter | box is open | sends your message and closes the box |
-| Alt+P on text in the box | box is open | opens a new box inside it, under that line |
-| Alt+Shift+P (Mac: Option+Shift+P) | any time | type a question about the selected text first, Enter sends it |
-| click on underlined text | any time | shows the answer from before, with no new request |
 
-Text you already asked about gets a dotted underline, so you can see what you peeked before.
-A click on it opens the saved answer again, a second click closes it. Inside a box you can select
-words and press Alt+P again, and go several levels deep while the window is wide enough. The
-wheel scrolls the box under the pointer, Esc closes the innermost box.
+A second click on underlined text closes the saved answer. Boxes inside boxes go several levels
+deep while the window is wide enough. The wheel scrolls the box under the pointer.
+
+In Claude Code, Alt+P opens the model picker. With peekme it explains the selection instead.
+`/model` still opens the model picker.
 
 ### Ask a question
 
-Sometimes a short explanation is not what you need. Select the text and press Alt+Shift+P
-(Option+Shift+P on a Mac) instead. The box opens empty and you type your question, for example
-"why not use a mutex here?". Enter sends it, Esc cancels. While you type, the keys stay in the
-box and don't go to the agent.
+After Alt+Shift+P the box opens empty and you type. Enter sends the question, Esc cancels. While
+you type, the keys stay in the box and don't go to the agent.
 
 The question goes to the model your chat runs on, not the small one, together with the whole
-conversation (Codex gets a copy of the thread). So it takes longer and costs more than a normal
-peek. With a box open, Alt+Shift+P asks about the text that box explains. Inside a box, select
-words and press Alt+Shift+P to ask about them: the question opens in a box inside, and the model
-also gets the answers around it. The answer is saved with the question, and a click on the
-underline shows both.
+conversation (Codex gets a copy of the thread). So it takes longer and costs more than a peek.
+To use another model, see [Settings](#settings).
+
+- With a box open and nothing new selected, Alt+Shift+P asks about the text that box explains.
+- Inside a box, select words and press Alt+Shift+P. The question opens in a box inside, and the
+  model also gets the answers around it.
+- The answer is saved with the question, and a click on the underline shows both.
+
+### Which model explains
+
+No API key is needed. peekme asks the agent's own CLI, with your existing login:
+
+- Claude Code: `claude -p` on Haiku, without tools and without saving the session, so nothing
+  appears in `/resume`. After the first explanation one `claude -p` waits in the background for
+  the next one, so it starts in about half a second. It takes about 210 MB.
+- Codex: its `app-server`, on a temporary thread that is not saved. Since Codex 0.157 a shared
+  Codex server runs in the background, and peekme uses it, so it adds only a few MB of memory.
+  Without that server it starts its own `codex app-server`, which takes about 250 MB.
+- Copilot CLI: its headless server (`copilot --headless`, the one the Copilot SDK uses), started
+  on the first explanation. Each explanation is a short session without tools, and peekme
+  deletes it afterwards, so nothing appears in your session list. The model is Copilot's Auto
+  unless you set one. It uses a little of your AI credits for each explanation.
+- Kiro CLI: its ACP server (`kiro-cli acp`, the one Kiro's own screen and editors use), started
+  on the first explanation. It runs with a peekme agent that has no tools. Each explanation is
+  a short session, and peekme deletes it afterwards, so nothing appears in your session list.
+  The model is `claude-haiku-4.5` unless you set one (Auto if your plan doesn't have it). One
+  explanation costs about 0.01 Kiro credits.
+
+It does use your plan, a little for each explanation. Nothing starts before the first Alt+P.
 
 ### On a Mac
 
@@ -112,59 +146,20 @@ explains it, also when your tmux stays in copy mode after the drag. A selection 
 held is your terminal's own. Over SSH no program on the other side can read it, so drag without
 Option there.
 
-In Claude Code, Alt+P opens the model picker. With peekme it explains the selection instead.
-`/model` still opens the model picker.
-
-No API key is needed. peekme asks the agent's own CLI, with your existing login:
-
-- Claude Code: `claude -p` on Haiku, without tools and without saving the session, so nothing
-  appears in `/resume`. After the first explanation one `claude -p` waits in the background for
-  the next one, so it starts in about half a second. It takes about 210 MB.
-- Codex: its `app-server`, on a temporary thread that is not saved. Since Codex 0.157 a shared
-  Codex server runs in the background, and peekme uses it, so it adds only a few MB of memory.
-  Without that server it starts its own `codex app-server`, which takes about 250 MB.
-- Copilot CLI: its headless server (`copilot --headless`, the one the Copilot SDK uses), started
-  on the first explanation. Each explanation is a short session without tools, and peekme
-  deletes it afterwards, so nothing appears in your session list. The model is Copilot's Auto
-  unless you set one. It uses a little of your AI credits for each explanation.
-- Kiro CLI: its ACP server (`kiro-cli acp`, the one Kiro's own screen and editors use), started
-  on the first explanation. It runs with a peekme agent that has no tools. Each explanation is
-  a short session, and peekme deletes it afterwards, so nothing appears in your session list.
-  The model is `claude-haiku-4.5` unless you set one (Auto if your plan doesn't have it). One
-  explanation costs about 0.01 Kiro credits.
-
-It does use your plan, a little for each explanation. Nothing starts before the first Alt+P.
-
-Only the interactive screen gets peekme: `claude`, `claude "prompt"`, `claude --resume`,
-`claude -c`, `codex`, `codex "prompt"`, `codex resume`, `codex fork`, `copilot`,
-`copilot -i "prompt"`, `copilot --resume`, and `kiro-cli`, `kiro-cli chat`, `kiro-cli --resume`.
-Commands like `claude -p`, `codex exec`, `copilot -p`, `copilot login`,
-`kiro-cli chat --no-interactive` or `kiro-cli acp`, and anything with output going to a pipe or
-a file, run the agent directly.
-
 ## How it works
 
 The agent runs in a pseudo-terminal. Its output goes to your terminal unchanged, and the same
-bytes also go to a terminal emulator in memory (`alacritty_terminal`). So peekme always knows
-what is on your screen.
+bytes also go to a terminal emulator in memory (`alacritty_terminal`), so peekme always knows
+what is on your screen. The selection comes from the agent when it draws full screen (Claude
+Code, Copilot CLI and Kiro CLI copy it with an OSC 52 sequence, Codex highlights it), otherwise
+from your terminal (X11 PRIMARY, or the clipboard on a Mac).
 
-On Alt+P it takes the selection and finds it on the screen:
-
-- Claude Code full screen: Claude copies the selection with an OSC 52 escape sequence when you
-  release the mouse. peekme reads the text from that sequence as it passes through, and knows
-  where the drag ended. This also works over SSH.
-- Codex full screen: the text Codex highlighted.
-- Copilot CLI, and Kiro CLI after `/fullscreen`: the same OSC 52 sequence as Claude Code.
-- Otherwise: your terminal's mouse selection (the X11 PRIMARY selection).
-
-Then it redraws only the rows next to the selection, with the box between them. Nothing is
-cleared and there is no switch to another screen, so there is no flicker. The agent's input
-line and status line under the box keep updating, so you can type while you read. Other output
-that arrives while the box is open is kept aside.
-
-On Esc it draws those rows again from a copy taken when the box opened. After that it sends the
-kept output, so the terminal ends in the same state as if the box never existed. Tests check
-this cell by cell on real Claude Code, Codex, Copilot CLI and Kiro CLI output.
+peekme redraws only the rows next to the selection, with the box between them. Nothing is
+cleared and there is no switch to another screen, so there is no flicker. The agent's input line
+and status line keep updating while the box is open. On Esc peekme draws those rows again from a
+copy and sends the output it kept aside, so the terminal ends in the same state as if the box
+never existed. Tests check this cell by cell on real Claude Code, Codex, Copilot CLI and Kiro CLI
+output.
 
 ### What the model gets
 
@@ -238,6 +233,13 @@ npm 12 may say that it skipped an install script of peekme. That is fine: peekme
 its binary the first time it runs. Ready binaries for Linux and macOS (x86_64 and ARM) are on the
 [latest release](https://github.com/GregoryBolshakov/peekme/releases/latest) page.
 
+Only the interactive screen gets peekme: `claude`, `claude "prompt"`, `claude --resume`,
+`claude -c`, `codex`, `codex "prompt"`, `codex resume`, `codex fork`, `copilot`,
+`copilot -i "prompt"`, `copilot --resume`, and `kiro-cli`, `kiro-cli chat`, `kiro-cli --resume`.
+Commands like `claude -p`, `codex exec`, `copilot -p`, `copilot login`,
+`kiro-cli chat --no-interactive` or `kiro-cli acp`, and anything with output going to a pipe or
+a file, run the agent directly.
+
 To use peekme with another program, run `peekme -- COMMAND`.
 
 ## Limits
@@ -254,30 +256,6 @@ To use peekme with another program, run `peekme -- COMMAND`.
 - Claude Code full screen: if `copyOnSelect` is off, Claude does not report the selection. Then
   only a Shift+drag selection works (read from X11 PRIMARY).
 - An explanation takes about 1 to 2 seconds to start arriving.
-
-## Development
-
-```
-cargo test
-cargo clippy --all-targets
-cargo run --example vtdump -- capture.bin 120 40 [offset]
-cargo run --example peek_text -- "<screen text>" "<selection>" [--deep] [--ask QUESTION] [--inside ANSWER WORDS] [--claude|--copilot|--kiro] [--pid PID]
-python3 spikes/capture.py out.bin 120 40 "<script>" -- peekme claude
-python3 spikes/flicker_test.py
-python3 spikes/explain_probe.py
-python3 spikes/copilot_probe.py info
-python3 spikes/kiro_probe.py [MODEL] [PROMPT]
-```
-
-`vtdump` replays a captured byte stream and prints the screen. `peek_text` runs one explanation
-without a terminal and prints the exact prompt. `capture.py` runs a command in a pseudo-terminal,
-sends keys and mouse events from a script and saves everything it prints. `flicker_test.py`
-shows if your terminal flickers when a program switches screens. `explain_probe.py` makes one
-explanation request to `codex app-server` and prints timings. `copilot_probe.py` does the same
-with Copilot CLI's headless server, `kiro_probe.py` with Kiro CLI's ACP server.
-
-Each agent has its own folder in `src/` (`claude/`, `codex/`, `copilot/`, `kiro/`): how its selection is read, where
-its conversation comes from, and which model explains. The rest is shared.
 
 ## License
 
