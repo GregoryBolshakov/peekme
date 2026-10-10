@@ -13,6 +13,8 @@ Status: 0.4.3. Tested with Claude Code 2.1.292, Codex 0.161, Copilot CLI 1.0.93 
 inside tmux and over SSH. On macOS it is tested in Terminal and iTerm2 with a stand-in agent, and
 in Terminal with the real Codex, also inside tmux and over SSH.
 
+Website and docs: **[peekme.dev](https://peekme.dev)**
+
 ## What it does
 
 - **Peek: Alt+P** (Option+P). Select text and press Alt+P. A short explanation opens under the
