@@ -1034,6 +1034,17 @@ impl App {
             {
                 continue;
             }
+            // The child has the mouse off, so this is a click tmux handed
+            // over (see `tmux::prepare_copy_mode`): it opens a mark it hit and
+            // never reaches the child, which did not ask for it.
+            if let Kind::Mouse(m) = t.kind
+                && self.in_tmux
+                && self.open.is_none()
+                && !self.shadow.mouse_mode()
+            {
+                self.mark_mouse(m, &t.bytes, &mut forward, out, child)?;
+                continue;
+            }
             if let Kind::Mouse(m) = t.kind
                 && self.mark_mouse(m, &t.bytes, &mut forward, out, child)?
             {
@@ -1233,8 +1244,11 @@ impl App {
             self.flush_forward(forward, child)?;
             self.close(out, false)?;
         }
-        self.note_mouse(Mouse::Press, bytes);
-        forward.extend_from_slice(bytes);
+        // A click tmux handed over is nobody else's.
+        if !self.in_tmux || self.shadow.mouse_mode() {
+            self.note_mouse(Mouse::Press, bytes);
+            forward.extend_from_slice(bytes);
+        }
         Ok(())
     }
 
@@ -1242,7 +1256,10 @@ impl App {
     /// takes the mouse, and the cell is not a link (links are the agent's).
     /// With a box open, only the mark of that box counts (a click closes it).
     fn mark_hit(&mut self, cell: (usize, usize)) -> Option<MarkHit> {
-        if self.marks.is_empty() || !self.shadow.mouse_mode() {
+        // A child with the mouse off gets no clicks, but inside tmux peekme
+        // gets the plain ones (see `tmux::prepare_copy_mode`).
+        let handed_over = self.in_tmux && self.open.is_none();
+        if self.marks.is_empty() || !(self.shadow.mouse_mode() || handed_over) {
             return None;
         }
         let known = self.known_top();
@@ -2923,6 +2940,28 @@ mod tests {
             .unwrap();
         assert!(app.open.is_none());
         assert_eq!(child, b"\x1b[<0;24;2M\x1b[<0;24;2m");
+    }
+
+    /// Inside tmux, a child with the mouse off (Kiro inline, Claude classic)
+    /// gets no clicks, but tmux hands peekme the plain ones: a click on a mark
+    /// opens its saved answer, any other is dropped, and the child gets neither.
+    #[test]
+    fn marks_open_on_clicks_tmux_hands_over() {
+        let mut app = app_with_a_mark();
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(b"\x1b[?1003l\x1b[?1000l\x1b[?1006l", &mut out, &mut child)
+            .unwrap();
+        app.in_tmux = true;
+        app.on_input(b"\x1b[<0;5;6M\x1b[<0;5;6m", &mut out, &mut child)
+            .unwrap();
+        assert!(app.open.is_none());
+        app.on_input(b"\x1b[<0;24;2M\x1b[<0;24;2m", &mut out, &mut child)
+            .unwrap();
+        assert_eq!(
+            app.open.as_ref().expect("saved answer").peek.text,
+            "24-bit RGB."
+        );
+        assert!(child.is_empty(), "{child:?}");
     }
 
     #[test]

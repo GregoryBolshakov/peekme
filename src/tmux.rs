@@ -20,9 +20,18 @@ pub fn inside() -> bool {
 }
 
 /// Keys that mean Option+P / Alt+P to tmux: Option as Meta, and `π` from a
-/// Mac terminal in its default setting.
-const OPTION_P_KEYS: [&str; 2] = ["M-p", "π"];
+/// Mac terminal in its default setting. Then Option+Shift+P / Alt+Shift+P
+/// (`∏`), and the key peekme gets for each.
+const HOTKEYS: [(&str, &str); 4] = [("M-p", "M-p"), ("π", "M-p"), ("M-P", "M-P"), ("∏", "M-P")];
 const COPY_TABLES: [&str; 2] = ["copy-mode", "copy-mode-vi"];
+
+/// A plain click (press and release without a drag) in a pane whose program
+/// has the mouse off: tmux keeps it, so peekme would never see a click on an
+/// underlined peek. In a peekme pane it is handed over as an SGR click at the
+/// same cell; peekme opens the saved answer if it hit one and drops it
+/// otherwise. A pane with the mouse on gets it as before (`send-keys -M`).
+/// Drags and the wheel still go to tmux (copy mode, scrolling).
+const CLICK: &str = "\x1b[<0;#{e|+:#{mouse_x},1};#{e|+:#{mouse_y},1}";
 
 /// A drag that tmux handles (`mouse on`, the agent not taking the mouse)
 /// puts the pane in copy mode. With `copy-selection` as the drag-end binding
@@ -36,16 +45,14 @@ pub fn prepare_copy_mode() {
         return;
     };
     run(&["set-option", "-p", "-t", &pane, "@peekme", "1"]);
-    let action = "if-shell -F '#{selection_present}' \
-                  'send-keys -X copy-selection-and-cancel' 'send-keys -X cancel' ; \
-                  send-keys M-p";
     for table in COPY_TABLES {
-        for key in OPTION_P_KEYS {
-            let bound = Command::new(tmux_bin())
-                .args(["list-keys", "-T", table, key])
-                .output()
-                .is_ok_and(|o| o.status.success() && !o.stdout.is_empty());
-            if !bound {
+        for (key, send) in HOTKEYS {
+            if !bound(table, key) {
+                let action = format!(
+                    "if-shell -F '#{{selection_present}}' \
+                     'send-keys -X copy-selection-and-cancel' 'send-keys -X cancel' ; \
+                     send-keys {send}"
+                );
                 run(&[
                     "bind-key",
                     "-T",
@@ -54,11 +61,36 @@ pub fn prepare_copy_mode() {
                     "if-shell",
                     "-F",
                     "#{@peekme}",
-                    action,
+                    &action,
                 ]);
             }
         }
     }
+    if !bound("root", "MouseUp1Pane") {
+        let handover = format!("run-shell -C -t = \"send-keys -l -t = '{CLICK}M{CLICK}m'\"");
+        run(&[
+            "bind-key",
+            "-T",
+            "root",
+            "MouseUp1Pane",
+            "if-shell",
+            "-F",
+            "-t",
+            "=",
+            "#{&&:#{@peekme},#{?mouse_any_flag,0,1}}",
+            &handover,
+            "send-keys -M",
+        ]);
+    }
+}
+
+/// Whether `key` has a binding in `table` already (the user's, or peekme's
+/// from an earlier start).
+fn bound(table: &str, key: &str) -> bool {
+    Command::new(tmux_bin())
+        .args(["list-keys", "-T", table, key])
+        .output()
+        .is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
 }
 
 /// Unmark the pane when peekme ends (the agent may be run without it next).
