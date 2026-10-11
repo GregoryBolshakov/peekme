@@ -404,6 +404,7 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
             && std::env::var("TERM_PROGRAM").is_ok_and(|t| t == "Apple_Terminal"),
         offered_accessibility: false,
         accessibility_trusted: crate::macax::trusted,
+        accessibility_request: crate::macax::request,
         next_message: None,
         accessibility_offer_open: false,
         in_tmux: crate::tmux::inside(),
@@ -574,8 +575,10 @@ struct App {
     can_offer_accessibility: bool,
     /// Offered it in this session (once is enough, whatever the answer).
     offered_accessibility: bool,
-    /// Whether macOS allows it already (tests answer for it).
+    /// Whether macOS allows it already, and asking for it (tests answer for
+    /// both: a test must never show the macOS prompt).
     accessibility_trusted: fn() -> bool,
+    accessibility_request: fn() -> bool,
     /// The next box shows this message, whatever is selected.
     next_message: Option<&'static str>,
     /// The open box is the offer: Enter asks macOS for the permission.
@@ -1082,7 +1085,7 @@ impl App {
                     self.consumed.consume(&t);
                     self.flush_forward(&mut forward, child)?;
                     self.close(out, false)?;
-                    let allowed = crate::macax::request();
+                    let allowed = (self.accessibility_request)();
                     crate::event(
                         "accessibility_request",
                         serde_json::json!({"trusted": allowed}),
@@ -3068,6 +3071,7 @@ mod tests {
             can_offer_accessibility: false,
             offered_accessibility: false,
             accessibility_trusted: || false,
+            accessibility_request: || false,
             next_message: None,
             accessibility_offer_open: false,
             in_tmux: false,
