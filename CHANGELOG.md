@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.5 (2026-10-11)
+
+- Mac Terminal: with Kiro CLI inline or Claude Code's classic screen, Option+P typed `π`,
+  because Terminal keeps its selection to itself. Now peekme can read that selection through
+  macOS Accessibility. The first Option+P with nothing selected that peekme can see asks once:
+  press Enter, then turn on Terminal in System Settings > Privacy & Security > Accessibility.
+  Esc keeps things as before. Kiro stays inline. `peekme doctor` says if it is on.
+- tmux with `mouse on`: Option+Shift+P (Alt+Shift+P) did nothing after a drag when tmux stayed
+  in copy mode. Option+P worked. Now both work.
+- tmux with `mouse on`: a click on underlined text now opens the saved answer also over agents
+  that leave the mouse alone (Claude Code classic, Kiro CLI inline), also over SSH. tmux keeps
+  plain clicks for itself there, so peekme asks it to hand them over in its own pane. Drags and
+  the wheel stay with tmux. Needs tmux 3.2 or newer.
+- Docs: a new table in the README and on peekme.dev says what peekme can read inside tmux and
+  over SSH, for each agent, with tmux's mouse on and off.
+
 ## 0.4.4-beta.2 (2026-10-11)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.4-beta.2`.

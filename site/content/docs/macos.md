@@ -1,6 +1,6 @@
 +++
 title = "peekme on macOS"
-description = "Option+P in Terminal and iTerm2, the clipboard, and SSH from a Mac."
+description = "Option+P in Terminal and iTerm2, where the selection comes from, and SSH from a Mac."
 weight = 4
 [extra]
 nav = "macOS"
@@ -19,14 +19,23 @@ letter. If your terminal sends Option as Meta, Option+P works too.
 When the agent draws full screen, peekme gets the selection from the agent. That is Claude Code
 with `"tui": "fullscreen"`, Codex and Copilot CLI by default, and Kiro CLI after `/fullscreen`.
 
-Otherwise (Claude Code's classic screen, Kiro CLI before `/fullscreen`) peekme reads the
-clipboard: iTerm2 copies a selection there by itself, in Terminal press Cmd+C after you select.
+Otherwise (Claude Code's classic screen, Kiro CLI before `/fullscreen`) the selection is your
+terminal's own:
+
+- iTerm2 copies a selection to the clipboard by itself, and peekme reads it there.
+- Terminal keeps it to itself. The first Option+P there offers to read it through macOS
+  Accessibility: press Enter, then turn on Terminal in System Settings > Privacy & Security >
+  Accessibility. It is needed once. If Option+P still types `π`, quit Terminal and open it again.
+  `peekme doctor` says if it is on. Esc instead keeps things as before, and Cmd+C after you
+  select works too.
 
 ## Over SSH
 
-Over SSH only the agent's own selection can be read, so use the full screen mode there. A
-selection made with Option held is your terminal's own, and no program on the other side can
-read it, so drag without Option. For tmux on the other side, see [tmux and SSH](@/docs/tmux-ssh.md).
+Over SSH the terminal's selection stays on your Mac. Use the agent's full screen mode there, or
+run the agent inside tmux with its mouse on: then tmux makes the selection on the other side,
+and a click on underlined text works too. See [tmux and SSH](@/docs/tmux-ssh.md).
+
+In iTerm2 a drag with Option held is always iTerm2's own selection, so drag without Option there.
 
 Tested in Terminal and iTerm2 with a stand-in agent, and in Terminal with the real Codex, also
 inside tmux and over SSH.

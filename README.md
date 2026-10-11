@@ -9,7 +9,7 @@ closes the box and the screen is exactly as before.
 
 ![peekme in Claude Code: select "HOT updates" and press Alt+P for a short explanation. In the box select "fillfactor", press Alt+Shift+P and ask "What value should I set it to?". Esc closes both boxes, and a click on the underlined words opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-claude.gif)
 
-Status: 0.4.3. Tested with Claude Code 2.1.292, Codex 0.161, Copilot CLI 1.0.93 and Kiro CLI 2.28 on Linux, also
+Status: 0.4.5. Tested with Claude Code 2.1.292, Codex 0.161, Copilot CLI 1.0.93 and Kiro CLI 2.28 on Linux, also
 inside tmux and over SSH. On macOS it is tested in Terminal and iTerm2 with a stand-in agent, and
 in Terminal with the real Codex, also inside tmux and over SSH.
 
@@ -133,20 +133,38 @@ Option+Shift+P types `∏` and works the same way for questions. If
 you type Greek, `π` stays a letter. If your terminal sends Option as Meta, Option+P works too.
 
 When the agent draws full screen, peekme gets the selection from the agent. Otherwise (Claude
-Code's classic screen, Kiro CLI before `/fullscreen`) it reads the clipboard: iTerm2 copies a
-selection there by itself, in Terminal press Cmd+C after you select. Over SSH only the agent's
-own selection can be read, so use the full screen mode there (Claude Code with
-`"tui": "fullscreen"`, `/fullscreen` in Kiro CLI, Codex and Copilot CLI by default).
+Code's classic screen, Kiro CLI before `/fullscreen`) the selection is your terminal's own:
 
-Inside tmux, Codex leaves the mouse to the terminal when tmux has the mouse off, which is tmux's
-default. A selection is then your terminal's own, and over SSH peekme cannot read it. Add
-`set -g mouse on` to `~/.tmux.conf` and restart Codex. peekme tells you this the first time you
-press Option+P there.
+- iTerm2 copies a selection to the clipboard by itself, and peekme reads it there.
+- Terminal keeps it to itself. The first Option+P there offers to read it through macOS
+  Accessibility: press Enter, then turn on Terminal in System Settings > Privacy & Security >
+  Accessibility. It is needed once. If Option+P still types `π`, quit Terminal and open it again.
+  `peekme doctor` says if it is on. Esc instead keeps things as before, and Cmd+C after you
+  select works too.
 
-With tmux's mouse on, a drag over text the agent doesn't take is a tmux selection, and Option+P
-explains it, also when your tmux stays in copy mode after the drag. A selection made with Option
-held is your terminal's own. Over SSH no program on the other side can read it, so drag without
-Option there.
+Over SSH the terminal's selection stays on your Mac. Use the agent's full screen mode there, or
+run the agent inside tmux with its mouse on, see [Inside tmux and over SSH](#inside-tmux-and-over-ssh).
+In iTerm2 a drag with Option held is always iTerm2's own selection, so drag without Option there.
+
+### Inside tmux and over SSH
+
+peekme runs where the agent runs: install it on the machine you SSH into, and it works inside
+tmux there. What peekme can read depends on who takes the mouse:
+
+| Agent | tmux mouse on (`set -g mouse on`) | tmux mouse off (tmux's default) |
+|---|---|---|
+| Full screen: Claude Code with `"tui": "fullscreen"`, Copilot CLI, Kiro CLI after `/fullscreen` | the agent's selection, also over SSH | the same |
+| Codex | the agent's selection, also over SSH | your terminal's selection (Codex leaves it the mouse), not readable over SSH |
+| Claude Code classic screen, Kiro CLI inline | tmux's selection, also over SSH | your terminal's selection, not readable over SSH |
+
+With tmux's mouse on and an agent that leaves the mouse alone, a drag is tmux's selection.
+Alt+P and Alt+Shift+P explain it, also when your tmux stays in copy mode after the drag, and a
+click on underlined text opens the saved answer (tmux 3.2 or newer). Drags and the wheel stay
+with tmux. For this peekme adds key bindings to tmux that act only in its own pane (Option+P and
+Option+Shift+P in copy mode, and a plain click), and leaves keys you bound yourself alone.
+
+Codex asks tmux at startup whether it has the mouse. After `set -g mouse on`, restart Codex.
+peekme tells you this the first time you press Alt+P there.
 
 ## How it works
 
@@ -249,12 +267,12 @@ To use peekme with another program, run `peekme -- COMMAND`.
 - Only text that is on screen now. Text that scrolled up into the terminal history can't be
   selected yet.
 - In full screen mode selection works anywhere, also over SSH, because peekme reads the
-  selection from the agent. Otherwise peekme needs the terminal's selection, which it reads on
-  Linux with X11 only. On Wayland it works through XWayland, and on macOS it reads the
-  clipboard (see [On a Mac](#on-a-mac)).
-- A click on underlined text works only when the agent takes the mouse (full screen mode). On
-  Claude Code's classic screen and Kiro CLI before `/fullscreen` the click goes to your
-  terminal.
+  selection from the agent. Otherwise peekme needs the terminal's selection (or tmux's, see
+  [Inside tmux and over SSH](#inside-tmux-and-over-ssh)), which it reads on Linux with X11 only.
+  On Wayland it works through XWayland, and on macOS see [On a Mac](#on-a-mac).
+- A click on underlined text works when the agent takes the mouse (full screen mode), or inside
+  tmux with its mouse on. Otherwise, on Claude Code's classic screen and Kiro CLI before
+  `/fullscreen`, the click goes to your terminal.
 - Claude Code full screen: if `copyOnSelect` is off, Claude does not report the selection. Then
   only a Shift+drag selection works (read from X11 PRIMARY).
 - An explanation takes about 1 to 2 seconds to start arriving.

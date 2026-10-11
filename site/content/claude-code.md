@@ -21,8 +21,9 @@ Run `claude` as always. Select text with the mouse and press Alt+P.
   saved answer. Keep `copyOnSelect` on. Without it Claude doesn't report the selection, and only
   a Shift+drag selection works.
 - **Classic screen:** the selection is your terminal's own. peekme reads it from X11 PRIMARY on
-  Linux and from the clipboard on a Mac (iTerm2 copies a selection there by itself, in Terminal
-  press Cmd+C after you select). Over SSH use the full screen mode.
+  Linux. On a Mac iTerm2 copies it to the clipboard, and in Terminal the first Option+P offers
+  to read it through macOS Accessibility. Over SSH use the full screen mode, or run Claude inside
+  tmux with its mouse on: tmux makes the selection, and a click on underlined text works too.
 
 In Claude Code, Alt+P opens the model picker. With peekme it explains the selection instead.
 `/model` still opens the model picker.

@@ -15,9 +15,13 @@ lead = "Select words in Kiro CLI's output and press <kbd>Alt+P</kbd> (<kbd>Optio
 ## How it works in Kiro CLI
 
 Run `kiro-cli` as always. Kiro starts inline and leaves the mouse to your terminal, so peekme
-reads your terminal's selection (X11 PRIMARY on Linux, the clipboard on a Mac). After
-`/fullscreen` Kiro makes the selection itself and peekme reads it, also over SSH. Underlined text
-can be clicked only in full screen.
+reads your terminal's selection: X11 PRIMARY on Linux, on a Mac the clipboard in iTerm2 and
+macOS Accessibility in Terminal (the first Option+P offers it). After `/fullscreen` Kiro makes
+the selection itself and peekme reads it, also over SSH.
+
+Inside tmux with its mouse on, Kiro can stay inline, also over SSH: tmux makes the selection,
+and peekme reads it from tmux. Underlined text can be clicked in full screen, and inline inside
+tmux with its mouse on. See [tmux and SSH](@/docs/tmux-ssh.md).
 
 ## Which model explains
 

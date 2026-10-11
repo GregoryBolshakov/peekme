@@ -21,9 +21,11 @@ peekme doctor
 
 ## On a Mac, Option+P types π
 
-That means peekme saw no selection. On the classic screen of Claude Code or Kiro CLI, press Cmd+C
-in Terminal after you select. Over SSH, use the agent's full screen mode. See
-[macOS](@/docs/macos.md).
+That means peekme saw no selection. On the classic screen of Claude Code or Kiro CLI in
+Terminal, the first Option+P offers to read the selection through macOS Accessibility. Press
+Enter and turn on Terminal in System Settings > Privacy & Security > Accessibility. If you
+pressed Esc, Cmd+C after you select works too. Over SSH, use the agent's full screen mode or tmux
+with its mouse on. See [macOS](@/docs/macos.md) and [tmux and SSH](@/docs/tmux-ssh.md).
 
 ## Codex inside tmux over SSH
 
@@ -38,9 +40,11 @@ Shift+drag.
 
 - Only text that is on screen now. Text that scrolled up into the terminal history can't be
   selected yet.
-- Outside full screen mode peekme needs the terminal's selection, which it reads on Linux with
-  X11 only. On Wayland it works through XWayland, and on macOS it reads the clipboard.
-- A click on underlined text works only when the agent takes the mouse (full screen mode).
+- Outside full screen mode peekme needs the terminal's selection (or tmux's), which it reads on
+  Linux with X11 only. On Wayland it works through XWayland, and on macOS it reads the clipboard
+  or, in Terminal, asks macOS Accessibility.
+- A click on underlined text works when the agent takes the mouse (full screen mode), or inside
+  tmux with its mouse on.
 - An explanation takes about 1 to 2 seconds to start arriving.
 - No Windows yet.
 
