@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.4-beta.1 (2026-10-11)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.4-beta.1`.
+
+- Mac Terminal: Kiro inline (and Claude classic) leave the mouse to Terminal, and Terminal keeps
+  the selection to itself, so Option+P typed π. Now peekme can read that selection through
+  macOS Accessibility. The first Option+P with nothing peekme can see asks once: press Enter,
+  then turn on Terminal in System Settings > Privacy & Security > Accessibility. Esc keeps
+  things as before. Kiro stays inline.
+- `peekme doctor` on a Mac says if Accessibility is on for the terminal and, with text selected,
+  if peekme can read it.
+
 ## 0.4.3 (2026-10-09)
 
 - Questions inside boxes. Select words in a box and press Alt+Shift+P (Option+Shift+P on a Mac):
