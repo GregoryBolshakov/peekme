@@ -398,6 +398,14 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         boundary: Boundary::default(),
         greek_typed: false,
         told_hidden: false,
+        can_offer_accessibility: cfg!(target_os = "macos")
+            && std::env::var_os("SSH_CONNECTION").is_none()
+            && !crate::tmux::inside()
+            && std::env::var("TERM_PROGRAM").is_ok_and(|t| t == "Apple_Terminal"),
+        offered_accessibility: false,
+        accessibility_trusted: crate::macax::trusted,
+        next_message: None,
+        accessibility_offer_open: false,
         in_tmux: crate::tmux::inside(),
         over_ssh: std::env::var_os("SSH_CONNECTION").is_some(),
         mouse_seen: false,
@@ -561,6 +569,17 @@ struct App {
     /// Told the user once that the terminal keeps the mouse (tmux mouse off, or
     /// a terminal that never reports it), so no selection can be seen.
     told_hidden: bool,
+    /// Terminal.app on this Mac: its own selection can be read through
+    /// Accessibility once the user allows it, so peekme may offer that.
+    can_offer_accessibility: bool,
+    /// Offered it in this session (once is enough, whatever the answer).
+    offered_accessibility: bool,
+    /// Whether macOS allows it already (tests answer for it).
+    accessibility_trusted: fn() -> bool,
+    /// The next box shows this message, whatever is selected.
+    next_message: Option<&'static str>,
+    /// The open box is the offer: Enter asks macOS for the permission.
+    accessibility_offer_open: bool,
     /// A mouse report came from the terminal (it does pass the mouse on).
     mouse_seen: bool,
     /// Read from the environment once at start (tests set them).
@@ -961,6 +980,13 @@ impl App {
                     hotkey = true;
                     self.told_hidden = true;
                 }
+                if !hotkey && !self.greek_typed && self.offers_accessibility() {
+                    // Terminal.app keeps the drag to itself: offer, once, to
+                    // let peekme read it instead of typing π without a word.
+                    hotkey = true;
+                    self.offered_accessibility = true;
+                    self.next_message = Some(ACCESSIBILITY_OFFER);
+                }
                 crate::event(
                     "option_p",
                     serde_json::json!({
@@ -1050,6 +1076,22 @@ impl App {
                         self.close(out, false)?;
                     }
                     self.ask_next = ask;
+                    self.request_open(out)?;
+                }
+                (Kind::Key, true) if self.accessibility_offer_open && t.bytes == b"\r" => {
+                    self.consumed.consume(&t);
+                    self.flush_forward(&mut forward, child)?;
+                    self.close(out, false)?;
+                    let allowed = crate::macax::request();
+                    crate::event(
+                        "accessibility_request",
+                        serde_json::json!({"trusted": allowed}),
+                    );
+                    self.next_message = Some(if allowed {
+                        ACCESSIBILITY_ALLOWED
+                    } else {
+                        ACCESSIBILITY_ASKED
+                    });
                     self.request_open(out)?;
                 }
                 (Kind::Esc, true) => {
@@ -1365,6 +1407,17 @@ impl App {
         self.has_selection()
     }
 
+    /// Whether π with nothing selected should offer Accessibility: in
+    /// Terminal.app, with the drag the terminal's own (the agent leaves it the
+    /// mouse), not allowed yet and not offered before.
+    fn offers_accessibility(&self) -> bool {
+        self.can_offer_accessibility
+            && !self.offered_accessibility
+            && self.open.is_none()
+            && !self.shadow.mouse_mode()
+            && !(self.accessibility_trusted)()
+    }
+
     fn has_selection(&mut self) -> bool {
         let snap = self.shadow.snapshot();
         self.selection_within(&snap, crate::tmux::FRESH_FOR_OPTION_P)
@@ -1527,7 +1580,11 @@ impl App {
         }
         let s = self.selection.read();
         if s.is_some() {
-            self.selection_source = "system";
+            self.selection_source = if self.selection.from_accessibility {
+                "accessibility"
+            } else {
+                "system"
+            };
         }
         let l = s.as_deref().and_then(|s| select::locate(snap, s, None));
         (s, l)
@@ -1587,7 +1644,9 @@ impl App {
         let id = self.next_id;
         let ask = std::mem::take(&mut self.ask_next);
 
+        let forced = self.next_message.take();
         let (selection, located) = match self.clicked.take() {
+            _ if forced.is_some() => (None, None),
             Some(hit) => {
                 self.selection_source = "mark";
                 let loc = select::at_cells(&snap, &hit.cells);
@@ -1662,7 +1721,9 @@ impl App {
                 (peek, lay)
             }
             (None, _) => {
-                let msg = if hidden {
+                let msg = if let Some(m) = forced {
+                    m.to_string()
+                } else if hidden {
                     tmux_mouse_message(self.agent)
                 } else if withheld {
                     withheld_mouse_message(self.agent)
@@ -1716,11 +1777,13 @@ impl App {
                 "alt": self.shadow.alt_screen(),
                 "box_top": lay.box_top,
                 "live_input": strip,
+                "message": forced,
             }),
         );
         let strip_shown = strip.map_or_else(Vec::new, |top| snap.rows[top..].to_vec());
         // Selecting text in the box needs the mouse reports.
         let own_mouse = !self.shadow.mouse_mode();
+        self.accessibility_offer_open = forced == Some(ACCESSIBILITY_OFFER);
         self.open = Some(Open {
             id,
             selection: remembered,
@@ -2007,6 +2070,7 @@ impl App {
     /// output so the terminal reaches exactly the child's current state.
     fn close(&mut self, out: &mut dyn Write, skip_repaint: bool) -> Result<()> {
         self.close_below(0);
+        self.accessibility_offer_open = false;
         let Some(open) = self.open.take() else {
             return Ok(());
         };
@@ -2230,6 +2294,16 @@ fn tmux_mouse_message(agent: Option<Agent>) -> String {
         agent.map_or("it", Agent::command)
     )
 }
+
+const ACCESSIBILITY_OFFER: &str = "Terminal keeps what you select to itself, so peekme can't see it. \
+     macOS can let peekme read it: press Enter, then turn on Terminal in System Settings > \
+     Privacy & Security > Accessibility. Esc: not now.";
+
+const ACCESSIBILITY_ASKED: &str = "Once Terminal is on in that list, select text and press Option+P \
+     again. If π still appears, quit Terminal and open it again.";
+
+const ACCESSIBILITY_ALLOWED: &str =
+    "Terminal can already use Accessibility. Select text and press Option+P.";
 
 /// Why peekme sees no selection when the terminal never reports the mouse.
 fn withheld_mouse_message(agent: Option<Agent>) -> String {
@@ -2991,6 +3065,11 @@ mod tests {
             boundary: Boundary::default(),
             greek_typed: false,
             told_hidden: false,
+            can_offer_accessibility: false,
+            offered_accessibility: false,
+            accessibility_trusted: || false,
+            next_message: None,
+            accessibility_offer_open: false,
             in_tmux: false,
             over_ssh: false,
             mouse_seen: false,
@@ -3659,6 +3738,72 @@ mod tests {
         real.advance(&std::mem::take(&mut out));
         real.flush_sync();
         assert!(same_screen(&real.snapshot(), &app.shadow.snapshot()));
+    }
+
+    /// Terminal.app keeps Kiro inline's selection to itself. The first π with
+    /// nothing peekme can read offers Accessibility; Enter asks macOS, and
+    /// after that (or after Esc) π is typed again. The screen comes back.
+    #[test]
+    fn kiro_inline_in_mac_terminal_offers_accessibility_once() {
+        for answer in [&b"\r"[..], b"\x1b"] {
+            let mut app = test_app_for(Agent::Kiro, 120, 40);
+            app.can_offer_accessibility = true;
+            let mut real = Shadow::new(120, 40);
+            let (mut child, mut out) = (Vec::new(), Vec::new());
+            app.on_output(KIRO[0], &mut out, &mut child).unwrap();
+            app.shadow.flush_sync();
+            real.advance(&std::mem::take(&mut out));
+            real.flush_sync();
+
+            app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
+            real.advance(&std::mem::take(&mut out));
+            let open = app.open.as_ref().expect("the offer");
+            assert_eq!(
+                open.peek.status,
+                Status::Message(ACCESSIBILITY_OFFER.into())
+            );
+            assert!(child.is_empty(), "π did not reach Kiro");
+
+            app.on_input(answer, &mut out, &mut child).unwrap();
+            real.advance(&std::mem::take(&mut out));
+            assert!(child.is_empty(), "the answer did not reach Kiro");
+            if answer == b"\r" {
+                let open = app.open.as_ref().expect("what to do next");
+                assert_eq!(
+                    open.peek.status,
+                    Status::Message(ACCESSIBILITY_ASKED.into())
+                );
+                app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+                real.advance(&std::mem::take(&mut out));
+            }
+            assert!(app.open.is_none());
+            real.flush_sync();
+            assert!(same_screen(&real.snapshot(), &app.shadow.snapshot()));
+
+            app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
+            assert!(app.open.is_none(), "offered once");
+            assert_eq!(child, "π".as_bytes());
+        }
+    }
+
+    /// Not offered outside Terminal.app, nor when the agent takes the mouse.
+    #[test]
+    fn accessibility_is_not_offered_when_it_would_not_help() {
+        let mut app = test_app_for(Agent::Kiro, 120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(KIRO[0], &mut out, &mut child).unwrap();
+        app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+        assert_eq!(child, "π".as_bytes());
+
+        let mut app = test_app_for(Agent::Kiro, 120, 40);
+        app.can_offer_accessibility = true;
+        app.mouse_seen = true;
+        child.clear();
+        app.on_output(KIRO[1], &mut out, &mut child).unwrap();
+        app.on_input("π".as_bytes(), &mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+        assert_eq!(child, "π".as_bytes());
     }
 
     /// Kiro inline leaves the mouse to the terminal: Alt+P explains the

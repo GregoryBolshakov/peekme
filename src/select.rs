@@ -20,6 +20,14 @@ pub struct SelectionSource {
     clipboard_only: bool,
     /// The clipboard text already used or passed over.
     seen: Option<String>,
+    /// Also ask the terminal for its selection through Accessibility (a Mac,
+    /// not over SSH). Used only once the user allowed it.
+    accessibility: bool,
+    /// The Accessibility selection already used or passed over: the terminal
+    /// keeps it highlighted after the box closes.
+    ax_seen: Option<String>,
+    /// The last `read` came from Accessibility.
+    pub from_accessibility: bool,
 }
 
 impl SelectionSource {
@@ -31,6 +39,10 @@ impl SelectionSource {
             fixed: None,
             clipboard_only: cfg!(not(target_os = "linux")),
             seen: None,
+            accessibility: cfg!(target_os = "macos")
+                && std::env::var_os("SSH_CONNECTION").is_none(),
+            ax_seen: None,
+            from_accessibility: false,
         };
         // Whatever was copied before the agent started is no selection.
         s.settle();
@@ -46,6 +58,9 @@ impl SelectionSource {
             fixed: None,
             clipboard_only: false,
             seen: None,
+            accessibility: false,
+            ax_seen: None,
+            from_accessibility: false,
         }
     }
 
@@ -73,11 +88,26 @@ impl SelectionSource {
         {
             return Some(s).filter(|s| !s.trim().is_empty());
         }
+        self.from_accessibility = false;
         let text = self.read_raw();
-        if self.clipboard_only && text.is_some() && text == self.seen {
+        if !(self.clipboard_only && text.is_some() && text == self.seen) && text.is_some() {
+            return text;
+        }
+        let ax = self.read_accessibility();
+        if ax.is_some() && ax != self.ax_seen {
+            self.from_accessibility = true;
+            return ax;
+        }
+        None
+    }
+
+    fn read_accessibility(&self) -> Option<String> {
+        if !self.accessibility || !crate::macax::trusted() {
             return None;
         }
-        text
+        let probe = crate::macax::probe();
+        crate::event("accessibility", probe.fields());
+        probe.text.filter(|t| !t.trim().is_empty())
     }
 
     /// The selection was used, or a key was typed with it there: from now on
@@ -85,6 +115,9 @@ impl SelectionSource {
     pub fn settle(&mut self) {
         if self.clipboard_only {
             self.seen = self.read_raw();
+        }
+        if self.accessibility {
+            self.ax_seen = self.read_accessibility();
         }
     }
 

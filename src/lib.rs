@@ -19,6 +19,7 @@ pub mod install;
 pub mod jobctl;
 pub mod kiro;
 pub mod launch;
+pub mod macax;
 pub mod marks;
 pub mod osc52;
 pub mod overlay;

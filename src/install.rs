@@ -684,7 +684,38 @@ pub fn doctor() -> i32 {
             }
         }
     }
+    if cfg!(target_os = "macos") && std::env::var_os("SSH_CONNECTION").is_none() {
+        accessibility_note();
+    }
     if ok { 0 } else { 1 }
+}
+
+/// On a Mac: can peekme read the terminal's own selection? Run with text
+/// selected in the terminal to see what it would get.
+fn accessibility_note() {
+    let p = crate::macax::probe();
+    if !p.trusted {
+        println!(
+            "note Accessibility is off for this terminal app: in Terminal, text selected while \
+             the agent leaves the mouse to the terminal (Kiro inline, Claude classic) can't be \
+             peeked. Option+P offers to turn it on."
+        );
+        return;
+    }
+    match (&p.text, &p.error) {
+        (Some(t), _) if !t.trim().is_empty() => println!(
+            "ok   Accessibility on, the terminal's selection reads ({} chars, {})",
+            t.chars().count(),
+            p.role.as_deref().unwrap_or("no role")
+        ),
+        (_, Some(e)) => println!(
+            "note Accessibility on, but the selection could not be read ({e}, {})",
+            p.role.as_deref().unwrap_or("no role")
+        ),
+        _ => println!(
+            "ok   Accessibility on (select text before `peekme doctor` to check reading it)"
+        ),
+    }
 }
 
 /// Ask once, on the first plain `peekme` run, whether to set things up.
