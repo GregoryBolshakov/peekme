@@ -21,11 +21,11 @@
 
     <div class="demo" data-tabs>
       <div class="tabs" role="tablist" aria-label="Agent">
-        {% for a in config.extra.agents %}<button role="tab" aria-selected="{% if loop.first %}true{% else %}false{% endif %}" data-src="{{ get_url(path='media/' ~ a.media ~ '.mp4') }}" data-poster="{{ get_url(path='media/' ~ a.media ~ '.webp') }}" data-caption='{{ a.caption | safe }}'>{{ a.name | replace(from="GitHub ", to="") }}</button>
+        {% for a in config.extra.agents %}<button role="tab" aria-selected="{% if loop.first %}true{% else %}false{% endif %}" data-src="{{ get_url(path='media/' ~ a.media ~ '.mp4') }}" data-poster="{{ get_url(path='media/' ~ a.media ~ '-start.webp') }}" data-still="{{ get_url(path='media/' ~ a.media ~ '.webp') }}" data-caption='{{ a.caption | safe }}'>{{ a.name | replace(from="GitHub ", to="") }}</button>
         {% endfor %}</div>
       <figure class="term">
         <div class="term-bar"><span></span><span></span><span></span></div>
-        <video autoplay muted loop playsinline preload="auto" poster="{{ get_url(path='media/claude.webp') }}" width="1028" height="599" aria-label="peekme demo">
+        <video autoplay muted loop playsinline preload="auto" poster="{{ get_url(path='media/claude-start.webp') }}" data-still="{{ get_url(path='media/claude.webp') }}" width="1028" height="599" aria-label="peekme demo">
           <source src="{{ get_url(path='media/claude.mp4') }}" type="video/mp4">
         </video>
         <figcaption class="muted">{{ config.extra.agents[0].caption | safe }}</figcaption>

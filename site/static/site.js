@@ -5,10 +5,16 @@
   document.querySelectorAll("[data-tabs]").forEach(function (box) {
     var video = box.querySelector("video");
     var caption = box.querySelector("figcaption");
-    box.querySelectorAll("[role=tab]").forEach(function (tab) {
+    var tabs = box.querySelectorAll("[role=tab]");
+    // Each poster is its clip's first frame. Fetched ahead, it shows the moment a tab is
+    // clicked and the clip then starts on the same picture, with no blank frame between.
+    window.addEventListener("load", function () {
+      tabs.forEach(function (t) { new Image().src = reduce ? t.dataset.still : t.dataset.poster; });
+    });
+    tabs.forEach(function (tab) {
       tab.addEventListener("click", function () {
-        box.querySelectorAll("[role=tab]").forEach(function (t) { t.setAttribute("aria-selected", t === tab); });
-        video.poster = tab.dataset.poster;
+        tabs.forEach(function (t) { t.setAttribute("aria-selected", t === tab); });
+        video.poster = reduce ? tab.dataset.still : tab.dataset.poster;
         video.src = tab.dataset.src;
         caption.textContent = tab.dataset.caption;
         if (!reduce) video.play().catch(function () {});
@@ -27,10 +33,17 @@
     });
   });
 
-  // Videos play only while on screen; with reduced motion they show controls instead.
+  // Videos play only while on screen. With reduced motion they show controls instead, and
+  // a still from the middle of the clip rather than its first frame (load() brings the
+  // poster back if autoplay had already started).
   var videos = document.querySelectorAll("video");
   if (reduce) {
-    videos.forEach(function (v) { v.removeAttribute("autoplay"); v.pause(); v.controls = true; });
+    videos.forEach(function (v) {
+      v.removeAttribute("autoplay");
+      v.pause();
+      v.controls = true;
+      if (v.dataset.still) { v.poster = v.dataset.still; v.load(); }
+    });
   } else if ("IntersectionObserver" in window) {
     var io = new IntersectionObserver(function (entries) {
       entries.forEach(function (e) {
