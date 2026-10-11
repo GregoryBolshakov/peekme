@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.4-beta.2 (2026-10-11)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.4-beta.2`.
+
+- tmux with `mouse on`: after a drag that tmux handles (the agent leaves the mouse alone, like
+  Kiro inline or Claude classic), Option+Shift+P did nothing when tmux stayed in copy mode.
+  Option+P worked. Now both work, also as Alt+Shift+P.
+- tmux with `mouse on`: a click on underlined text did nothing when the agent leaves the mouse
+  alone, because tmux keeps plain clicks. peekme now asks tmux to hand them over in its own
+  pane, so the click opens the saved answer. Drags and the wheel stay with tmux. Needs tmux 3.2
+  or newer.
+
 ## 0.4.4-beta.1 (2026-10-11)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.4-beta.1`.
