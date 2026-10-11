@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% import "macros.html" as m %}
 {% block head %}
+<link rel="preload" as="image" href="{{ get_url(path='media/' ~ page.extra.media ~ '-start.webp') }}" fetchpriority="high">
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"peekme for {{ page.extra.agent }}","applicationCategory":"DeveloperApplication","operatingSystem":"Linux, macOS","softwareVersion":"{{ config.extra.version }}","url":"{{ page.permalink }}","codeRepository":"{{ config.extra.repo }}","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"description":"{{ page.description }}"}
 </script>
