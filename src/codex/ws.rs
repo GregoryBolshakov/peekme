@@ -215,8 +215,14 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         let server = std::thread::spawn(move || {
             let (mut s, _) = listener.accept().unwrap();
-            let mut req = [0u8; 1024];
-            let _ = s.read(&mut req).unwrap();
+            // The whole upgrade request: one read may return only part of it,
+            // and the rest would be taken for the client's frames.
+            let mut req = Vec::new();
+            let mut byte = [0u8; 1];
+            while !req.ends_with(b"\r\n\r\n") {
+                s.read_exact(&mut byte).unwrap();
+                req.push(byte[0]);
+            }
             s.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n")
                 .unwrap();
             // ping, then "hel" + "lo" as two fragments, then close
