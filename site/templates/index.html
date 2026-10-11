@@ -2,6 +2,7 @@
 {% import "macros.html" as m %}
 
 {% block head %}
+<link rel="preload" as="image" href="{{ get_url(path='media/claude-start.webp') }}" fetchpriority="high">
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"peekme","applicationCategory":"DeveloperApplication","operatingSystem":"Linux, macOS","softwareVersion":"{{ config.extra.version }}","url":"{{ config.base_url }}","downloadUrl":"{{ config.extra.repo }}/releases/latest","codeRepository":"{{ config.extra.repo }}","license":"https://opensource.org/licenses/MIT","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"description":"{{ config.description }}"}
 </script>

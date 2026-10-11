@@ -53,6 +53,24 @@
     videos.forEach(function (v) { io.observe(v); });
   }
 
+  // Each terminal fades in once its picture is ready, instead of showing as an empty dark box
+  // first (style.css keeps it hidden until .ready). Same for the agent card screenshots.
+  function ready(el) { el.classList.add("ready"); }
+  videos.forEach(function (v) {
+    var term = v.closest(".term");
+    if (!term) return;
+    var done = function () { ready(term); };
+    v.addEventListener("loadeddata", done);
+    var img = new Image();
+    img.src = v.poster;
+    if (img.decode) img.decode().then(done, done); else { img.onload = img.onerror = done; }
+  });
+  document.querySelectorAll(".agent-card img").forEach(function (img) {
+    if (img.complete) { ready(img); return; }
+    img.addEventListener("load", function () { ready(img); });
+    img.addEventListener("error", function () { ready(img); });
+  });
+
   // Star count from the GitHub API, shown from 20 up. The button works without it.
   var gh = document.querySelector("[data-stars]");
   if (gh && window.fetch) {

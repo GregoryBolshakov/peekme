@@ -125,6 +125,12 @@ section { padding: 64px 0; }
 .term video { width: 100%; aspect-ratio: 1028 / 599; background: var(--term); }
 .term figcaption { background: var(--bg); padding: 10px 4px 0; font-size: 0.9rem; text-align: center; }
 .term.small { box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25); }
+/* A dark terminal frame drawn before its picture arrives pops in as an empty box, then fills.
+   site.js adds .ready once the poster is decoded; the late animation covers a failed script. */
+.js .term, .js .agent-card img { opacity: 0; transition: opacity 0.2s ease-out; animation: show-late 0.2s 3s forwards; }
+.js .term.ready, .js .agent-card img.ready { opacity: 1; animation: none; }
+@keyframes show-late { to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .js .term, .js .agent-card img { transition: none; } }
 
 /* features */
 .feature { display: grid; grid-template-columns: 1fr 1.5fr; gap: 40px; align-items: center; margin: 48px 0; }
