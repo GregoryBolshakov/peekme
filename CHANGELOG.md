@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.6-beta.3 (2026-10-12)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.3`.
+
+- The mouse wheel scrolls the chat again while a peek box is open. Codex and other full screen
+  agents get the wheel and scroll as usual, and the box moves with the selected text. With Claude
+  Code classic or Kiro inline the first turn of the wheel gives the mouse back to your terminal,
+  so the next turns scroll its history. The box stays open in both cases. Only a box with more
+  text than the screen has rows still takes the wheel.
+- A question asked with Option+Shift+P: when the model wrote a sentence, then thought or used a
+  tool, the rest came right after that sentence with no space. Now there is an empty line
+  between them.
+
 ## 0.4.6-beta.2 (2026-10-12)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.2`.
