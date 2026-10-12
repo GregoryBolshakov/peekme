@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use super::transcript;
 use crate::agent::Agent;
 use crate::context::{self, CLOSE, OPEN};
-use crate::explain::{DEEP_ASK_ABOVE_TOKENS, Progress, Request};
+use crate::explain::{DEEP_ASK_ABOVE_TOKENS, Parts, Progress, Request};
 
 const SYSTEM: &str = "You are \"peek\", an explainer embedded in a terminal. The user highlighted a fragment \
      of text (marked ⟦like this⟧) in their GitHub Copilot CLI session and wants to understand it. Explain \
@@ -341,6 +341,7 @@ fn run(slot: &Slot, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
         )?;
         let mut model_name = model().unwrap_or_else(|| "Copilot".into());
         let mut started = false;
+        let mut parts = Parts::default();
         loop {
             let msg = events
                 .recv_timeout(Duration::from_secs(90))
@@ -362,7 +363,10 @@ fn run(slot: &Slot, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
                                 source: built.label,
                             });
                         }
-                        tx(Progress::Delta(d.to_string()));
+                        let id = data.get("messageId").and_then(Value::as_str);
+                        if let Some(d) = parts.text(id.unwrap_or_default(), d) {
+                            tx(Progress::Delta(d));
+                        }
                     }
                 }
                 Some("assistant.message") if !started => {

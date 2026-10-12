@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use super::transcript;
 use crate::agent::Agent;
 use crate::context::{self, CLOSE, OPEN};
-use crate::explain::{DEEP_ASK_ABOVE_TOKENS, Progress, Request};
+use crate::explain::{DEEP_ASK_ABOVE_TOKENS, Parts, Progress, Request};
 
 const SYSTEM: &str = "You are \"peek\", an explainer embedded in a terminal. The user highlighted a fragment \
      of text (marked ⟦like this⟧) in their Claude Code session and wants to understand it. Explain what the \
@@ -325,6 +325,8 @@ fn run(pool: &Arc<Pool>, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
     w.stdin.flush()?;
 
     let mut started = false;
+    // Each content block is its own part: text, thinking, text again.
+    let (mut parts, mut block) = (Parts::default(), 0usize);
     let mut model_name = match &req.question {
         Some(_) => chat_model.clone().unwrap_or_else(|| "Claude".into()),
         None => model(),
@@ -349,6 +351,9 @@ fn run(pool: &Arc<Pool>, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
                 }
             }
             Some("stream_event") => {
+                if v.pointer("/event/type").and_then(Value::as_str) == Some("content_block_start") {
+                    block += 1;
+                }
                 let delta = v.pointer("/event/delta");
                 if delta.and_then(|d| d.get("type")).and_then(Value::as_str) == Some("text_delta")
                     && let Some(t) = delta.and_then(|d| d.get("text")).and_then(Value::as_str)
@@ -360,7 +365,9 @@ fn run(pool: &Arc<Pool>, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
                             source: built.label,
                         });
                     }
-                    tx(Progress::Delta(t.to_string()));
+                    if let Some(t) = parts.text(&block.to_string(), t) {
+                        tx(Progress::Delta(t));
+                    }
                 }
             }
             Some("result") => {

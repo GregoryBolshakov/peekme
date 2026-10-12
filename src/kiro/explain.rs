@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use super::transcript;
 use crate::agent::Agent;
 use crate::context::{self, CLOSE, OPEN};
-use crate::explain::{DEEP_ASK_ABOVE_TOKENS, Progress, Request};
+use crate::explain::{DEEP_ASK_ABOVE_TOKENS, Parts, Progress, Request};
 
 /// Kiro wraps an agent's own prompt in its system prompt, where the model
 /// does not take it as its instructions; so they go first in the message.
@@ -418,13 +418,21 @@ fn ask(
             json!({"sessionId": sid, "prompt": [{"type": "text", "text": built.prompt}]}),
         )?;
         let deadline = Instant::now() + Duration::from_secs(90);
-        let on_event = |msg: Value, started: &mut bool| {
+        // Chunks have no message id: a thought or a tool call between two
+        // of them starts a new part.
+        let (mut parts, mut part) = (Parts::default(), 0usize);
+        let mut on_event = |msg: Value, started: &mut bool| {
             let update = msg
                 .pointer("/params/update")
                 .cloned()
                 .unwrap_or(Value::Null);
-            if update.get("sessionUpdate").and_then(Value::as_str) != Some("agent_message_chunk") {
-                return;
+            match update.get("sessionUpdate").and_then(Value::as_str) {
+                Some("agent_message_chunk") => {}
+                Some("agent_thought_chunk" | "tool_call" | "tool_call_update" | "plan") => {
+                    part += 1;
+                    return;
+                }
+                _ => return,
             }
             if let Some(t) = update.pointer("/content/text").and_then(Value::as_str) {
                 if !*started {
@@ -434,7 +442,9 @@ fn ask(
                         source: built.label,
                     });
                 }
-                tx(Progress::Delta(t.to_string()));
+                if let Some(t) = parts.text(&part.to_string(), t) {
+                    tx(Progress::Delta(t));
+                }
             }
         };
         loop {

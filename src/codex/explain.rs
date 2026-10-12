@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::agent::Agent;
 use crate::context::{self, ConvItem, Conversation, Hit, Source};
-use crate::explain::{DEEP_ASK_ABOVE_TOKENS, Progress, Request};
+use crate::explain::{DEEP_ASK_ABOVE_TOKENS, Parts, Progress, Request};
 
 type Pending = Mutex<HashMap<u64, Sender<Result<Value, String>>>>;
 
@@ -436,6 +436,7 @@ fn run(server: &AppServer, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
     });
 
     let events = server.subscribe(&thread);
+    let mut parts = Parts::default();
     let result = (|| -> Result<()> {
         server.request(
             "turn/start",
@@ -455,8 +456,11 @@ fn run(server: &AppServer, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
                 .unwrap_or_default();
             match method {
                 "item/agentMessage/delta" => {
-                    if let Some(d) = msg.pointer("/params/delta").and_then(Value::as_str) {
-                        tx(Progress::Delta(d.to_string()));
+                    let item = msg.pointer("/params/itemId").and_then(Value::as_str);
+                    if let Some(d) = msg.pointer("/params/delta").and_then(Value::as_str)
+                        && let Some(d) = parts.text(item.unwrap_or_default(), d)
+                    {
+                        tx(Progress::Delta(d));
                     }
                 }
                 "error" => {

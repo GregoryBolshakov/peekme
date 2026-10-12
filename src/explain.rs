@@ -28,6 +28,43 @@ pub enum Progress {
     },
 }
 
+/// Joins the text of the messages of one answer. A model can write a
+/// sentence, think or call a tool, then write the rest as a new message:
+/// the messages get an empty line between them instead of running together.
+#[derive(Default)]
+pub struct Parts {
+    /// The message the last text was from.
+    last: Option<String>,
+    /// Newlines at the end of the text so far.
+    tail: usize,
+}
+
+impl Parts {
+    /// `delta` of message `id`, with a break in front when it starts a new
+    /// message after text of another one. None for empty text.
+    pub fn text(&mut self, id: &str, delta: &str) -> Option<String> {
+        if delta.is_empty() {
+            return None;
+        }
+        let new = self.last.as_deref().is_some_and(|l| l != id);
+        self.last = Some(id.to_string());
+        let out = if new {
+            let lead = delta.len() - delta.trim_start_matches('\n').len();
+            let breaks = 2usize.saturating_sub(self.tail + lead);
+            format!("{}{delta}", "\n".repeat(breaks))
+        } else {
+            delta.to_string()
+        };
+        let trailing = out.len() - out.trim_end_matches('\n').len();
+        self.tail = if trailing == out.len() {
+            self.tail + trailing
+        } else {
+            trailing
+        };
+        Some(out)
+    }
+}
+
 pub struct Request {
     /// The screen text with the selected range.
     pub screen: ScreenSel,
@@ -153,5 +190,31 @@ impl Explainer {
             Explainer::Kiro(slot) => slot.shutdown(),
             Explainer::Fake => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn messages_of_one_answer_get_an_empty_line_between_them() {
+        let mut p = Parts::default();
+        let mut all = String::new();
+        for (id, d) in [
+            ("a", "First"),
+            ("a", " sentence."),
+            ("b", "Then"),
+            ("b", " more."),
+        ] {
+            all.push_str(&p.text(id, d).unwrap());
+        }
+        assert_eq!(all, "First sentence.\n\nThen more.");
+        // Newlines already there count.
+        let mut p = Parts::default();
+        let a = p.text("a", "One.\n").unwrap();
+        let b = p.text("b", "\nTwo.").unwrap();
+        assert_eq!(a + &b, "One.\n\nTwo.");
+        assert_eq!(p.text("b", ""), None);
     }
 }
