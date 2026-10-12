@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.6-beta.2 (2026-10-12)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.2`.
+
+- The peek box no longer stops growing at the edge of its side of the selection. When the
+  answer needs more rows, the chat text moves away to make room, the selection too, and comes
+  back when the box closes. Now the box shows the whole answer. It scrolls only when the
+  answer is taller than the screen.
+
 ## 0.4.6-beta.1 (2026-10-12)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.1`.
