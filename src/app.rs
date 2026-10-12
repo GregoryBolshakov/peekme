@@ -89,8 +89,21 @@ struct Open {
     drawn_at: Instant,
     dirty: bool,
     /// When the wheel last went to the child: its output for FOLLOW after
-    /// that is shown under the box (the chat scrolls, the box stays).
+    /// that is shown around the box (the chat scrolls, the box moves with it).
     follow: Option<Instant>,
+    /// The screen when the box opened: closing puts the region back to it
+    /// before the held output is replayed. `snap` is what the box is drawn
+    /// with, newer once the chat scrolled.
+    base: Snapshot,
+    /// What each region row shows on the terminal, as drawn (None: unknown).
+    shown: Vec<Option<String>>,
+    /// Chat rows seen while the box is open, drawn, by `scrolled` + row: the
+    /// rows next to the box when the chat scrolled them off the screen.
+    mem: std::collections::HashMap<isize, String>,
+    /// How far the chat scrolled since the box opened, in rows (up is plus).
+    scrolled: isize,
+    /// The child wrote since the box was last drawn around its screen.
+    fresh: bool,
 }
 
 /// Mouse reports (button events, SGR form) peekme turns on while a box is open
@@ -663,6 +676,7 @@ impl App {
             }
             Some(open) => {
                 open.held.extend_from_slice(bytes);
+                open.fresh = true;
                 // The real terminal won't see these bytes yet, so the shadow answers.
                 let replies = self.shadow.take_replies();
                 if !replies.is_empty() {
@@ -799,13 +813,13 @@ impl App {
     fn following(&self) -> bool {
         self.open
             .as_ref()
-            .is_some_and(|o| !o.held.is_empty() && o.follow.is_some_and(|t| t.elapsed() < FOLLOW))
+            .is_some_and(|o| o.fresh && o.follow.is_some_and(|t| t.elapsed() < FOLLOW))
     }
 
-    /// Show the child's new screen with the box still open: put back what
-    /// the box covered, replay the held output, then draw the box again next
-    /// to where the selection is now. One synchronized frame, so the box
-    /// never blinks.
+    /// Show the child's new screen around the open box. Its output stays
+    /// held (closing replays it); the box keeps its place next to the
+    /// selection, which moved by as many rows as the chat scrolled, and only
+    /// the rows that changed are written.
     fn follow_feed(&mut self, out: &mut dyn Write) -> Result<()> {
         let now = self.shadow.snapshot();
         if let Some(top) = self.open.as_ref().and_then(|o| o.strip_top)
@@ -817,42 +831,45 @@ impl App {
         let Some(open) = &mut self.open else {
             return Ok(());
         };
-        let mut s = String::from(SYNC_BEGIN);
-        if let Some(top) = open.strip_top {
-            render::rows(&mut s, top, &open.snap.rows[top..]);
+        let (lo, hi) = open.lay.region;
+        let hi = hi.min(now.rows.len()).min(open.snap.rows.len());
+        let found = match (&open.selection, &mut open.mark) {
+            (Some((sel, _)), Some((place, cells))) if place.alt() == alt => place
+                .find(&now, &select::Text::of(&now), sel, history)
+                .inspect(|f| *cells = f.clone()),
+            _ => None,
+        };
+        // Rows match rows: how far the chat moved. The selection's own row
+        // when nothing matches (it jumped further than a screen).
+        let moved = overlay::scroll_delta(&open.snap, &now, lo..hi).or_else(|| {
+            let f = found.as_ref()?;
+            let home = if open.lay.below {
+                f[f.len() - 1].0 as isize + 1
+            } else {
+                f[0].0 as isize
+            };
+            Some(open.lay.home - home)
+        });
+        if let Some(k) = moved {
+            open.scrolled += k;
+            open.lay.home -= k;
+            open.lay.box_top -= k;
         }
-        s.push_str(&overlay::close_frame(&open.snap, &open.lay));
-        let mut bytes = s.into_bytes();
-        let held = render::strip_sync(&render::strip_answered_queries(&open.held));
-        self.boundary.feed(&held);
-        bytes.extend_from_slice(&held);
-        open.held.clear();
-        open.peek.waiting_updates = 0;
-        if let (Some((sel, _)), Some((place, cells))) = (&open.selection, &mut open.mark)
-            && place.alt() == alt
-            && let Some(found) = place.find(&now, &select::Text::of(&now), sel, history)
-        {
-            let (first, last) = (found[0].0, found[found.len() - 1].0);
-            let (lo, hi) = open.lay.region;
-            let home = if open.lay.below { last + 1 } else { first };
-            open.lay = overlay::resize(
-                &Layout {
-                    home: home.clamp(lo, hi),
-                    ..open.lay
-                },
-                open.lay.box_height,
-            );
-            *cells = found;
+        for r in lo..hi {
+            open.mem
+                .insert(r as isize + open.scrolled, render::row_text(&now.rows[r]));
         }
-        if let Some(top) = open.strip_top {
-            open.strip_shown = now.rows[top..].to_vec();
-            open.strip_dirty = false;
-        }
+        crate::event(
+            "follow",
+            serde_json::json!({"moved": moved, "box_top": open.lay.box_top}),
+        );
         open.history = history;
         open.snap = now;
-        let frame = self.box_bytes(true);
-        bytes.extend_from_slice(frame.as_bytes());
-        out.write_all(&bytes)?;
+        open.fresh = false;
+        open.strip_dirty = open.strip_top.is_some();
+        let frame = self.box_bytes();
+        out.write_all(frame.as_bytes())?;
+        self.refresh_strip(out)?;
         out.flush()?;
         Ok(())
     }
@@ -923,9 +940,9 @@ impl App {
             let repaint = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 let mut s = String::from(SYNC_BEGIN);
                 if let Some(top) = open.strip_top {
-                    render::rows(&mut s, top, &open.snap.rows[top..]);
+                    render::rows(&mut s, top, &open.base.rows[top..]);
                 }
-                s.push_str(&overlay::close_frame(&open.snap, &open.lay));
+                s.push_str(&overlay::close_frame(&open.base, &open.lay));
                 s
             }))
             .unwrap_or_default();
@@ -1927,6 +1944,13 @@ impl App {
             last_click: None,
             parts: Vec::new(),
             own_mouse,
+            base: snap.clone(),
+            shown: vec![None; lay.region.1 - lay.region.0],
+            mem: (lay.region.0..lay.region.1.min(snap.rows.len()))
+                .map(|r| (r as isize, render::row_text(&snap.rows[r])))
+                .collect(),
+            scrolled: 0,
+            fresh: false,
             snap,
             lay,
             peek,
@@ -1938,7 +1962,7 @@ impl App {
             dirty: false,
             follow: None,
         });
-        let mut frame = self.box_bytes(true);
+        let mut frame = self.box_bytes();
         if own_mouse {
             frame.push_str(MOUSE_ON);
         }
@@ -2025,7 +2049,7 @@ impl App {
             Some(e) => Status::Error(e),
             None => Status::Thinking,
         };
-        let frame = self.box_bytes(false);
+        let frame = self.box_bytes();
         out.write_all(frame.as_bytes())?;
         out.flush()?;
         Ok(true)
@@ -2207,14 +2231,17 @@ impl App {
         crate::event("close", serde_json::json!({"held_bytes": open.held.len()}));
         let mut bytes = Vec::new();
         bytes.extend_from_slice(SYNC_BEGIN.as_bytes());
-        if !skip_repaint {
+        let in_place = !skip_repaint && self.can_close_in_place(&open);
+        if in_place {
+            bytes.extend_from_slice(&self.close_in_place(&open));
+        } else if !skip_repaint {
             // The live rows show newer content than the snapshot; put them back
             // too, so replaying the held output starts from the state it expects.
             let mut s = String::new();
             if let Some(top) = open.strip_top {
-                render::rows(&mut s, top, &open.snap.rows[top..]);
+                render::rows(&mut s, top, &open.base.rows[top..]);
             }
-            s.push_str(&overlay::close_frame(&open.snap, &open.lay));
+            s.push_str(&overlay::close_frame(&open.base, &open.lay));
             bytes.extend_from_slice(s.as_bytes());
         }
         if open.own_mouse {
@@ -2225,9 +2252,11 @@ impl App {
             self.own_mouse_off = Some(Instant::now());
         }
         self.set_pointer(false, &mut bytes)?;
-        let held = render::strip_answered_queries(&open.held);
-        self.boundary.feed(&held);
-        bytes.extend_from_slice(&held);
+        if !in_place {
+            let held = render::strip_answered_queries(&open.held);
+            self.boundary.feed(&held);
+            bytes.extend_from_slice(&held);
+        }
         // The repaint took the underlines off the rows the box covered or
         // moved: put them back in the same frame, so they never blink.
         self.marks_all = true;
@@ -2239,6 +2268,52 @@ impl App {
         out.write_all(&bytes)?;
         out.flush()?;
         Ok(())
+    }
+
+    /// After the chat scrolled under a full-screen agent, the terminal shows
+    /// its newer screen around the box: closing can draw the rest of that
+    /// screen in place, instead of the old screen and then every held frame
+    /// (which a terminal without synchronized output shows as flicker). Only
+    /// when the held output stays on the alternate screen and ends between
+    /// two sequences, so the terminal ends in exactly the child's state.
+    fn can_close_in_place(&self, open: &Open) -> bool {
+        let switches = [&b"\x1b[?1049"[..], b"\x1b[?1047", b"\x1b[?47", b"\x1bc"];
+        let mut end = Boundary::default();
+        end.feed(&open.held);
+        open.follow.is_some()
+            && self.shadow.alt_screen()
+            && !self.shadow.in_sync_update()
+            && end.at_boundary()
+            && !switches
+                .iter()
+                .any(|s| open.held.windows(s.len()).any(|w| w == *s))
+    }
+
+    /// The held output's mode changes, then every row that differs from the
+    /// child's screen now, written in place.
+    fn close_in_place(&mut self, open: &Open) -> Vec<u8> {
+        let modes = render::modes_only(&render::strip_answered_queries(&open.held));
+        self.boundary.feed(&modes);
+        let now = self.shadow.snapshot();
+        let (lo, hi) = open.lay.region;
+        let mut s = String::new();
+        for (r, row) in now.rows.iter().enumerate() {
+            let want = render::row_text(row);
+            let has = if (lo..hi).contains(&r) {
+                open.shown.get(r - lo).cloned().flatten()
+            } else if let Some(top) = open.strip_top.filter(|&t| r >= t) {
+                open.strip_shown.get(r - top).map(|c| render::row_text(c))
+            } else {
+                open.base.rows.get(r).map(|c| render::row_text(c))
+            };
+            if has.as_ref() != Some(&want) {
+                s.push_str(&format!("\x1b[{};1H{want}", r + 1));
+            }
+        }
+        render::restore_cursor(&mut s, &now);
+        let mut bytes = modes;
+        bytes.extend_from_slice(s.as_bytes());
+        bytes
     }
 
     /// PgUp/PgDn: the innermost box scrolls.
@@ -2322,7 +2397,7 @@ impl App {
         if self.open.is_none() {
             return Ok(());
         }
-        let frame = self.box_bytes(false);
+        let frame = self.box_bytes();
         out.write_all(frame.as_bytes())?;
         out.flush()?;
         Ok(())
@@ -2450,11 +2525,11 @@ fn message_layout(snap: &Snapshot, known_top: usize, peek: &PeekBox) -> Layout {
         .min(rows);
     let top = snap.cursor.0.saturating_sub(h).max(known_top).min(rows - h);
     Layout {
-        box_top: top,
+        box_top: top as isize,
         box_height: h,
         region: (top, top + h),
         below: true,
-        home: top,
+        home: top as isize,
     }
 }
 
@@ -2735,7 +2810,7 @@ mod tests {
         let mut app = app_with_an_answer(answer, true);
         let mut real = Shadow::new(40, 24);
         let (mut child, mut out) = (Vec::new(), Vec::new());
-        let top = app.open.as_ref().unwrap().lay.box_top;
+        let top = app.open.as_ref().unwrap().lay.box_top as usize;
         // Body line 0 is the row under the top border; its text starts at column 2.
         // "A pseudo-terminal lets " is 23 chars: drag over "job control".
         let at = |col: usize| (top + 1, 2 + col);
@@ -2820,7 +2895,7 @@ mod tests {
         let answer = "A pseudo-terminal lets job control work inside tmux panes.";
         let mut app = app_with_an_answer(answer, true);
         let (mut child, mut out) = (Vec::new(), Vec::new());
-        let top = app.open.as_ref().unwrap().lay.box_top;
+        let top = app.open.as_ref().unwrap().lay.box_top as usize;
         let select = |app: &mut App, row: usize, from: usize, to: usize| {
             let drag = [
                 mouse(0, (row, from), true),
@@ -2870,7 +2945,7 @@ mod tests {
             .collect();
         let mut app = app_with_an_answer(&answer, true);
         let (mut child, mut out) = (Vec::new(), Vec::new());
-        let top = app.open.as_ref().unwrap().lay.box_top;
+        let top = app.open.as_ref().unwrap().lay.box_top as usize;
         let at = |col: usize| (top + 1, 2 + col);
         let drag = [
             mouse(0, at(17), true),
@@ -3012,7 +3087,7 @@ mod tests {
         let answer = "A pseudo-terminal lets job control work inside tmux panes.";
         let mut app = app_with_an_answer(answer, true);
         let (mut child, mut out) = (Vec::new(), Vec::new());
-        let top = app.open.as_ref().unwrap().lay.box_top;
+        let top = app.open.as_ref().unwrap().lay.box_top as usize;
         let click = |col: usize| {
             [
                 mouse(0, (top + 1, 2 + col), true),
@@ -3401,7 +3476,7 @@ mod tests {
         app.open_peek(&mut out).unwrap();
         real.advance(&std::mem::take(&mut out));
         let open = app.open.as_ref().unwrap();
-        let (top, above) = (open.strip_top.unwrap(), open.lay.box_top);
+        let (top, above) = (open.strip_top.unwrap(), (open.lay.box_top as usize));
         let sel_row = above - 1;
         let sel_text = app.shadow.snapshot().rows_text(sel_row, sel_row + 1);
 
@@ -3414,11 +3489,21 @@ mod tests {
             .unwrap();
         app.shadow.flush_sync();
         app.tick(&mut out).unwrap();
+        // peekme draws the result itself, row by row in place: Codex's own
+        // scroll never reaches the terminal, and no row is blanked first.
+        let frame = String::from_utf8_lossy(&out).to_string();
+        assert!(
+            !frame.contains("\x1b[2T") && !frame.contains("\x1b[2K"),
+            "{frame:?}"
+        );
         real.advance(&std::mem::take(&mut out));
         real.flush_sync();
         let open = app.open.as_ref().expect("still open");
-        assert_eq!(open.lay.box_top, above + 2, "moved with its selection");
-        assert!(open.held.is_empty(), "Codex's output went through");
+        assert_eq!(
+            (open.lay.box_top as usize),
+            above + 2,
+            "moved with its selection"
+        );
         let shown = real.snapshot();
         assert_eq!(shown.rows_text(sel_row + 2, sel_row + 3), sel_text);
         let border = shown.rows_text(above + 2, above + 3);
@@ -3426,11 +3511,72 @@ mod tests {
             border.starts_with("╭─ peek"),
             "the box right under it: {border}"
         );
-        // Closing leaves exactly Codex's screen.
+        // Closing leaves exactly Codex's screen, drawn in place too.
         app.close(&mut out, false).unwrap();
+        assert!(!String::from_utf8_lossy(&out).contains("\x1b[2T"));
         real.advance(&std::mem::take(&mut out));
         let now = app.shadow.snapshot();
         let shown = real.snapshot();
+        for r in 0..40 {
+            assert_eq!(
+                shown.rows_text(r, r + 1),
+                now.rows_text(r, r + 1),
+                "row {r}"
+            );
+        }
+    }
+
+    /// The chat scrolls the selection off the top: the box goes with it,
+    /// cut at the edge of the screen, and comes back whole when the chat
+    /// scrolls back. Each step writes only the rows that changed.
+    #[test]
+    fn the_box_scrolls_off_the_screen_with_its_selection() {
+        let mut app = test_app(120, 40);
+        let mut real = Shadow::new(120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(CODEX_0161_FULLSCREEN, &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+        app.open_peek(&mut out).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let open = app.open.as_ref().unwrap();
+        let (top, above) = (open.strip_top.unwrap(), open.lay.box_top);
+        let mut step = |app: &mut App, scroll: &str| {
+            app.on_input(b"\x1b[<65;40;30M", &mut Vec::new(), &mut Vec::new())
+                .unwrap();
+            let bytes = format!("\x1b[?2026h\x1b[1;{top}r{scroll}\x1b[r\x1b[?2026l");
+            let mut out = Vec::new();
+            app.on_output(bytes.as_bytes(), &mut out, &mut Vec::new())
+                .unwrap();
+            app.shadow.flush_sync();
+            app.tick(&mut out).unwrap();
+            real.advance(&out);
+            real.flush_sync();
+            (
+                real.snapshot(),
+                String::from_utf8_lossy(&out).matches(";1H").count(),
+            )
+        };
+        // Up 3: the selection row and the box top border are above the screen.
+        let (shown, _) = step(&mut app, "\x1b[3S");
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.lay.box_top, above - 3);
+        let body = shown.rows_text(0, 1);
+        assert!(body.starts_with("│ "), "the box, cut at the top: {body}");
+        // Down 3 again: whole, back where it was; only the rows that moved.
+        let (shown, rows) = step(&mut app, "\x1b[3T");
+        assert_eq!(app.open.as_ref().unwrap().lay.box_top, above);
+        let border = shown.rows_text(above as usize, above as usize + 1);
+        assert!(border.starts_with("╭─ peek"), "{border}");
+        assert!(rows < top, "{rows} rows written");
+        // The rows the chat scrolled off came back from memory, not blank.
+        let first = shown.rows_text(0, 1);
+        assert_eq!(first, app.shadow.snapshot().rows_text(0, 1));
+        app.close(&mut out, false).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let (now, shown) = (app.shadow.snapshot(), real.snapshot());
         for r in 0..40 {
             assert_eq!(
                 shown.rows_text(r, r + 1),
@@ -3459,8 +3605,8 @@ mod tests {
         let top = open.strip_top.expect("input area found on the full screen");
         assert!(top > 11 && top < 40);
         // The row right above the box (1-based), outside it.
-        assert!(open.lay.below && open.lay.box_top > 0);
-        let above = open.lay.box_top;
+        assert!(open.lay.below && (open.lay.box_top as usize) > 0);
+        let above = open.lay.box_top as usize;
 
         // Mouse motion is ignored; the wheel goes to Codex, which scrolls its
         // chat, and the box stays.
@@ -3607,7 +3753,11 @@ mod tests {
         real.advance(&std::mem::take(&mut out));
         let open = app.open.as_ref().unwrap();
         assert_eq!(open.peek.title, "merge c");
-        assert_eq!(open.lay.box_top, 10, "box right under the selected row");
+        assert_eq!(
+            (open.lay.box_top as usize),
+            10,
+            "box right under the selected row"
+        );
         assert_eq!(open.peek.child_name, "Claude");
         let top = open.strip_top.expect("Claude's input box stays live");
         assert_eq!(top, 35);
@@ -3925,7 +4075,11 @@ mod tests {
         real.advance(&std::mem::take(&mut out));
         let open = app.open.as_ref().expect("box open");
         assert_eq!(open.peek.title, "merge combines two");
-        assert_eq!(open.lay.box_top, 22, "right under the selected row");
+        assert_eq!(
+            (open.lay.box_top as usize),
+            22,
+            "right under the selected row"
+        );
         assert_eq!(open.peek.child_name, "Copilot");
         let top = open.strip_top.expect("Copilot's input box stays live");
         assert_eq!(top, 36);
@@ -4000,7 +4154,7 @@ mod tests {
         assert_eq!(open.peek.title, "Rust package manifest");
         // Four rows down to the input area are too few: the box goes above row 27.
         assert!(!open.lay.below);
-        assert_eq!(open.lay.box_top + open.lay.box_height, 26);
+        assert_eq!((open.lay.box_top as usize) + open.lay.box_height, 26);
         assert_eq!(open.peek.child_name, "Kiro");
         assert_eq!(open.strip_top, Some(31), "Kiro's input area stays live");
 
@@ -4094,7 +4248,7 @@ mod tests {
         assert_eq!(app.selection_source, "system");
         assert_eq!(open.peek.title, "main.rs — the program entry point");
         assert_eq!(
-            open.lay.box_top + open.lay.box_height,
+            (open.lay.box_top as usize) + open.lay.box_height,
             26,
             "right above row 27"
         );
@@ -4209,7 +4363,7 @@ mod tests {
         app.tx = tx;
         app.explainer = Some(Explainer::Fake);
         let (mut child, mut out) = (Vec::new(), Vec::new());
-        let top = app.open.as_ref().unwrap().lay.box_top;
+        let top = app.open.as_ref().unwrap().lay.box_top as usize;
         let at = |col: usize| (top + 1, 2 + col);
         let mut drag = mouse(0, at(23), true);
         drag.extend(mouse(32, at(33), true));
@@ -4271,7 +4425,7 @@ mod tests {
         for again in [&b"\x1bp"[..], b"\x1bP"] {
             let mut app = app_with_an_answer(answer, true);
             let (mut child, mut out) = (Vec::new(), Vec::new());
-            let top = app.open.as_ref().unwrap().lay.box_top;
+            let top = app.open.as_ref().unwrap().lay.box_top as usize;
             let at = |col: usize| (top + 1, 2 + col);
             // A peek inside the box on "job control", answered.
             let mut drag = mouse(0, at(23), true);
@@ -4292,7 +4446,7 @@ mod tests {
             let mut real = Shadow::new(40, 24);
             real.advance(SCREEN);
             real.advance(&std::mem::take(&mut out));
-            let top = app.open.as_ref().unwrap().lay.box_top;
+            let top = app.open.as_ref().unwrap().lay.box_top as usize;
             assert_eq!(
                 dotted(&real.snapshot(), top + 1),
                 "job control",
@@ -4313,7 +4467,7 @@ mod tests {
             app.on_idle(&mut out, &mut child).unwrap();
             real.advance(&std::mem::take(&mut out));
             let snap = real.snapshot();
-            let top = app.open.as_ref().unwrap().lay.box_top;
+            let top = app.open.as_ref().unwrap().lay.box_top as usize;
             let h = app.open.as_ref().unwrap().lay.box_height;
             for r in top..top + h {
                 assert_eq!(
@@ -4345,7 +4499,7 @@ mod tests {
             .unwrap();
         app.on_progress(id, Progress::Done, &mut out).unwrap();
         // The answer's first line is under the question line and a blank one.
-        let top = app.open.as_ref().unwrap().lay.box_top;
+        let top = app.open.as_ref().unwrap().lay.box_top as usize;
         let at = |col: usize| (top + 3, 2 + col);
         let mut drag = mouse(0, at(23), true);
         drag.extend(mouse(32, at(33), true));
@@ -4371,7 +4525,7 @@ mod tests {
         let mut real = Shadow::new(40, 24);
         real.advance(SCREEN);
         real.advance(&out);
-        let top = open.lay.box_top;
+        let top = open.lay.box_top as usize;
         assert_eq!(dotted(&real.snapshot(), top + 3), "job control");
     }
 }

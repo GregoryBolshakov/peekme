@@ -97,10 +97,11 @@ impl App {
         }
     }
 
-    /// Bytes that draw the open box with every box inside it: all of its
-    /// region when `full` (the box changed size), else only the box rows.
-    pub(super) fn box_bytes(&mut self, full: bool) -> String {
-        let full = self.fit_top() || full;
+    /// Bytes that draw the open box with every box inside it, and the chat
+    /// rows around it: only the rows that differ from what the terminal shows,
+    /// written in place, so nothing on screen blinks.
+    pub(super) fn box_bytes(&mut self) -> String {
+        self.fit_top();
         let Some(open) = &self.open else {
             return String::new();
         };
@@ -142,21 +143,34 @@ impl App {
                 anchor: anchor(i + 1),
             });
         }
-        let (mut frame, parts) = overlay::nest_frame(&open.snap, &open.lay, &levels, full);
+        let extra = |s: isize| open.mem.get(&(s + open.scrolled)).cloned();
+        let (rows, parts) = overlay::compose(&open.snap, &open.lay, &levels, &extra);
+        let mut frame = String::from(SYNC_BEGIN);
+        frame.push_str("\x1b[?25l");
+        let top = open.lay.region.0;
         let strip_top = open.strip_top;
+        let open = self.open.as_mut().unwrap();
+        for (i, text) in rows.into_iter().enumerate() {
+            if open.shown.get(i).and_then(Option::as_ref) != Some(&text) {
+                frame.push_str(&format!("\x1b[{};1H{text}", top + i + 1));
+                if let Some(slot) = open.shown.get_mut(i) {
+                    *slot = Some(text);
+                }
+            }
+        }
+        overlay::hide_cursor_at_rest(&mut frame, &open.snap);
+        frame.push_str(SYNC_END);
+        open.parts = parts;
+        open.drawn_at = Instant::now();
+        open.dirty = false;
         if let Some(top) = strip_top {
             frame.push_str(&strip_cursor(&self.shadow.snapshot(), top));
-        }
-        if let Some(open) = &mut self.open {
-            open.parts = parts;
-            open.drawn_at = Instant::now();
-            open.dirty = false;
         }
         frame
     }
 
-    fn draw_box(&mut self, full: bool, out: &mut dyn Write) -> Result<()> {
-        let frame = self.box_bytes(full);
+    fn draw_box(&mut self, out: &mut dyn Write) -> Result<()> {
+        let frame = self.box_bytes();
         out.write_all(frame.as_bytes())?;
         Ok(out.flush()?)
     }
@@ -164,7 +178,10 @@ impl App {
     /// Which box and text position screen `cell` is on, when it is in the box.
     fn box_spot(&self, cell: (usize, usize)) -> Option<(usize, Option<Pos>)> {
         let open = self.open.as_ref()?;
-        let row = cell.0.checked_sub(open.lay.box_top)?;
+        let row = open
+            .lay
+            .box_row(cell.0)
+            .filter(|_| open.lay.box_rows().contains(&cell.0))?;
         overlay::spot(open.parts.get(row)?, open.snap.cols, cell.1)
     }
 
@@ -226,7 +243,7 @@ impl App {
             if self.open.as_ref().is_some_and(|o| o.box_hover.is_some()) {
                 self.open.as_mut().unwrap().box_hover = None;
                 self.set_pointer(false, out)?;
-                self.draw_box(false, out)?;
+                self.draw_box(out)?;
             }
             return Ok(false);
         }
@@ -247,7 +264,7 @@ impl App {
                     _ => None,
                 };
                 if had.is_some_and(|d| d.moved) {
-                    self.draw_box(false, out)?;
+                    self.draw_box(out)?;
                 }
             }
             Mouse::Motion if button & 3 != 3 => {
@@ -260,7 +277,7 @@ impl App {
                 {
                     d.to = pos;
                     d.moved |= pos != d.from;
-                    self.draw_box(false, out)?;
+                    self.draw_box(out)?;
                 }
             }
             Mouse::Motion => {
@@ -273,7 +290,7 @@ impl App {
                     open.box_hover = now;
                     let hand = open.box_hover.is_some();
                     self.set_pointer(hand, out)?;
-                    self.draw_box(false, out)?;
+                    self.draw_box(out)?;
                 }
             }
             Mouse::Release => {
@@ -328,7 +345,7 @@ impl App {
                     moved: true,
                     done: true,
                 });
-                self.draw_box(false, out)?;
+                self.draw_box(out)?;
             }
             return Ok(());
         }
@@ -360,7 +377,7 @@ impl App {
         self.close_below(level);
         if shown {
             self.fit();
-            self.draw_box(true, out)?;
+            self.draw_box(out)?;
             return Ok(false);
         }
         let Some(a) = self.marks.answer(child) else {
@@ -458,7 +475,7 @@ impl App {
             None => Status::Thinking,
         };
         self.fit();
-        self.draw_box(true, out)
+        self.draw_box(out)
     }
 
     /// Put a new box inside box `level`, under its body line `line`: the saved
@@ -488,7 +505,7 @@ impl App {
             if let Some(p) = Self::level_peek_mut(open, level) {
                 p.note = Some("no room for another box here");
             }
-            return self.draw_box(true, out);
+            return self.draw_box(out);
         }
         let mut peek = PeekBox::new(&words);
         peek.child_name = open.peek.child_name;
@@ -559,7 +576,7 @@ impl App {
                 p.scroll = (line + 1 + height).saturating_sub(inner);
             }
         }
-        self.draw_box(true, out)
+        self.draw_box(out)
     }
 
     /// The most rows each level may take, outermost first, one more than
@@ -613,19 +630,16 @@ impl App {
     }
 
     /// With no boxes inside, the outer box is as tall as its text, from 3
-    /// rows while it thinks up to all of its region. Returns true when its
-    /// height changed (the whole region has to be drawn again).
-    fn fit_top(&mut self) -> bool {
+    /// rows while it thinks up to all of its region.
+    fn fit_top(&mut self) {
         let Some(open) = &mut self.open else {
-            return false;
+            return;
         };
-        if !open.nested.is_empty() {
-            return false;
+        let want = open.peek.fitted_height(open.snap.cols).max(3);
+        // The same height keeps its place, wherever the chat scrolled it.
+        if open.nested.is_empty() && want != open.lay.box_height {
+            open.lay = overlay::resize(&open.lay, want);
         }
-        let lay = overlay::resize(&open.lay, open.peek.fitted_height(open.snap.cols).max(3));
-        let changed = lay != open.lay;
-        open.lay = lay;
-        changed
     }
 
     /// The trail of answers down to box `level` and the words picked in it.
@@ -686,7 +700,7 @@ impl App {
         }
         self.close_below(depth - 1);
         self.fit();
-        self.draw_box(true, out)?;
+        self.draw_box(out)?;
         Ok(true)
     }
 
@@ -744,7 +758,7 @@ impl App {
             peek.scroll.saturating_sub(step)
         };
         // The selection is kept by text position; it scrolls with the text.
-        self.draw_box(false, out)
+        self.draw_box(out)
     }
 
     /// Progress of a request that is not the outermost box's.
@@ -800,7 +814,7 @@ impl App {
         if full {
             self.fit();
         }
-        self.draw_box(full, out)
+        self.draw_box(out)
     }
 
     /// An answer whose box was closed while it streamed: kept, and saved when

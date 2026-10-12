@@ -104,6 +104,13 @@ pub fn row(out: &mut String, row: usize, cells: &[Cell]) {
     self::cells(out, cells);
 }
 
+/// The bytes of one row (`cells` from column 1), as a string to compare.
+pub fn row_text(cells: &[Cell]) -> String {
+    let mut s = String::new();
+    self::cells(&mut s, cells);
+    s
+}
+
 /// Bytes for `cells` from the cursor on, ending with the pen reset.
 pub fn cells(out: &mut String, cells: &[Cell]) {
     let mut last = String::new();
@@ -190,6 +197,84 @@ pub fn strip_sync(buf: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The terminal state changes in `buf`, without what it draws: modes
+/// (`CSI h/l`), the scroll region, cursor style, keyboard protocol, pen
+/// resets aside, and every OSC, DCS or APC string (titles, clipboard). Text,
+/// control characters and cursor or erase sequences are dropped. For output
+/// whose picture is drawn some other way.
+pub fn modes_only(buf: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < buf.len() {
+        if buf[i] != 0x1b {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        let Some(&kind) = buf.get(i) else {
+            break;
+        };
+        match kind {
+            b'[' => {
+                i += 1;
+                let p = i;
+                while i < buf.len() && (0x30..=0x3f).contains(&buf[i]) {
+                    i += 1;
+                }
+                let params = &buf[p..i];
+                let q = i;
+                while i < buf.len() && (0x20..=0x2f).contains(&buf[i]) {
+                    i += 1;
+                }
+                let inter = &buf[q..i];
+                let Some(&end) = buf.get(i) else {
+                    break;
+                };
+                i += 1;
+                let keep = match end {
+                    b'h' | b'l' | b'r' | b't' => true,
+                    b'q' => inter == b" ",
+                    b'p' => inter == b"!",
+                    b'u' | b'm' => params.first().is_some_and(|c| b"<>=".contains(c)),
+                    _ => false,
+                };
+                if keep {
+                    out.extend_from_slice(&buf[start..i]);
+                }
+            }
+            b']' | b'P' | b'_' | b'^' | b'X' => {
+                i += 1;
+                while i < buf.len() {
+                    if buf[i] == 0x07 {
+                        i += 1;
+                        break;
+                    }
+                    if buf[i] == 0x1b && buf.get(i + 1) == Some(&b'\\') {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+                out.extend_from_slice(&buf[start..i]);
+            }
+            0x20..=0x2f => {
+                while i < buf.len() && (0x20..=0x2f).contains(&buf[i]) {
+                    i += 1;
+                }
+                i = (i + 1).min(buf.len());
+                out.extend_from_slice(&buf[start..i]);
+            }
+            b'=' | b'>' => {
+                i += 1;
+                out.extend_from_slice(&buf[start..i]);
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
 /// Tracks whether a byte stream stopped between two escape sequences and
 /// characters, or inside one. Our own frames may only be written at a
 /// boundary: an OSC cut in two by a box frame would print the rest of the
@@ -261,6 +346,18 @@ impl Boundary {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn modes_only_keeps_state_and_drops_drawing() {
+        let held = b"\x1b[?2026h\x1b[3;5Hhello\r\n\x1b[2K\x1b[?1002l\x1b]0;title\x07\x1b[1;20r\
+\x1b[2 q\x1b[>1u\x1b[31mred\x1b(B\x1bM\x1b7\x1b[?2026l";
+        assert_eq!(
+            modes_only(held),
+            b"\x1b[?2026h\x1b[?1002l\x1b]0;title\x07\x1b[1;20r\x1b[2 q\x1b[>1u\x1b(B\x1b[?2026l"
+                .to_vec()
+        );
+    }
+
     use super::*;
 
     #[test]

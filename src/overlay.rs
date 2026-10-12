@@ -12,8 +12,10 @@ use crate::shadow::Snapshot;
 /// Where the box sits and which screen rows peekme repaints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
-    /// First and last screen rows of the box.
-    pub box_top: usize,
+    /// Screen row of the box's top border. Above the region (even above the
+    /// screen) when the chat scrolled its selection up: only the box rows in
+    /// the region are drawn.
+    pub box_top: isize,
     pub box_height: usize,
     /// Rows redrawn while the box is open (and restored on close).
     pub region: (usize, usize),
@@ -21,23 +23,48 @@ pub struct Layout {
     pub below: bool,
     /// The snapshot row the box goes in front of: rows from it on are shown
     /// after the box, the ones before it above the box. A box taller than its
-    /// side pushes the selection away to make room.
-    pub home: usize,
+    /// side pushes the selection away to make room. Off the screen when the
+    /// chat scrolled the selection away.
+    pub home: isize,
 }
 
 impl Layout {
-    /// The snapshot row shown at screen row `r`: none inside the box.
-    pub fn snap_row(&self, r: usize) -> Option<usize> {
-        let end = self.box_top + self.box_height;
-        if (self.box_top..end).contains(&r) {
+    pub fn box_end(&self) -> isize {
+        self.box_top + self.box_height as isize
+    }
+
+    /// The box row at screen row `r`, when the box covers it.
+    pub fn box_row(&self, r: usize) -> Option<usize> {
+        let r = r as isize;
+        (self.box_top..self.box_end())
+            .contains(&r)
+            .then(|| (r - self.box_top) as usize)
+    }
+
+    /// Screen rows of the box that are drawn: the ones in the region.
+    pub fn box_rows(&self) -> Range<usize> {
+        let (lo, hi) = (self.region.0 as isize, self.region.1 as isize);
+        let top = self.box_top.clamp(lo, hi) as usize;
+        top..(self.box_end().clamp(lo, hi) as usize).max(top)
+    }
+
+    /// The snapshot row shown at screen row `r`, which can be off the
+    /// snapshot: none inside the box.
+    pub fn src_row(&self, r: usize) -> Option<isize> {
+        if self.box_row(r).is_some() {
             None
         } else if !(self.region.0..self.region.1).contains(&r) {
-            Some(r)
-        } else if r < self.box_top {
-            Some(r + self.home - self.box_top)
+            Some(r as isize)
+        } else if (r as isize) < self.box_top {
+            Some(r as isize + self.home - self.box_top)
         } else {
-            Some(r + self.home - end)
+            Some(r as isize + self.home - self.box_end())
         }
+    }
+
+    /// Like `src_row`, for a row of the snapshot.
+    pub fn snap_row(&self, r: usize) -> Option<usize> {
+        self.src_row(r).and_then(|s| usize::try_from(s).ok())
     }
 }
 
@@ -62,11 +89,11 @@ pub fn layout_within(top: usize, rows: usize, sel_first: usize, sel_last: usize)
         (true, top)
     };
     let lay = Layout {
-        box_top: home,
+        box_top: home as isize,
         box_height: 0,
         region: (top, rows),
         below,
-        home,
+        home: home as isize,
     };
     resize(&lay, want.min(if below { rows - home } else { home - top }))
 }
@@ -467,8 +494,8 @@ impl PeekBox {
     }
 }
 
-/// Draw a nest of boxes, `levels[0]` filling `lay`. Returns, per box row, the
-/// boxes and lines it shows.
+/// Draw a nest of boxes, `levels[0]` filling `lay` (its rows in the region).
+/// Returns, per box row, the boxes and lines it shows.
 pub fn draw_levels(
     out: &mut String,
     lay: &Layout,
@@ -479,10 +506,43 @@ pub fn draw_levels(
         return Vec::new();
     }
     let rows = box_rows(levels, 0, cols);
-    for (i, row) in rows.iter().enumerate() {
-        write!(out, "\x1b[{};1H{}", lay.box_top + 1 + i, row.text).unwrap();
+    for r in lay.box_rows() {
+        if let Some(row) = lay.box_row(r).and_then(|i| rows.get(i)) {
+            write!(out, "\x1b[{};1H{}", r + 1, row.text).unwrap();
+        }
     }
     rows.into_iter().map(|r| r.parts).collect()
+}
+
+/// What each row of the region shows with the box open: the box rows, and
+/// the snapshot rows shifted away from it. `extra` gives rows the chat
+/// scrolled off the snapshot, by snapshot row (they are blank without it).
+/// Also returns, per box row, the boxes and lines it shows.
+pub fn compose(
+    snap: &Snapshot,
+    lay: &Layout,
+    levels: &[Level],
+    extra: &dyn Fn(isize) -> Option<String>,
+) -> (Vec<String>, Vec<Vec<Part>>) {
+    let rows = box_rows(levels, 0, snap.cols);
+    let (top, bottom) = lay.region;
+    let shown = (top..bottom)
+        .map(|r| match (lay.box_row(r), lay.src_row(r)) {
+            (Some(i), _) => rows
+                .get(i)
+                .map_or_else(|| "\x1b[0m\x1b[2K".to_string(), |r| r.text.clone()),
+            (None, Some(s))
+                if (top as isize..bottom as isize).contains(&s)
+                    && (s as usize) < snap.rows.len() =>
+            {
+                render::row_text(&snap.rows[s as usize])
+            }
+            (None, s) => s
+                .and_then(extra)
+                .unwrap_or_else(|| "\x1b[0m\x1b[2K".to_string()),
+        })
+        .collect();
+    (shown, rows.into_iter().map(|r| r.parts).collect())
 }
 
 /// How far the box at `k` can scroll: its own lines plus the inner box.
@@ -632,7 +692,7 @@ pub fn nest_frame(
 fn shift_rows(out: &mut String, snap: &Snapshot, lay: &Layout) {
     let (top, bottom) = lay.region;
     for r in top..bottom {
-        if (lay.box_top..lay.box_top + lay.box_height).contains(&r) {
+        if lay.box_row(r).is_some() {
             continue;
         }
         match lay.snap_row(r).filter(|&s| s < snap.rows.len()) {
@@ -642,9 +702,39 @@ fn shift_rows(out: &mut String, snap: &Snapshot, lay: &Layout) {
     }
 }
 
+/// How many rows the text of `rows` moved up from `old` to `new` (down is
+/// minus): the shift under which the most non-blank rows are the same, the
+/// smallest among equals. None when too few rows match to tell.
+pub fn scroll_delta(old: &Snapshot, new: &Snapshot, rows: Range<usize>) -> Option<isize> {
+    let text = |s: &Snapshot| -> Vec<String> {
+        rows.clone()
+            .map(|r| s.rows_text(r, r + 1).trim_end().to_string())
+            .collect()
+    };
+    let (old, new) = (text(old), text(new));
+    let n = new.len() as isize;
+    let filled = new.iter().filter(|t| !t.trim().is_empty()).count();
+    let mut best: Option<(usize, isize)> = None;
+    for k in -(n - 1)..n {
+        let same = (0..n)
+            .filter(|&i| {
+                let j = i + k;
+                (0..n).contains(&j)
+                    && !new[i as usize].trim().is_empty()
+                    && new[i as usize] == old[j as usize]
+            })
+            .count();
+        if best.is_none_or(|(b, bk)| same > b || (same == b && k.abs() < bk.abs())) {
+            best = Some((same, k));
+        }
+    }
+    best.filter(|&(same, _)| same >= 3.min(filled) && same > 0)
+        .map(|(_, k)| k)
+}
+
 /// While the box is open the cursor stays hidden: its row may now be inside the
 /// box. The pen and position are still put back for the child's next write.
-fn hide_cursor_at_rest(out: &mut String, snap: &Snapshot) {
+pub fn hide_cursor_at_rest(out: &mut String, snap: &Snapshot) {
     render::restore_cursor(out, snap);
     out.push_str("\x1b[?25l");
 }
@@ -665,10 +755,11 @@ pub fn box_frame(snap: &Snapshot, lay: &Layout, peek: &PeekBox) -> String {
 /// selection away. The region is unchanged, so one full frame redraws all of it.
 pub fn resize(lay: &Layout, height: usize) -> Layout {
     let height = height.min(lay.region.1 - lay.region.0);
+    let h = height as isize;
     let box_top = if lay.below {
-        lay.home.min(lay.region.1 - height)
+        lay.home.min(lay.region.1 as isize - h)
     } else {
-        lay.home.saturating_sub(height).max(lay.region.0)
+        (lay.home - h).max(lay.region.0 as isize)
     };
     Layout {
         box_top,
@@ -912,20 +1003,36 @@ mod tests {
         // The child started on row 20; rows above hold the user's shell output.
         let l = layout_within(20, 40, 35, 36);
         assert!(!l.below);
-        assert!(l.region.0 >= 20 && l.box_top >= 20, "{l:?}");
+        assert!(l.region.0 >= 20 && (l.box_top as usize) >= 20, "{l:?}");
         let l = layout_within(20, 40, 22, 38);
-        assert!(l.box_top >= 20 && l.region.0 >= 20, "{l:?}");
+        assert!((l.box_top as usize) >= 20 && l.region.0 >= 20, "{l:?}");
     }
 
     #[test]
     fn layout_prefers_below_then_above() {
         let l = layout(40, 5, 6);
         assert!(l.below);
-        assert_eq!((l.box_top, l.region), (7, (0, 40)));
+        assert_eq!(((l.box_top as usize), l.region), (7, (0, 40)));
         let l = layout(40, 37, 38);
         assert!(!l.below);
-        assert_eq!(l.box_top + l.box_height, 37);
+        assert_eq!((l.box_top as usize) + l.box_height, 37);
         assert_eq!(l.region, (0, 40));
+    }
+
+    #[test]
+    fn scroll_delta_finds_how_far_the_text_moved() {
+        let snap = |rows: &[&str]| {
+            let mut s = crate::shadow::Shadow::new(20, rows.len() as u16);
+            s.advance(rows.join("\r\n").as_bytes());
+            s.snapshot()
+        };
+        let old = snap(&["a", "b", "c", "", "d", "e", "f"]);
+        let up2 = snap(&["c", "", "d", "e", "f", "g", "h"]);
+        assert_eq!(scroll_delta(&old, &up2, 0..7), Some(2));
+        assert_eq!(scroll_delta(&up2, &old, 0..7), Some(-2));
+        assert_eq!(scroll_delta(&old, &old, 0..7), Some(0));
+        let other = snap(&["x", "y", "z", "", "", "", ""]);
+        assert_eq!(scroll_delta(&old, &other, 0..7), None);
     }
 
     /// A box taller than its side of the selection takes rows from the other
@@ -934,7 +1041,7 @@ mod tests {
     fn a_tall_box_pushes_the_selection_away() {
         let l = resize(&layout(40, 22, 22), 20);
         assert!(l.below);
-        assert_eq!((l.box_top, l.box_height), (20, 20));
+        assert_eq!(((l.box_top as usize), l.box_height), (20, 20));
         assert_eq!(
             l.snap_row(19),
             Some(22),
@@ -943,9 +1050,9 @@ mod tests {
         assert_eq!(l.snap_row(0), Some(3));
         assert_eq!(l.snap_row(25), None);
         let l = resize(&layout(40, 37, 38), 45);
-        assert_eq!((l.box_top, l.box_height), (0, 40));
+        assert_eq!(((l.box_top as usize), l.box_height), (0, 40));
         let l = resize(&layout(40, 37, 38), 38);
-        assert_eq!((l.box_top, l.box_height), (0, 38));
+        assert_eq!(((l.box_top as usize), l.box_height), (0, 38));
         assert_eq!(
             l.snap_row(38),
             Some(37),
@@ -953,7 +1060,7 @@ mod tests {
         );
         let l = resize(&layout(40, 5, 6), 10);
         assert_eq!(
-            (l.box_top, l.snap_row(3), l.snap_row(20)),
+            ((l.box_top as usize), l.snap_row(3), l.snap_row(20)),
             (7, Some(3), Some(10))
         );
     }
@@ -1152,7 +1259,7 @@ mod tests {
         let mut s = crate::shadow::Shadow::new(40, 10);
         s.advance(out.as_bytes());
         let snap = s.snapshot();
-        let row = &snap.rows[lay.box_top + 1];
+        let row = &snap.rows[(lay.box_top as usize) + 1];
         let flagged = |f: Flags| -> String {
             row.iter()
                 .filter(|c| c.flags.contains(f))
