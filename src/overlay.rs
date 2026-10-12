@@ -17,8 +17,28 @@ pub struct Layout {
     pub box_height: usize,
     /// Rows redrawn while the box is open (and restored on close).
     pub region: (usize, usize),
-    /// Box below the selection (rows after it shift down) or above it (rows before shift up).
+    /// Box below the selection (it grows down) or above it (it grows up).
     pub below: bool,
+    /// The snapshot row the box goes in front of: rows from it on are shown
+    /// after the box, the ones before it above the box. A box taller than its
+    /// side pushes the selection away to make room.
+    pub home: usize,
+}
+
+impl Layout {
+    /// The snapshot row shown at screen row `r`: none inside the box.
+    pub fn snap_row(&self, r: usize) -> Option<usize> {
+        let end = self.box_top + self.box_height;
+        if (self.box_top..end).contains(&r) {
+            None
+        } else if !(self.region.0..self.region.1).contains(&r) {
+            Some(r)
+        } else if r < self.box_top {
+            Some(r + self.home - self.box_top)
+        } else {
+            Some(r + self.home - end)
+        }
+    }
 }
 
 pub fn layout(rows: usize, sel_first: usize, sel_last: usize) -> Layout {
@@ -32,49 +52,23 @@ pub fn layout_within(top: usize, rows: usize, sel_first: usize, sel_last: usize)
     let want = ((rows - top.min(rows)) * 2 / 5).clamp(5, 14);
     let space_below = rows.saturating_sub(sel_last + 1);
     let space_above = sel_first.saturating_sub(top);
-    if space_below >= want || (space_below >= 4 && space_below >= space_above) {
-        let h = want.min(space_below);
-        Layout {
-            box_top: sel_last + 1,
-            box_height: h,
-            region: (sel_last + 1, rows),
-            below: true,
-        }
+    let top = top.min(rows.saturating_sub(1));
+    let (below, home) = if space_below >= want || (space_below >= 4 && space_below >= space_above) {
+        (true, sel_last + 1)
     } else if space_above >= 4 {
-        let h = want.min(space_above);
-        Layout {
-            box_top: sel_first - h,
-            box_height: h,
-            region: (top, sel_first),
-            below: false,
-        }
+        (false, sel_first)
     } else {
-        // Tiny screen: cover the top rows we know.
-        let top = top.min(rows.saturating_sub(1));
-        let h = want.min(rows - top);
-        Layout {
-            box_top: top,
-            box_height: h,
-            region: (top, top + h),
-            below: true,
-        }
-    }
-}
-
-/// The same placement with a smaller box, still touching the selection.
-/// The region is unchanged, so rows the box gives back are redrawn in place.
-pub fn shrink(lay: &Layout, height: usize) -> Layout {
-    let height = height.min(lay.box_height);
-    let box_top = if lay.below {
-        lay.box_top
-    } else {
-        lay.box_top + lay.box_height - height
+        // Tiny screen: in front of the top rows we know.
+        (true, top)
     };
-    Layout {
-        box_top,
-        box_height: height,
-        ..*lay
-    }
+    let lay = Layout {
+        box_top: home,
+        box_height: 0,
+        region: (top, rows),
+        below,
+        home,
+    };
+    resize(&lay, want.min(if below { rows - home } else { home - top }))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -638,16 +632,10 @@ pub fn nest_frame(
 fn shift_rows(out: &mut String, snap: &Snapshot, lay: &Layout) {
     let (top, bottom) = lay.region;
     for r in top..bottom {
-        let in_box = r >= lay.box_top && r < lay.box_top + lay.box_height;
-        if in_box {
+        if (lay.box_top..lay.box_top + lay.box_height).contains(&r) {
             continue;
         }
-        let src = if lay.below {
-            r.checked_sub(lay.box_height)
-        } else {
-            Some(r + lay.box_height)
-        };
-        match src.filter(|&s| s < snap.rows.len()) {
+        match lay.snap_row(r).filter(|&s| s < snap.rows.len()) {
             Some(s) => render::row(out, r, &snap.rows[s]),
             None => write!(out, "\x1b[{};1H\x1b[0m\x1b[2K", r + 1).unwrap(),
         }
@@ -673,13 +661,14 @@ pub fn box_frame(snap: &Snapshot, lay: &Layout, peek: &PeekBox) -> String {
 }
 
 /// The same placement with a box of `height` rows, as far as the region has
-/// room. The region is unchanged, so one full frame redraws all of it.
+/// room: next to the selection while that side has room, then pushing the
+/// selection away. The region is unchanged, so one full frame redraws all of it.
 pub fn resize(lay: &Layout, height: usize) -> Layout {
     let height = height.min(lay.region.1 - lay.region.0);
     let box_top = if lay.below {
-        lay.box_top
+        lay.home.min(lay.region.1 - height)
     } else {
-        lay.region.1 - height
+        lay.home.saturating_sub(height).max(lay.region.0)
     };
     Layout {
         box_top,
@@ -932,11 +921,41 @@ mod tests {
     fn layout_prefers_below_then_above() {
         let l = layout(40, 5, 6);
         assert!(l.below);
-        assert_eq!((l.box_top, l.region), (7, (7, 40)));
+        assert_eq!((l.box_top, l.region), (7, (0, 40)));
         let l = layout(40, 37, 38);
         assert!(!l.below);
         assert_eq!(l.box_top + l.box_height, 37);
-        assert_eq!(l.region, (0, 37));
+        assert_eq!(l.region, (0, 40));
+    }
+
+    /// A box taller than its side of the selection takes rows from the other
+    /// side: the text before it moves up (or the text after it down).
+    #[test]
+    fn a_tall_box_pushes_the_selection_away() {
+        let l = resize(&layout(40, 22, 22), 20);
+        assert!(l.below);
+        assert_eq!((l.box_top, l.box_height), (20, 20));
+        assert_eq!(
+            l.snap_row(19),
+            Some(22),
+            "the selection, right above the box"
+        );
+        assert_eq!(l.snap_row(0), Some(3));
+        assert_eq!(l.snap_row(25), None);
+        let l = resize(&layout(40, 37, 38), 45);
+        assert_eq!((l.box_top, l.box_height), (0, 40));
+        let l = resize(&layout(40, 37, 38), 38);
+        assert_eq!((l.box_top, l.box_height), (0, 38));
+        assert_eq!(
+            l.snap_row(38),
+            Some(37),
+            "the selection, right below the box"
+        );
+        let l = resize(&layout(40, 5, 6), 10);
+        assert_eq!(
+            (l.box_top, l.snap_row(3), l.snap_row(20)),
+            (7, Some(3), Some(10))
+        );
     }
 
     #[test]
@@ -1035,6 +1054,7 @@ mod tests {
             box_height: 10,
             region: (0, 10),
             below: true,
+            home: 0,
         };
         let draw = |outer: &PeekBox, inner: &PeekBox| {
             let levels = [

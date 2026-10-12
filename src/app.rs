@@ -116,15 +116,7 @@ const SELECTION_AFTER_RELEASE: Duration = Duration::from_secs(2);
 /// The snapshot cell shown at screen `cell` while a box laid out as `lay` is
 /// open; none inside the box.
 fn snap_cell(lay: &Layout, cell: (usize, usize)) -> Option<(usize, usize)> {
-    let (r, c) = cell;
-    let (top, bottom) = lay.region;
-    let in_box = (lay.box_top..lay.box_top + lay.box_height).contains(&r);
-    Some(match () {
-        _ if in_box => return None,
-        _ if !(top..bottom).contains(&r) => (r, c),
-        _ if lay.below => (r - lay.box_height, c),
-        _ => (r + lay.box_height, c),
-    })
+    Some((lay.snap_row(cell.0)?, cell.1))
 }
 
 /// A mark on screen: its text and the cells it covers.
@@ -2185,12 +2177,7 @@ impl App {
                         serde_json::json!({"selection": sel, "cells": cells.len()}),
                     );
                     // Underline it right away if the box leaves its rows alone.
-                    let (top, bottom) = open.lay.region;
-                    let box_rows = open.lay.box_top..open.lay.box_top + open.lay.box_height;
-                    if cells
-                        .iter()
-                        .all(|&(r, _)| !(top..bottom).contains(&r) && !box_rows.contains(&r))
-                    {
+                    if cells.iter().all(|&(r, _)| open.lay.snap_row(r) == Some(r)) {
                         let mut s = String::from(SYNC_BEGIN);
                         marks::draw(&mut s, &open.snap, cells, false);
                         render::restore_cursor(&mut s, &open.snap);
@@ -2356,6 +2343,7 @@ fn message_layout(snap: &Snapshot, known_top: usize, peek: &PeekBox) -> Layout {
         box_height: h,
         region: (top, top + h),
         below: true,
+        home: top,
     }
 }
 
@@ -2399,12 +2387,20 @@ mod tests {
                     .into();
             real.advance(overlay::open_frame(&snap, &lay, &peek).as_bytes());
             real.advance(overlay::box_frame(&snap, &lay, &peek).as_bytes());
-            let small = overlay::shrink(&lay, 4);
+            let small = overlay::resize(&lay, 4);
             real.advance(overlay::open_frame(&snap, &small, &peek).as_bytes());
             real.advance(overlay::close_frame(&snap, &small).as_bytes());
             assert!(
                 same_screen(&real.snapshot(), &snap),
                 "not restored after shrinking"
+            );
+            // Taller than its side: the selection moved away, and back on close.
+            let tall = overlay::resize(&lay, 11);
+            real.advance(overlay::open_frame(&snap, &tall, &peek).as_bytes());
+            real.advance(overlay::close_frame(&snap, &tall).as_bytes());
+            assert!(
+                same_screen(&real.snapshot(), &snap),
+                "not restored after a tall box"
             );
             real.advance(overlay::open_frame(&snap, &lay, &peek).as_bytes());
             assert!(
