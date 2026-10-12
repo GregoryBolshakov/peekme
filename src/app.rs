@@ -61,6 +61,9 @@ struct Open {
     nested: Vec<nest::Nested>,
     /// The box's height before boxes opened inside it, to go back to.
     base_height: usize,
+    /// Answer lines the model is asked for: what a box of the usual size
+    /// shows. The box itself grows to fit the text.
+    lines: usize,
     /// Text selected (or being selected) in one of the boxes.
     drag: Option<nest::Drag>,
     /// Words of a nested answer under the pointer: (box, chars of its answer).
@@ -1688,7 +1691,7 @@ impl App {
                 strip = self
                     .live_top(&snap)
                     .filter(|&k| loc.last_row < k && k < rows && k >= rows / 3);
-                let mut lay = overlay::layout_within(
+                let lay = overlay::layout_within(
                     self.known_top(),
                     strip.unwrap_or(rows),
                     loc.first_row,
@@ -1722,7 +1725,6 @@ impl App {
                     peek.model = format!("{model} · saved");
                     peek.status = Status::Done;
                     peek.deep_available = true;
-                    lay = overlay::shrink(&lay, peek.fitted_height(snap.cols).max(3));
                 } else {
                     let max_lines = lay.box_height.saturating_sub(2).clamp(3, 12);
                     if let Some(e) = self.start_explain(
@@ -1800,6 +1802,9 @@ impl App {
                 "message": forced,
             }),
         );
+        let lines = lay.box_height.saturating_sub(2);
+        // The box starts as small as its text and grows with it (see `fit_top`).
+        let lay = overlay::resize(&lay, peek.fitted_height(snap.cols).max(3));
         let strip_shown = strip.map_or_else(Vec::new, |top| snap.rows[top..].to_vec());
         // Selecting text in the box needs the mouse reports.
         let own_mouse = !self.shadow.mouse_mode();
@@ -1814,6 +1819,7 @@ impl App {
             history: self.shadow.history_size(),
             nested: Vec::new(),
             base_height: 0,
+            lines,
             drag: None,
             box_hover: None,
             last_click: None,
@@ -1899,7 +1905,7 @@ impl App {
             return Ok(false);
         }
         let screen = screen.clone();
-        let max_lines = open.lay.box_height.saturating_sub(2).clamp(3, 12);
+        let max_lines = open.lines.clamp(3, 12);
         crate::event("escalate", serde_json::json!({"selection": sel}));
         self.next_id += 1;
         let id = self.next_id;
@@ -2032,7 +2038,7 @@ impl App {
         if question.is_empty() {
             return Ok(());
         }
-        let max_lines = open.lay.box_height.saturating_sub(2).max(3);
+        let max_lines = open.lines.max(3);
         crate::event(
             "ask",
             serde_json::json!({"selection": sel, "question": question}),
@@ -2195,16 +2201,6 @@ impl App {
                         s.push_str(SYNC_END);
                         out.write_all(s.as_bytes())?;
                     }
-                }
-                // Give back the rows the text doesn't need, once, now that it is complete.
-                let fitted = open.peek.fitted_height(open.snap.cols).max(3);
-                if fitted < open.lay.box_height {
-                    // Same region, smaller box: one frame redraws every row of it.
-                    open.lay = overlay::shrink(&open.lay, fitted);
-                    let frame = self.box_bytes(true);
-                    out.write_all(frame.as_bytes())?;
-                    out.flush()?;
-                    return Ok(());
                 }
             }
             Progress::Failed(e) => open.peek.status = Status::Error(e),
@@ -2485,6 +2481,46 @@ mod tests {
         let open = app.open.as_ref().unwrap();
         assert_eq!(open.peek.text, answer);
         assert_eq!(open.peek.status, Status::Done);
+    }
+
+    /// The box opens at 3 rows while it thinks, grows with every line that
+    /// streams in, never past its region, and keeps that height when done.
+    #[test]
+    fn the_box_grows_with_its_text() {
+        let mut app = test_app(40, 30);
+        app.selection = SelectionSource::fixed("true colour");
+        let mut out = Vec::new();
+        app.on_output(SCREEN, &mut out, &mut Vec::new()).unwrap();
+        app.open_peek(&mut out).unwrap();
+        let open = app.open.as_ref().unwrap();
+        let (id, region) = (open.id, open.lay.region);
+        assert_eq!(open.lay.box_height, 3, "one line: thinking…");
+        assert!(
+            open.lines > 3,
+            "the model is still asked for a usual answer"
+        );
+        let mut heights = Vec::new();
+        for k in 0..40 {
+            app.on_progress(id, Progress::Delta(format!("line {k}\n\n")), &mut out)
+                .unwrap();
+            // Frames are at most every FRAME apart: the tick draws what is left.
+            app.open.as_mut().unwrap().drawn_at -= FRAME;
+            app.tick(&mut out).unwrap();
+            heights.push(app.open.as_ref().unwrap().lay.box_height);
+        }
+        assert_eq!(heights[0], 3);
+        assert_eq!(heights[1], 5, "two paragraphs and the blank line between");
+        assert!(heights.windows(2).all(|w| w[0] <= w[1]), "{heights:?}");
+        assert_eq!(
+            *heights.last().unwrap(),
+            region.1 - region.0,
+            "all of its region"
+        );
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        assert_eq!(
+            app.open.as_ref().unwrap().lay.box_height,
+            region.1 - region.0
+        );
     }
 
     /// `SCREEN` with the mouse taken by the child and "true colour" (row 2,
@@ -3964,10 +4000,7 @@ mod tests {
         let open = app.open.as_ref().expect("a box");
         assert_eq!(open.peek.input.as_deref(), Some(""));
         assert_eq!(open.peek.title, "true colour");
-        assert!(
-            open.lay.box_height > 3,
-            "full size again, not the shrunk box"
-        );
+        assert_eq!(open.lay.box_height, 4, "as tall as the question line");
         app.on_input(b"x", &mut out, &mut child).unwrap();
         app.on_input(b"\x1b", &mut out, &mut child).unwrap();
         assert!(app.open.is_none());

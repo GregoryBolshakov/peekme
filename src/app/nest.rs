@@ -100,6 +100,7 @@ impl App {
     /// Bytes that draw the open box with every box inside it: all of its
     /// region when `full` (the box changed size), else only the box rows.
     pub(super) fn box_bytes(&mut self, full: bool) -> String {
+        let full = self.fit_top() || full;
         let Some(open) = &self.open else {
             return String::new();
         };
@@ -594,6 +595,22 @@ impl App {
         let own = open.peek.line_count(overlay::text_width(cols, 0));
         let h0 = (own + 2 + inner).min(caps[0]).max(MIN_ROWS);
         open.lay = overlay::resize(&open.lay, h0);
+    }
+
+    /// With no boxes inside, the outer box is as tall as its text, from 3
+    /// rows while it thinks up to all of its region. Returns true when its
+    /// height changed (the whole region has to be drawn again).
+    fn fit_top(&mut self) -> bool {
+        let Some(open) = &mut self.open else {
+            return false;
+        };
+        if !open.nested.is_empty() {
+            return false;
+        }
+        let lay = overlay::resize(&open.lay, open.peek.fitted_height(open.snap.cols).max(3));
+        let changed = lay != open.lay;
+        open.lay = lay;
+        changed
     }
 
     /// The trail of answers down to box `level` and the words picked in it.
