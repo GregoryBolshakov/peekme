@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.6-beta.4 (2026-10-12)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.4`.
+
+- Scrolling the chat with a peek box open no longer flickers or lags. Codex's frames used to
+  reach the terminal first and peekme then drew the box again on top. Now peekme draws each
+  frame itself, the chat with the box in it, and writes only the rows that changed, in place.
+  Closing the box after a scroll works the same way.
+- The box stays right under the selected text (or right above it) while the chat scrolls,
+  also when that text goes off the screen. Then the box is cut at the edge.
+
 ## 0.4.6-beta.3 (2026-10-12)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.3`.
