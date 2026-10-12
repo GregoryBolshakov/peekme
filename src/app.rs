@@ -88,6 +88,9 @@ struct Open {
     /// Streamed text is drawn at most every FRAME; `dirty` marks text not shown yet.
     drawn_at: Instant,
     dirty: bool,
+    /// When the wheel last went to the child: its output for FOLLOW after
+    /// that is shown under the box (the chat scrolls, the box stays).
+    follow: Option<Instant>,
 }
 
 /// Mouse reports (button events, SGR form) peekme turns on while a box is open
@@ -98,6 +101,9 @@ const SGR_OFF: &str = "\x1b[?1006l";
 /// Reports still on their way after peekme turned them off are dropped for
 /// this long, so a child that never asked for them gets none.
 const STRAY_MOUSE: Duration = Duration::from_secs(1);
+
+/// How long after a wheel event the child's output is shown under the box.
+const FOLLOW: Duration = Duration::from_millis(1500);
 
 /// Redrawing the box for every streamed token would send ~200 KB per explanation.
 const FRAME: Duration = Duration::from_millis(33);
@@ -676,6 +682,9 @@ impl App {
                 }
             }
         }
+        if self.following() && self.can_draw() {
+            self.follow_feed(out)?;
+        }
         if self.pending.is_some() && self.can_draw() {
             self.pending = None;
             self.open_peek(out)?;
@@ -772,6 +781,104 @@ impl App {
 
     /// Redraw the child's live rows under the box from the shadow, only the
     /// rows that changed, and put the cursor where the child has it.
+    /// If the input area grew into the box (an approval question, say), the
+    /// child needs the room more than we do. Claude replaces its input box
+    /// with the question, so there any change of the box counts.
+    fn strip_moved(&self, now: &Snapshot, top: usize) -> bool {
+        match self.agent {
+            Some(Agent::Claude | Agent::Copilot) => claude::screen::composer_top(now) != Some(top),
+            Some(Agent::Kiro) => kiro::screen::composer_top(now) != Some(top),
+            _ => {
+                self.shadow.alt_screen()
+                    && codex::screen::composer_top(now).is_some_and(|k| k < top)
+            }
+        }
+    }
+
+    /// The wheel went to the child a moment ago and it has written since.
+    fn following(&self) -> bool {
+        self.open
+            .as_ref()
+            .is_some_and(|o| !o.held.is_empty() && o.follow.is_some_and(|t| t.elapsed() < FOLLOW))
+    }
+
+    /// Show the child's new screen with the box still open: put back what
+    /// the box covered, replay the held output, then draw the box again next
+    /// to where the selection is now. One synchronized frame, so the box
+    /// never blinks.
+    fn follow_feed(&mut self, out: &mut dyn Write) -> Result<()> {
+        let now = self.shadow.snapshot();
+        if let Some(top) = self.open.as_ref().and_then(|o| o.strip_top)
+            && self.strip_moved(&now, top)
+        {
+            return self.close(out, false);
+        }
+        let (history, alt) = (self.shadow.history_size(), self.shadow.alt_screen());
+        let Some(open) = &mut self.open else {
+            return Ok(());
+        };
+        let mut s = String::from(SYNC_BEGIN);
+        if let Some(top) = open.strip_top {
+            render::rows(&mut s, top, &open.snap.rows[top..]);
+        }
+        s.push_str(&overlay::close_frame(&open.snap, &open.lay));
+        let mut bytes = s.into_bytes();
+        let held = render::strip_sync(&render::strip_answered_queries(&open.held));
+        self.boundary.feed(&held);
+        bytes.extend_from_slice(&held);
+        open.held.clear();
+        open.peek.waiting_updates = 0;
+        if let (Some((sel, _)), Some((place, cells))) = (&open.selection, &mut open.mark)
+            && place.alt() == alt
+            && let Some(found) = place.find(&now, &select::Text::of(&now), sel, history)
+        {
+            let (first, last) = (found[0].0, found[found.len() - 1].0);
+            let (lo, hi) = open.lay.region;
+            let home = if open.lay.below { last + 1 } else { first };
+            open.lay = overlay::resize(
+                &Layout {
+                    home: home.clamp(lo, hi),
+                    ..open.lay
+                },
+                open.lay.box_height,
+            );
+            *cells = found;
+        }
+        if let Some(top) = open.strip_top {
+            open.strip_shown = now.rows[top..].to_vec();
+            open.strip_dirty = false;
+        }
+        open.history = history;
+        open.snap = now;
+        let frame = self.box_bytes(true);
+        bytes.extend_from_slice(frame.as_bytes());
+        out.write_all(&bytes)?;
+        out.flush()?;
+        Ok(())
+    }
+
+    /// The wheel over an agent that leaves the mouse to the terminal: peekme
+    /// stops taking the mouse, so the terminal scrolls its own history with
+    /// the next turns of the wheel. The box stays as it is.
+    fn lend_mouse(&mut self, out: &mut dyn Write) -> Result<()> {
+        let Some(open) = &mut self.open else {
+            return Ok(());
+        };
+        if !open.own_mouse {
+            return Ok(());
+        }
+        open.own_mouse = false;
+        let mut s = String::from(MOUSE_OFF);
+        if !self.shadow.sgr_mouse() {
+            s.push_str(SGR_OFF);
+        }
+        self.own_mouse_off = Some(Instant::now());
+        crate::event("lend_mouse", serde_json::json!({}));
+        out.write_all(s.as_bytes())?;
+        out.flush()?;
+        Ok(())
+    }
+
     fn refresh_strip(&mut self, out: &mut dyn Write) -> Result<()> {
         let Some(open) = &mut self.open else {
             return Ok(());
@@ -780,18 +887,7 @@ impl App {
             return Ok(());
         };
         let now = self.shadow.snapshot();
-        // If the input area grew into the box (an approval question, say), the
-        // child needs the room more than we do. Claude replaces its input box
-        // with the question, so there any change of the box counts.
-        let moved = match self.agent {
-            Some(Agent::Claude | Agent::Copilot) => claude::screen::composer_top(&now) != Some(top),
-            Some(Agent::Kiro) => kiro::screen::composer_top(&now) != Some(top),
-            _ => {
-                self.shadow.alt_screen()
-                    && codex::screen::composer_top(&now).is_some_and(|k| k < top)
-            }
-        };
-        if moved {
+        if self.strip_moved(&now, top) {
             return self.close(out, false);
         }
         let Some(open) = &mut self.open else {
@@ -845,6 +941,9 @@ impl App {
             return Ok(());
         }
         self.shadow.check_sync_timeout();
+        if self.following() && self.can_draw() {
+            self.follow_feed(out)?;
+        }
         if self.open.as_ref().is_some_and(|o| o.strip_dirty) {
             self.refresh_strip(out)?;
         }
@@ -1115,11 +1214,22 @@ impl App {
                 }
                 (Kind::Passive | Kind::Release, _) => forward.extend_from_slice(&t.bytes),
                 // With the box open: moving the mouse does nothing, the wheel
-                // scrolls the box, a click elsewhere closes it (and still goes
-                // to the child, e.g. to start a new selection).
+                // scrolls the chat (a box with more text than rows took it
+                // already), a click elsewhere closes it (and still goes to the
+                // child, e.g. to start a new selection).
                 (Kind::Mouse(m), true) => match m {
                     Mouse::Motion => {}
-                    Mouse::WheelUp | Mouse::WheelDown => self.scroll(m == Mouse::WheelDown, out)?,
+                    Mouse::WheelUp | Mouse::WheelDown => {
+                        if self.shadow.mouse_mode() {
+                            // The child scrolls; its new screen shows under the box.
+                            if let Some(open) = &mut self.open {
+                                open.follow = Some(Instant::now());
+                            }
+                            forward.extend_from_slice(&t.bytes);
+                        } else {
+                            self.lend_mouse(out)?;
+                        }
+                    }
                     Mouse::Press => {
                         self.flush_forward(&mut forward, child)?;
                         self.close(out, false)?;
@@ -1826,6 +1936,7 @@ impl App {
             strip_dirty: false,
             drawn_at: Instant::now(),
             dirty: false,
+            follow: None,
         });
         let mut frame = self.box_bytes(true);
         if own_mouse {
@@ -3248,6 +3359,87 @@ mod tests {
         codex_selection_and_live_area(CODEX_0161_FULLSCREEN, "OpenAI Codex");
     }
 
+    /// The wheel over an agent that leaves the mouse alone: peekme gives
+    /// the mouse back, so the terminal scrolls its own history; the box stays,
+    /// and reports still on their way never reach the agent.
+    #[test]
+    fn the_wheel_gives_the_mouse_back_to_the_terminal() {
+        let mut app = test_app(40, 12);
+        app.selection = SelectionSource::fixed("true colour");
+        let (mut out, mut child) = (Vec::new(), Vec::new());
+        app.on_output(SCREEN, &mut out, &mut child).unwrap();
+        app.open_peek(&mut out).unwrap();
+        assert!(app.open.as_ref().unwrap().own_mouse);
+        out.clear();
+        app.on_input(b"\x1b[<65;5;10M", &mut out, &mut child)
+            .unwrap();
+        assert!(String::from_utf8_lossy(&out).contains(MOUSE_OFF));
+        let open = app.open.as_ref().expect("still open");
+        assert!(!open.own_mouse);
+        app.on_input(
+            b"\x1b[<65;5;10M\x1b[<0;5;10M\x1b[<0;5;10m",
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        assert!(child.is_empty());
+        assert!(app.open.is_some());
+    }
+
+    /// The wheel with a box open: Codex scrolls its chat, and the box follows
+    /// the selection to its new row in the same frame, still open.
+    #[test]
+    fn the_box_follows_its_selection_when_codex_scrolls() {
+        let mut app = test_app(120, 40);
+        let mut real = Shadow::new(120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(CODEX_0161_FULLSCREEN, &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+        app.open_peek(&mut out).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let open = app.open.as_ref().unwrap();
+        let (top, above) = (open.strip_top.unwrap(), open.lay.box_top);
+        let sel_row = above - 1;
+        let sel_text = app.shadow.snapshot().rows_text(sel_row, sel_row + 1);
+
+        app.on_input(b"\x1b[<65;40;30M", &mut out, &mut child)
+            .unwrap();
+        assert_eq!(child, b"\x1b[<65;40;30M", "the wheel reaches Codex");
+        // Codex shows older chat: its rows above the input area move down two.
+        let scroll = format!("\x1b[?2026h\x1b[1;{top}r\x1b[2T\x1b[r\x1b[?2026l");
+        app.on_output(scroll.as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        app.tick(&mut out).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+        let open = app.open.as_ref().expect("still open");
+        assert_eq!(open.lay.box_top, above + 2, "moved with its selection");
+        assert!(open.held.is_empty(), "Codex's output went through");
+        let shown = real.snapshot();
+        assert_eq!(shown.rows_text(sel_row + 2, sel_row + 3), sel_text);
+        let border = shown.rows_text(above + 2, above + 3);
+        assert!(
+            border.starts_with("╭─ peek"),
+            "the box right under it: {border}"
+        );
+        // Closing leaves exactly Codex's screen.
+        app.close(&mut out, false).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let now = app.shadow.snapshot();
+        let shown = real.snapshot();
+        for r in 0..40 {
+            assert_eq!(
+                shown.rows_text(r, r + 1),
+                now.rows_text(r, r + 1),
+                "row {r}"
+            );
+        }
+    }
+
     fn codex_selection_and_live_area(capture: &[u8], selected: &str) {
         let mut app = test_app(120, 40);
         let mut real = Shadow::new(120, 40);
@@ -3270,10 +3462,13 @@ mod tests {
         assert!(open.lay.below && open.lay.box_top > 0);
         let above = open.lay.box_top;
 
-        // Mouse motion is ignored, the wheel scrolls the box, nothing reaches Codex.
+        // Mouse motion is ignored; the wheel goes to Codex, which scrolls its
+        // chat, and the box stays.
         app.on_input(b"\x1b[<35;40;3M\x1b[<65;40;3M", &mut out, &mut child)
             .unwrap();
-        assert!(child.is_empty() && app.open.is_some());
+        assert_eq!(child, b"\x1b[<65;40;3M");
+        assert!(app.open.is_some());
+        child.clear();
         // Typing goes to Codex; its input line updates live under the box.
         app.on_input(b"hi", &mut out, &mut child).unwrap();
         assert_eq!(child, b"hi");

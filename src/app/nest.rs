@@ -198,6 +198,23 @@ impl App {
         let cell = input::mouse_cell(bytes);
         let button = input::mouse_button(bytes).unwrap_or(u32::MAX);
         let spot = cell.and_then(|c| self.box_spot(c));
+        if !own_mouse && !self.shadow.mouse_mode() {
+            // Reports still on their way after the mouse went back to the
+            // terminal (see `lend_mouse`): the child never asked for them.
+            return Ok(true);
+        }
+        let wheel = matches!(m, Mouse::WheelUp | Mouse::WheelDown);
+        if wheel {
+            // A box with more text than rows scrolls; otherwise the chat does.
+            let level = spot.map(|(l, _)| l);
+            return match level.filter(|&l| self.can_scroll(l, m == Mouse::WheelDown)) {
+                Some(l) => {
+                    self.scroll_level(l, m == Mouse::WheelDown, out)?;
+                    Ok(true)
+                }
+                None => Ok(false),
+            };
+        }
         if spot.is_none() && !dragging {
             if own_mouse {
                 // The child did not ask for these: none of them reaches it.
@@ -214,10 +231,8 @@ impl App {
             return Ok(false);
         }
         match m {
-            Mouse::WheelUp | Mouse::WheelDown => {
-                let level = spot.map_or(0, |(l, _)| l);
-                self.scroll_level(level, m == Mouse::WheelDown, out)?;
-            }
+            // Taken above.
+            Mouse::WheelUp | Mouse::WheelDown => {}
             Mouse::Press => {
                 let had = self.open.as_ref().and_then(|o| o.drag);
                 let open = self.open.as_mut().unwrap();
@@ -675,6 +690,39 @@ impl App {
         Ok(true)
     }
 
+    /// How far box `level` can scroll.
+    fn scroll_max(open: &Open, level: usize) -> usize {
+        let decor = Decor::default();
+        let mut levels = vec![Level {
+            peek: &open.peek,
+            decor: &decor,
+            height: open.lay.box_height,
+            anchor: 0,
+        }];
+        for n in &open.nested {
+            levels.push(Level {
+                peek: &n.peek,
+                decor: &decor,
+                height: n.height,
+                anchor: 0,
+            });
+        }
+        overlay::scroll_limit(&levels, level.min(levels.len() - 1), open.snap.cols)
+    }
+
+    /// Box `level` has text further up (or down) to scroll to.
+    fn can_scroll(&self, level: usize, down: bool) -> bool {
+        let Some(open) = &self.open else {
+            return false;
+        };
+        let at = Self::level_peek(open, level).map_or(0, |p| p.scroll);
+        if down {
+            at < Self::scroll_max(open, level)
+        } else {
+            at > 0
+        }
+    }
+
     /// Scroll box `level` by about a page.
     pub(super) fn scroll_level(
         &mut self,
@@ -685,25 +733,7 @@ impl App {
         let Some(open) = &mut self.open else {
             return Ok(());
         };
-        let cols = open.snap.cols;
-        let max = {
-            let decor = Decor::default();
-            let mut levels = vec![Level {
-                peek: &open.peek,
-                decor: &decor,
-                height: open.lay.box_height,
-                anchor: 0,
-            }];
-            for n in &open.nested {
-                levels.push(Level {
-                    peek: &n.peek,
-                    decor: &decor,
-                    height: n.height,
-                    anchor: 0,
-                });
-            }
-            overlay::scroll_limit(&levels, level.min(levels.len() - 1), cols)
-        };
+        let max = Self::scroll_max(open, level);
         let step = Self::level_height(open, level).saturating_sub(3).max(1);
         let Some(peek) = Self::level_peek_mut(open, level) else {
             return Ok(());

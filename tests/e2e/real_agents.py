@@ -38,6 +38,10 @@ AGENTS = {
 START = {"kiro-fullscreen": ([b"/fullscreen", b"\r"], "Entered fullscreen")}
 
 
+# Agents that take the mouse themselves, so the wheel reaches them.
+WHEEL_TO_AGENT = ("codex", "claude-fullscreen", "copilot", "kiro-fullscreen")
+
+
 def real_binary(name):
     """The agent itself, not a peekme link or function in front of it."""
     for d in os.environ.get("PATH", "").split(os.pathsep):
@@ -158,6 +162,12 @@ def run_case(env, case, out):
             check(opened[-1].get("found") and sel.strip() and sel.strip() in before[row - 1],
                   f"box on the wrong selection: {sel!r}")
         check(m.wait(lambda: any("Test explanation" in l for l in t.screen()), 5), "explanation not on screen")
+        if case["agent"] in WHEEL_TO_AGENT:
+            # The wheel goes to the agent (it scrolls its chat); the box stays.
+            t.send(f"\x1b[<64;{first};{row}M\x1b[<65;{first};{row}M".encode())
+            time.sleep(1.5)
+            check(not events("close"), "the wheel closed the box")
+            check(any("Test explanation" in l for l in t.screen()), "box gone after the wheel")
         t.send(b"\x1b")
         check(m.wait(lambda: events("close"), 5), "Esc did not close the box")
         time.sleep(1.0)

@@ -173,6 +173,23 @@ pub fn strip_answered_queries(buf: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Remove synchronized-update begin and end marks, for output replayed
+/// inside a synchronized frame of our own: its end would show the frame early.
+pub fn strip_sync(buf: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(buf.len());
+    let mut i = 0;
+    while i < buf.len() {
+        if buf[i..].starts_with(SYNC_BEGIN.as_bytes()) || buf[i..].starts_with(SYNC_END.as_bytes())
+        {
+            i += SYNC_BEGIN.len();
+            continue;
+        }
+        out.push(buf[i]);
+        i += 1;
+    }
+    out
+}
+
 /// Tracks whether a byte stream stopped between two escape sequences and
 /// characters, or inside one. Our own frames may only be written at a
 /// boundary: an OSC cut in two by a box frame would print the rest of the

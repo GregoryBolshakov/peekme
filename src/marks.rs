@@ -414,42 +414,8 @@ impl Marks {
             if m.place.alt != alt {
                 continue;
             }
-            let (ar, ac) = m.place.anchor;
-            let at = |c: &[(usize, usize)]| c.first().map(|&(r, c)| (history + r, c));
-            let copies = screen.copies(snap, text, AROUND);
-            let only = copies.len() == 1;
-            let best = copies
-                .into_iter()
-                .map(|c| (m.place.agree(&c), c))
-                .filter(|(agree, c)| {
-                    if alt {
-                        only || *agree >= MIN_AGREE
-                    } else {
-                        at(&c.cells) == Some(m.place.anchor) || *agree >= REFLOW_AGREE
-                    }
-                })
-                .min_by_key(|(agree, c)| {
-                    let (r, col) = at(&c.cells).unwrap_or_default();
-                    (
-                        at(&c.cells) != Some(m.place.anchor),
-                        std::cmp::Reverse(*agree),
-                        r.abs_diff(ar),
-                        col.abs_diff(ac),
-                    )
-                });
-            let cells = match best {
-                Some((_, copy)) => {
-                    m.place.anchor = at(&copy.cells).unwrap_or(m.place.anchor);
-                    m.place.rows = rows_of(snap, &copy.cells);
-                    m.place.before = copy.before;
-                    m.place.after = copy.after;
-                    copy.cells
-                }
-                None if alt => match m.place.partly(snap) {
-                    Some(cells) => cells,
-                    None => continue,
-                },
-                None => continue,
+            let Some(cells) = m.place.find(snap, &screen, text, history) else {
+                continue;
             };
             found.push(Visible {
                 index,
@@ -459,6 +425,59 @@ impl Marks {
             });
         }
         found
+    }
+}
+
+impl Place {
+    /// On the alternate (full-screen) buffer.
+    pub fn alt(&self) -> bool {
+        self.alt
+    }
+
+    /// The cells of `text` at this place on `snap` (its `screen` text), by
+    /// the rules of `Marks::visible`; the place moves there.
+    pub fn find(
+        &mut self,
+        snap: &Snapshot,
+        screen: &select::Text,
+        text: &str,
+        history: usize,
+    ) -> Option<Vec<(usize, usize)>> {
+        let alt = self.alt;
+        let (ar, ac) = self.anchor;
+        let at = |c: &[(usize, usize)]| c.first().map(|&(r, c)| (history + r, c));
+        let copies = screen.copies(snap, text, AROUND);
+        let only = copies.len() == 1;
+        let best = copies
+            .into_iter()
+            .map(|c| (self.agree(&c), c))
+            .filter(|(agree, c)| {
+                if alt {
+                    only || *agree >= MIN_AGREE
+                } else {
+                    at(&c.cells) == Some(self.anchor) || *agree >= REFLOW_AGREE
+                }
+            })
+            .min_by_key(|(agree, c)| {
+                let (r, col) = at(&c.cells).unwrap_or_default();
+                (
+                    at(&c.cells) != Some(self.anchor),
+                    std::cmp::Reverse(*agree),
+                    r.abs_diff(ar),
+                    col.abs_diff(ac),
+                )
+            });
+        match best {
+            Some((_, copy)) => {
+                self.anchor = at(&copy.cells).unwrap_or(self.anchor);
+                self.rows = rows_of(snap, &copy.cells);
+                self.before = copy.before;
+                self.after = copy.after;
+                Some(copy.cells)
+            }
+            None if alt => self.partly(snap),
+            None => None,
+        }
     }
 }
 
