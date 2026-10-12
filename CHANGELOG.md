@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.6-beta.1 (2026-10-12)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.1`.
+
+- The peek box now starts small, one line while the model thinks, and grows with the answer
+  as it comes in. It can take all the rows on its side of the selection, so a normal answer
+  fits without scrolling. When the answer is longer than that, the box scrolls like before.
+
 ## 0.4.5 (2026-10-11)
 
 - Mac Terminal: with Kiro CLI inline or Claude Code's classic screen, Option+P typed `π`,
