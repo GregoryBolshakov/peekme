@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.6-beta.9 (2026-10-12)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.9`.
+
+- The ask key is now Alt+Q (Option+Q on a Mac), Q for question. Alt+Shift+P switches the
+  keyboard layout on Windows and on many Linux desktops. Alt+Shift+P still works. On a Mac,
+  Option+Q types `œ`: like `π`, it is the key only when text is selected or a box is open, and
+  it stays a letter once you type French.
+
 ## 0.4.6-beta.8 (2026-10-12)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.8`.
