@@ -220,6 +220,9 @@ impl App {
             // terminal (see `lend_mouse`): the child never asked for them.
             return Ok(true);
         }
+        if m == Mouse::WheelSide {
+            return Ok(false);
+        }
         let wheel = matches!(m, Mouse::WheelUp | Mouse::WheelDown);
         if wheel {
             // A box with more text than rows scrolls; otherwise the chat does.
@@ -249,7 +252,7 @@ impl App {
         }
         match m {
             // Taken above.
-            Mouse::WheelUp | Mouse::WheelDown => {}
+            Mouse::WheelUp | Mouse::WheelDown | Mouse::WheelSide => {}
             Mouse::Press => {
                 let had = self.open.as_ref().and_then(|o| o.drag);
                 let open = self.open.as_mut().unwrap();

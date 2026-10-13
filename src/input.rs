@@ -50,6 +50,9 @@ pub enum Mouse {
     Motion,
     WheelUp,
     WheelDown,
+    /// The wheel to the side (a trackpad sends these along with up and
+    /// down when a finger moves a little across).
+    WheelSide,
 }
 
 /// Classify an SGR mouse report `CSI < b ; x ; y M|m`.
@@ -64,6 +67,7 @@ fn parse_mouse(bytes: &[u8]) -> Option<Mouse> {
         .ok()?;
     Some(match (fin, b) {
         (b'm', _) => Mouse::Release,
+        (b'M', b) if b & 64 != 0 && b & 2 != 0 => Mouse::WheelSide,
         (b'M', b) if b & 64 != 0 => {
             if b & 1 == 0 {
                 Mouse::WheelUp
@@ -511,6 +515,8 @@ mod tests {
         assert_eq!(kinds(b"\x1b[<0;19;12m"), vec![Kind::Mouse(Mouse::Release)]);
         assert_eq!(kinds(b"\x1b[<64;5;5M"), vec![Kind::Mouse(Mouse::WheelUp)]);
         assert_eq!(kinds(b"\x1b[<65;5;5M"), vec![Kind::Mouse(Mouse::WheelDown)]);
+        assert_eq!(kinds(b"\x1b[<66;5;5M"), vec![Kind::Mouse(Mouse::WheelSide)]);
+        assert_eq!(kinds(b"\x1b[<67;5;5M"), vec![Kind::Mouse(Mouse::WheelSide)]);
         assert_eq!(mouse_cell(b"\x1b[<0;96;10m"), Some((9, 95)));
         assert_eq!(mouse_cell(b"\x1b[<0;0;10m"), None);
     }

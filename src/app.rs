@@ -1312,12 +1312,13 @@ impl App {
                     self.scroll(t.kind == Kind::PageDown, out)?;
                 }
                 (Kind::Passive | Kind::Release, _) => forward.extend_from_slice(&t.bytes),
-                // With the box open: moving the mouse does nothing, the wheel
+                // With the box open: moving the mouse (or the wheel to the
+                // side: nothing scrolls that way) does nothing, the wheel
                 // scrolls the chat (a box with more text than rows took it
                 // already), a click elsewhere closes it (and still goes to the
                 // child, e.g. to start a new selection).
                 (Kind::Mouse(m), true) => match m {
-                    Mouse::Motion => {}
+                    Mouse::Motion | Mouse::WheelSide => {}
                     Mouse::WheelUp | Mouse::WheelDown => {
                         if self.shadow.mouse_mode() {
                             // The child scrolls; its new screen shows under the box.
@@ -3732,6 +3733,45 @@ mod tests {
         let open = app.open.as_ref().unwrap();
         assert_eq!(open.lay.box_top, home - 1 - 6, "the second turn too");
         assert!(open.unmoved.is_none());
+    }
+
+    /// A trackpad sends the wheel to the side along with up and down. Codex
+    /// does not scroll for it, and that is not the end of the chat: the box
+    /// stays with its text.
+    #[test]
+    fn the_wheel_to_the_side_does_not_move_the_box() {
+        let mut app = test_app(120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(CODEX_0161_FULLSCREEN, &mut out, &mut child)
+            .unwrap();
+        let chat: String = (0..34)
+            .map(|r| format!("\x1b[{};1H\x1b[0m\x1b[2K  chat line {r}", r + 1))
+            .collect();
+        app.on_output(format!("\x1b7{chat}\x1b8").as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        app.selection = SelectionSource::fixed("chat line 5");
+        app.open_peek(&mut out).unwrap();
+        let id = app.open.as_ref().unwrap().id;
+        let answer: String = (1..=8).map(|k| format!("Line {k}.\n\n")).collect();
+        app.on_progress(id, Progress::Delta(answer), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        let lay = app.open.as_ref().unwrap().lay;
+        child.clear();
+        app.on_input(
+            b"\x1b[<67;60;5M\x1b[<67;60;5M\x1b[<66;60;5M\x1b[<67;60;5M",
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        let nothing = b"\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[?2026l";
+        app.on_output(nothing, &mut out, &mut child).unwrap();
+        let open = app.open.as_mut().unwrap();
+        assert!(open.unmoved.is_none() && open.answered.is_none());
+        open.answered = Some(Instant::now() - WHEEL_UNMOVED);
+        app.tick(&mut out).unwrap();
+        assert_eq!(app.open.as_ref().unwrap().lay, lay);
     }
 
     /// A tall box above a selection near the bottom pushes the chat up; as
