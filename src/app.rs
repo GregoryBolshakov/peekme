@@ -111,6 +111,8 @@ struct Open {
     /// Wheel turns sent to the child that its chat has not moved for yet
     /// (down is plus), and when the last one went.
     unmoved: Option<(isize, Instant)>,
+    /// When the child last answered those turns with its screen as it was.
+    answered: Option<Instant>,
     /// Rows the child's chat moves for one turn of the wheel, as last seen.
     wheel_step: isize,
 }
@@ -129,6 +131,10 @@ const CODEX_STATUS_ROWS: usize = 2;
 
 /// A wheel turn the child's chat has not moved for in this long found its end.
 const WHEEL_UNMOVED: Duration = Duration::from_millis(150);
+/// Codex answers every wheel turn with a frame that changes nothing, and
+/// scrolls a few ms later if it can: this long after that frame with no
+/// scroll, the turn found the end of the chat.
+const WHEEL_QUIET: Duration = Duration::from_millis(25);
 
 /// How long after a wheel event the child's output is shown under the box.
 const FOLLOW: Duration = Duration::from_millis(1500);
@@ -866,13 +872,31 @@ impl App {
             };
             Some(open.lay.home - home)
         });
-        if let Some(k) = moved {
+        let still = now.rows.len() == open.snap.rows.len()
+            && (now.rows.iter().zip(&open.snap.rows)).all(|(a, b)| same_cells(a, b));
+        let turns = open.unmoved.map_or(0, |(n, _)| n);
+        if let Some(k) = moved.filter(|&k| k != 0) {
             open.scrolled += k;
             open.lay = overlay::scroll_by(&open.lay, k);
-            if k != 0 {
-                open.unmoved = None;
-                open.wheel_step = k.abs();
-            }
+            // The turns this move answers, a wheel step each.
+            let left = if k.signum() == turns.signum() {
+                if turns.abs() == 1 {
+                    open.wheel_step = open.wheel_step.max(k.abs());
+                }
+                let step = open.wheel_step.max(1);
+                let answered = ((k.abs() + step - 1) / step).min(turns.abs());
+                turns - turns.signum() * answered
+            } else {
+                0
+            };
+            open.unmoved = open.unmoved.filter(|_| left != 0).map(|(_, at)| (left, at));
+            open.answered = None;
+        } else if still && turns != 0 {
+            // The child answered the wheel with its screen as it was. Codex
+            // does that first for every turn, then scrolls a moment later
+            // unless its chat is at its end. The first such frame counts: a
+            // quick wheel answered again and again is still at the end.
+            open.answered.get_or_insert_with(Instant::now);
         }
         for r in lo..hi {
             // A row of the chat keeps its text while it scrolls: a blank one
@@ -900,7 +924,9 @@ impl App {
     /// The wheel turned and the child's chat did not move: it is at its end
     /// (or its start). The box made the chat longer than the child knows, by
     /// the rows it pushed past the bottom (or the top), so peekme scrolls
-    /// those into view itself, a wheel step at a time.
+    /// those into view itself, a wheel step at a time: soon after the child
+    /// answered with its screen as it was and then nothing else, or later
+    /// for a child that does not answer at all.
     fn wheel_past_end(&mut self, out: &mut dyn Write) -> Result<()> {
         let can_draw = self.can_draw();
         let Some(open) = &mut self.open else {
@@ -909,10 +935,11 @@ impl App {
         let Some((turns, at)) = open.unmoved else {
             return Ok(());
         };
-        if at.elapsed() < WHEEL_UNMOVED || !can_draw {
+        let quiet = open.answered.is_some_and(|t| t.elapsed() >= WHEEL_QUIET);
+        if !(quiet || at.elapsed() >= WHEEL_UNMOVED) || !can_draw {
             return Ok(());
         }
-        open.unmoved = None;
+        (open.unmoved, open.answered) = (None, None);
         let lay = overlay::reveal(&open.lay, turns * open.wheel_step);
         if lay == open.lay {
             return Ok(());
@@ -2026,6 +2053,7 @@ impl App {
             scrolled: 0,
             fresh: false,
             unmoved: None,
+            answered: None,
             wheel_step: 3,
             snap,
             lay,
@@ -3643,6 +3671,67 @@ mod tests {
             Some(33),
             "the chat's last row at its place"
         );
+    }
+
+    /// Codex answers a wheel turn at the end of its chat with frames that
+    /// change nothing: peekme shows the hidden rows soon after, without the
+    /// long wait, also for the turns of a quick burst that Codex moved for
+    /// only in part.
+    #[test]
+    fn codex_answering_the_wheel_at_its_end_shows_the_rows_at_once() {
+        let mut app = test_app(120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(CODEX_0161_FULLSCREEN, &mut out, &mut child)
+            .unwrap();
+        let chat: String = (0..34)
+            .map(|r| format!("\x1b[{};1H\x1b[0m\x1b[2K  chat line {r}", r + 1))
+            .collect();
+        app.on_output(format!("\x1b7{chat}\x1b8").as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        app.selection = SelectionSource::fixed("chat line 5");
+        app.open_peek(&mut out).unwrap();
+        let open = app.open.as_ref().unwrap();
+        let (id, home, top) = (open.id, open.lay.home, open.strip_top.unwrap());
+        let answer: String = (1..=8).map(|k| format!("Line {k}.\n\n")).collect();
+        app.on_progress(id, Progress::Delta(answer), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        let h = app.open.as_ref().unwrap().lay.box_height as isize;
+        assert!(h >= 9, "{h}");
+        // Codex answers every turn with a frame that changes nothing, then
+        // a second one: the same again at the end of its chat.
+        let nothing = b"\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[?2026l";
+        let quiet = |app: &mut App, out: &mut Vec<u8>| {
+            app.open.as_mut().unwrap().answered = Some(Instant::now() - WHEEL_QUIET);
+            app.tick(out).unwrap();
+        };
+        app.on_input(b"\x1b[<65;60;5M", &mut out, &mut child)
+            .unwrap();
+        app.on_output(nothing, &mut out, &mut child).unwrap();
+        app.on_output(nothing, &mut out, &mut child).unwrap();
+        assert_eq!(app.open.as_ref().unwrap().lay.box_top, home, "not yet");
+        quiet(&mut app, &mut out);
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.lay.box_top, home - 3, "one turn, quickly");
+        assert!(open.unmoved.is_none());
+        // Two turns at once: Codex moves for the first (a row was still
+        // below), then has nothing left for the second.
+        app.on_input(b"\x1b[<65;60;5M\x1b[<65;60;5M", &mut out, &mut child)
+            .unwrap();
+        app.on_output(nothing, &mut out, &mut child).unwrap();
+        let up = format!("\x1b[?2026h\x1b[1;{top}r\x1b[1S\x1b[r\x1b[?2026l");
+        app.on_output(up.as_bytes(), &mut out, &mut child).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.lay.home, home - 1, "the selection moved a row");
+        assert_eq!(open.unmoved.map(|(n, _)| n), Some(1));
+        assert!(open.answered.is_none(), "Codex scrolled after all");
+        app.on_output(nothing, &mut out, &mut child).unwrap();
+        app.on_output(nothing, &mut out, &mut child).unwrap();
+        quiet(&mut app, &mut out);
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.lay.box_top, home - 1 - 6, "the second turn too");
+        assert!(open.unmoved.is_none());
     }
 
     /// A tall box above a selection near the bottom pushes the chat up; as
