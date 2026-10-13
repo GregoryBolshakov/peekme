@@ -8,15 +8,17 @@ picture: Codex's chat T with the box (H rows) put in after the selection
 
     V = T[:I] + box + T[I:]        chat rows on screen == V[off:off + R]
 
-Each turn of the wheel moves `off` by exactly 3 rows (Codex's step), stopping
-at either end of V. Nothing else moves it, except the box growing while
+Each turn of the wheel moves `off` by as many rows as it moves Codex's chat
+(Codex's own count, kept here too: `tui.mouse_scroll_speed` rows a turn since
+0.162, fractions carried), stopping at either end of V. Nothing else moves it, except the box growing while
 whole on the screen and running into its edge (it then pushes the
 selection). T is read from Codex itself before the box opens: scrolled to
-the top, then a turn at a time to the end.
+the top, then a page at a time to the end.
 
     python3 tests/e2e/scroll.py [--only NAME] [--repeat N]
 """
 import json
+import math
 import os
 import re
 import subprocess
@@ -30,7 +32,33 @@ import matrix as m  # noqa: E402
 import real_agents as ra  # noqa: E402
 
 VTFRAMES = os.path.join(m.ROOT, "target/release/examples/vtframes")
-STEP = 3
+# Another build to test (an older one, to see a check fail on it).
+m.PEEKME = os.environ.get("PEEKME_BIN", m.PEEKME)
+
+
+def rust_round(x):
+    return math.copysign(math.floor(abs(x) + 0.5), x)
+
+
+class Wheel:
+    """Codex's count of wheel rows, as Codex keeps it (0.162.1,
+    transcript_view/input.rs): the speed a turn, whole rows scrolled, the
+    fraction kept until the wheel turns the other way."""
+
+    def __init__(self, speed):
+        self.speed, self.pending = speed, 0.0
+
+    def turn(self, way):
+        d = -1.0 if way < 0 else 1.0
+        if math.copysign(1.0, self.pending) != d:
+            self.pending = 0.0
+        self.pending += d * self.speed
+        r = rust_round(self.pending)
+        if r != 0 and abs(self.pending - r) < 1e-9:
+            self.pending = r
+        rows = math.trunc(self.pending)
+        self.pending -= rows
+        return rows
 BOX = ("╭", "│", "╰")
 LABEL = re.compile(r"\bb\d+r\d\d\b")
 
@@ -43,10 +71,12 @@ def wheel_bytes(up, x, y, side=False):
 class Session:
     """One Codex under peekme, with a chat made of labelled rows."""
 
-    def __init__(self, out, blocks, rep=False, size=(120, 40), block_rows=40):
+    def __init__(self, out, blocks, rep=False, size=(120, 40), block_rows=40, late=False,
+                 speed=None):
         m.COLS, m.ROWS = size
         self.out = out
         self.used = set()
+        self.burst_wait = 4.0 if late else 0.15
         self.lines_file = os.path.join(out, "lines")
         self.set_answer(6)
         env = m.clean_env(
@@ -54,8 +84,14 @@ class Session:
             PEEKME_FAKE_LINES="@" + self.lines_file,
             PEEKME_EVENT_LOG=os.path.join(out, "events.jsonl"),
             DISPLAY="", WAYLAND_DISPLAY="")
-        self.t = m.Term([m.PEEKME, ra.real_binary("codex"), "-c",
-                         "check_for_update_on_startup=false"], env,
+        # `late`: Codex behind a relay that delays its scroll after its first,
+        # empty answer to each wheel turn (a slower machine).
+        relay = [sys.executable, os.path.join(HERE, "late_pty.py")] if late else []
+        # Codex's wheel speed: its default 1.0, or set on its command line.
+        setting = ["-c", f"tui.mouse_scroll_speed={speed}"] if speed else []
+        self.model = Wheel(speed or 1.0)
+        self.t = m.Term([m.PEEKME] + relay + [ra.real_binary("codex"), "-c",
+                         "check_for_update_on_startup=false"] + setting, env,
                         os.path.join(out, "terminal.bin"))
         self.ready()
         for b in range(blocks):
@@ -117,8 +153,10 @@ class Session:
             return len(self.t.data)
 
     def wheel(self, up, n=1, gap=0.0, batch=1, side=None, at=None):
+        """Turn the wheel; returns the rows each turn moves Codex's chat."""
         # Codex scrolls for the wheel over its chat only.
         x, y = (m.COLS // 2, self.R // 2) if at in (None, "auto") else at
+        rows = []
         for _ in range(n):
             if at == "auto":
                 # A row the box does not cover (a box scrolls its own text).
@@ -129,28 +167,42 @@ class Session:
             if side:
                 b += b"".join(wheel_bytes(s == "<", x, y, side=True) for s in side)
             self.t.send(b)
+            rows += [self.model.turn(-1 if up else 1) for _ in range(batch)]
             if gap:
                 time.sleep(gap)
+        return rows
 
     def chat(self):
         return self.screen()[:self.R]
 
+    def settle(self):
+        """Wait until the screen stops changing (a late Codex takes a while)."""
+        prev, same_since = None, time.time()
+        end = time.time() + 20
+        while time.time() < end:
+            cur = self.screen()
+            if cur != prev:
+                prev, same_since = cur, time.time()
+            elif time.time() - same_since > 0.6:
+                return
+            time.sleep(0.1)
+
     def to_end(self):
-        self.wheel(False, 120, 0.003)
-        time.sleep(0.6)
+        self.t.send(b"\x1b[1;5F")  # Ctrl+End
+        self.settle()
 
     def read_chat(self):
-        self.wheel(True, 150, 0.003)
-        time.sleep(0.8)
+        self.t.send(b"\x1b[1;5H")  # Ctrl+Home
+        self.settle()
         cur = self.chat()
         T = list(cur)
         while True:
-            self.wheel(False)
-            time.sleep(0.15)
+            self.t.send(b"\x1b[6~")  # PageDown
+            time.sleep(0.3)
             nxt = self.chat()
             if nxt == cur:
                 break
-            s = next((s for s in [STEP] + list(range(1, self.R))
+            s = next((s for s in [self.R - 1] + list(range(1, self.R))
                       if nxt[:self.R - s] == cur[s:]), None)
             if s is None:
                 raise RuntimeError("reading the chat: screens do not overlap")
@@ -318,6 +370,7 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
     if os.environ.get("SCROLL_DEBUG"):
         print(f"    {len(fr) - first} frames, I={I} H={H}")
     prev = None
+    where = {}  # frame offset -> set of places in V, once the text is done
     for o, rows in fr[first:]:
         chat = rows[:R]
         settled = done_at is not None and o >= done_at
@@ -325,15 +378,20 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
                       ref if settled and not capped else None)
         if isinstance(got, str):
             case.err(f"frame at byte {o}: {got}")
+        elif settled:
+            where[o] = got
         for r in rows[R:]:
             if r[:1] in BOX:
                 case.err(f"frame at byte {o}: box drawn over Codex's input area")
                 break
     if H is None or capped:
         return
-    # The moves.
+    # The moves. Each turn moves 3 rows, stopping at either end of V. A turn
+    # that reaches the end of Codex's chat partway may leave up to 2 rows
+    # for the next turn that way (peekme waits until the end shows); never
+    # more than the turns asked for.
     maxoff = len(T) + H - R
-    off = None
+    off = last = None
     for name, o, move in case.marks:
         if o < done_at:
             continue
@@ -349,11 +407,31 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
             want = off
             for d in move:
                 want = max(0, min(maxoff, want + d))
-            if want not in got:
+            # The way of the turns (a slow wheel's turns may move no row).
+            last_way = next((d for d in reversed(move) if d), 0)
+            sign = (last_way > 0) - (last_way < 0)
+            if sign:
+                slack = max(abs(d) for d in move) - 1
+                fits = [g for g in got if 0 <= (want - g) * sign <= slack]
+            else:
+                fits = [g for g in got if g == last]
+            if not fits:
                 case.err(f"{name}: moved to {sorted(got)}, want {want} (from {off})")
-            off = want if want in got else min(got)
+            # Every frame on the way: never past the turns sent, never back.
+            if sign and last is not None and len({d > 0 for d in move if d}) == 1:
+                way = [min(where[x], key=lambda g: abs(g - want)) for x in sorted(where)
+                       if prev_o < x <= o]
+                for a, b in zip([last] + way, way):
+                    if (b - a) * sign < 0:
+                        case.err(f"{name}: a frame on the way moved back ({a} -> {b})")
+                        break
+                if any((g - want) * sign > 0 for g in way):
+                    case.err(f"{name}: a frame on the way went past {want}")
+            off = want
+            last = fits[0] if fits else min(got)
         else:
-            off = min(got)
+            off = last = min(got)
+        prev_o = o
         if os.environ.get("SCROLL_DEBUG"):
             print(f"    {name:28} off {sorted(got)} of {maxoff}  (I={I} H={H} len(T)={len(T)})")
         if name.endswith("+1s") and prev is not None and at.get(prev[1]) is not None:
@@ -404,10 +482,6 @@ def check_live(case, open_at, end_at, sel_rows):
         case.err("never saw the box next to its selection")
 
 
-def notch_moves(up, n):
-    return [(-STEP if up else STEP)] * n
-
-
 def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=False,
              close="esc", capped=False, live=None, nested=False):
     """Open a box at `sel_row` and run `actions`; returns the case."""
@@ -424,7 +498,7 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
             m.wait(lambda: s.chat() != before, 4, 0.05)
     if pre_up:
         s.wheel(True, pre_up, 0.01)
-        time.sleep(0.5)
+        s.settle()
     r1, r2, sel = select(s, sel_row, two_rows)
     open_at = s.mark()
     case.label = LABEL.search(sel[0])[0]
@@ -456,34 +530,35 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
             _, up, n = a[:3]
             at = a[3] if len(a) > 3 else None
             for i in range(n):
-                s.wheel(up, at=at)
+                rows = s.wheel(up, at=at)
                 time.sleep(0.25)
-                case.marks.append((f"{'up' if up else 'down'} {i + 1}/{n}", s.mark(), notch_moves(up, 1)))
+                case.marks.append((f"{'up' if up else 'down'} {i + 1}/{n}", s.mark(), rows))
         elif kind == "burst":
             _, up, n = a[:3]
             opts = a[3] if len(a) > 3 else {}
-            s.wheel(up, n, opts.get("gap", 0.008), opts.get("batch", 1), opts.get("side"))
-            time.sleep(0.05)
+            rows = s.wheel(up, n, opts.get("gap", 0.008), opts.get("batch", 1), opts.get("side"))
+            # A late Codex (the relay) takes a while to answer a burst.
+            wait = s.burst_wait
+            time.sleep(wait)
             label = f"burst {'up' if up else 'down'} {n}x{opts.get('batch', 1)}"
-            case.marks.append((label + " +50ms", s.mark(), notch_moves(up, n * opts.get("batch", 1))))
+            case.marks.append((label + f" +{int(wait * 1000)}ms", s.mark(), rows))
             time.sleep(1.0)
             case.marks.append((label + " +1s", s.mark(), []))
         elif kind == "page":
-            # PageUp / PageDown: a page of the chat, as Codex pages it.
+            # PageUp / PageDown: peekme sends Codex a page of wheel turns.
             _, up, n = a
-            turns = max(1, (s.R - 1 + STEP // 2) // STEP)
+            turns = max(1, int(rust_round((s.R - 1) / s.model.speed)))
             for i in range(n):
                 s.t.send(b"\x1b[5~" if up else b"\x1b[6~")
-                time.sleep(0.4)
-                case.marks.append((f"page {'up' if up else 'down'} {i + 1}/{n}", s.mark(),
-                                   notch_moves(up, turns)))
+                rows = [s.model.turn(-1 if up else 1) for _ in range(turns)]
+                time.sleep(max(0.4, s.burst_wait))
+                case.marks.append((f"page {'up' if up else 'down'} {i + 1}/{n}", s.mark(), rows))
         elif kind == "seq":
             # Several directions in one quick run: [(up, n), ...]
             moves = []
             for up, n in a[1]:
-                s.wheel(up, n, 0.008)
-                moves += notch_moves(up, n)
-            time.sleep(0.05)
+                moves += s.wheel(up, n, 0.008)
+            time.sleep(s.burst_wait)
             case.marks.append(("reversing burst +50ms", s.mark(), moves))
             time.sleep(1.0)
             case.marks.append(("reversing burst +1s", s.mark(), []))
@@ -532,10 +607,10 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
         if not ks:
             case.err("after closing the screen is not Codex's chat")
         else:
-            s.wheel(True)
+            back = -s.wheel(True)[0]
             time.sleep(0.3)
             after = s.chat()
-            if not any(s.T[max(0, k - STEP):max(0, k - STEP) + s.R] == after for k in ks):
+            if not any(s.T[max(0, k - back):max(0, k - back) + s.R] == after for k in ks):
                 case.err("after closing Codex's next scroll does not match the screen")
     return case
 
@@ -627,6 +702,35 @@ def cases_live(s):
         actions=[("slow", False, 3), ("burst", True, 6), ("burst", False, 20)])
 
 
+def cases_late(s):
+    yield "late scroll: slow both ways past both ends", lambda: run_case(
+        s, "late-slow", 8, actions=[("slow", True, 10), ("slow", False, 16),
+                                    ("burst", True, 60, {"gap": 0.003}), ("slow", False, 6)])
+    yield "late scroll: trackpad bursts", lambda: run_case(
+        s, "late-trackpad", 12, actions=[("burst", True, 6, {"batch": 5, "gap": 0.012}),
+                                         ("burst", False, 8, {"batch": 5, "gap": 0.012}),
+                                         ("burst", True, 20), ("burst", False, 30)])
+    yield "late scroll: chat scrolled up, far and back", lambda: run_case(
+        s, "late-far", 10, pre_up=15, actions=[("burst", True, 40), ("burst", False, 70),
+                                               ("page", True, 2), ("page", False, 3)])
+
+
+def cases_speed(s):
+    yield "slow both ways past both ends", lambda: run_case(
+        s, "speed-slow", 8, actions=[("slow", True, 10), ("slow", False, 30),
+                                     ("burst", True, 200, {"gap": 0.003}), ("slow", True, 3),
+                                     ("slow", False, 9)])
+    yield "trackpad bursts", lambda: run_case(
+        s, "speed-trackpad", 12, actions=[("burst", True, 6, {"batch": 5, "gap": 0.012}),
+                                          ("burst", False, 8, {"batch": 5, "gap": 0.012}),
+                                          ("burst", True, 20, {"side": "<"}),
+                                          ("burst", False, 40)])
+    yield "reversing, pages", lambda: run_case(
+        s, "speed-pages", 10, pre_up=30,
+        actions=[("seq", [(True, 7), (False, 11), (True, 3)]), ("page", True, 2),
+                 ("page", False, 4), ("slow", True, 3)])
+
+
 def cases_rep(s):
     yield "repeated rows", lambda: run_case(
         s, "repeated", 6, pre_up=12, actions=[("slow", True, 6), ("slow", False, 10),
@@ -637,7 +741,11 @@ SESSIONS = [("long", dict(blocks=4), cases_long), ("more", dict(blocks=3), cases
             ("short", dict(blocks=1, block_rows=10), cases_short),
             ("repeated", dict(blocks=3, rep=True), cases_rep),
             ("small", dict(blocks=3, size=(80, 24)), cases_small),
-            ("live", dict(blocks=2), cases_live)]
+            ("live", dict(blocks=2), cases_live),
+            ("late", dict(blocks=3, late=True), cases_late),
+            ("speed 0.5", dict(blocks=3, speed=0.5), cases_speed),
+            ("speed 2.5", dict(blocks=3, speed=2.5), cases_speed),
+            ("speed 3", dict(blocks=3, speed=3), cases_speed)]
 
 
 def main():
@@ -655,7 +763,7 @@ def main():
         out = os.path.join(root, sname)
         os.makedirs(out, exist_ok=True)
         s = Session(out, kw["blocks"], kw.get("rep", False), kw.get("size", (120, 40)),
-                    kw.get("block_rows", 40))
+                    kw.get("block_rows", 40), kw.get("late", False), kw.get("speed"))
         try:
             for _ in range(repeat):
                 for name, fn in cases(s):

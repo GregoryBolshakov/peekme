@@ -163,6 +163,24 @@ impl Shadow {
         self.term.columns()
     }
 
+    /// Text of rows `from..to` as they show now, trailing blanks removed,
+    /// read off the grid without a snapshot.
+    pub fn rows_text(&self, from: usize, to: usize) -> String {
+        let grid = self.term.grid();
+        let mut s = String::new();
+        for r in from..to.min(self.rows()) {
+            let row = &grid[Line(r as i32)];
+            let line: String = (0..self.cols())
+                .map(|c| &row[Column(c)])
+                .filter(|c| !c.flags.contains(Flags::WIDE_CHAR_SPACER))
+                .map(|c| c.c)
+                .collect();
+            s.push_str(line.trim_end());
+            s.push('\n');
+        }
+        s
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let grid = self.term.grid();
         let rows = (0..self.rows())

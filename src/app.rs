@@ -108,13 +108,104 @@ struct Open {
     scrolled: isize,
     /// The child wrote since the box was last drawn around its screen.
     fresh: bool,
-    /// Wheel turns sent to the child that its chat has not moved for yet
-    /// (down is plus), and when the last one went.
-    unmoved: Option<(isize, Instant)>,
-    /// When the child last answered those turns with its screen as it was.
-    answered: Option<Instant>,
-    /// Rows the child's chat moves for one turn of the wheel, as last seen.
-    wheel_step: isize,
+    /// The wheel turns of this run (one way, since the child answered the
+    /// turns before): the rows each moves the chat by Codex's own count,
+    /// oldest first; their way; and when the last one went.
+    run: Vec<isize>,
+    run_way: isize,
+    sent: Instant,
+    /// Updates from the child since the run began that changed nothing or
+    /// moved the chat (two a turn), less those still owed to the run before;
+    /// and how many there were when the chat last moved.
+    answers: isize,
+    moved_at: isize,
+    /// Rows the chat moved the run's way since it began, and rows of the box
+    /// shown in their place at the end of the chat.
+    moved: isize,
+    revealed: isize,
+    /// The child wrote something since the last turn went, and when it last
+    /// answered; whether it answered any turn of the run at all.
+    heard: bool,
+    answered_at: Instant,
+    answering: bool,
+    /// The start of a synchronized update the child has not ended yet.
+    partial: Vec<u8>,
+    /// The chat is at its end (1) or its start (-1): turns that way get the
+    /// box's rows at once, until the chat moves again.
+    end: Option<isize>,
+}
+
+/// What an update from the child does, while wheel turns wait for answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    /// Nothing: Codex's first answer to a turn, or its second when the turn
+    /// moved no row (or the chat is at its end).
+    Nothing,
+    /// The chat's rows moved.
+    Scrolled,
+    /// Something else changed.
+    Other,
+}
+
+impl Open {
+    /// Turns of the run the child answered, two updates each.
+    fn answered(&self) -> usize {
+        ((self.answers.max(0) / 2) as usize).min(self.run.len())
+    }
+
+    /// The child answered every turn of the run.
+    fn done(&self) -> bool {
+        self.answers >= 2 * self.run.len() as isize
+    }
+
+    /// Rows the turns the child answered move the chat, the run's way: all
+    /// of them once it answered the whole run, but one turn less while some
+    /// are on their way (Codex can draw a turn's rows a little later).
+    fn due(&self) -> isize {
+        let n = self.answered();
+        let n = if self.done() { n } else { n.saturating_sub(1) };
+        self.run[..n].iter().map(|r| r.abs()).sum()
+    }
+
+    /// The answered turns moved the chat fewer rows than they should, and
+    /// a whole turn's answers since the chat last moved moved nothing: it is
+    /// at its end that way. The box's rows come for the rest. (A chat that
+    /// keeps moving, fewer rows than counted, scrolls slower than peekme
+    /// thinks: no end.) Codex takes several turns read at once together and
+    /// answers them with fewer updates: once it went quiet after answering,
+    /// all the turns count.
+    fn settle_run(&mut self) {
+        let all: isize = self.run.iter().map(|r| r.abs()).sum();
+        // The chat moved after all, with the box's rows shown for it (a late
+        // answer): take them back.
+        let over = (self.moved + self.revealed - all).min(self.revealed);
+        if over > 0 {
+            self.reveal_rows(-over);
+            return;
+        }
+        let quiet = self.heard && self.answered_at.elapsed() >= WHEEL_QUIET;
+        let due = if quiet || self.done() {
+            all
+        } else {
+            self.due()
+        };
+        let short = due - self.moved - self.revealed;
+        if short <= 0 || (self.answers - self.moved_at < 2 && !quiet) {
+            return;
+        }
+        self.reveal_rows(short);
+        self.end = Some(self.run_way);
+    }
+
+    /// Show `rows` more of the box's rows the run's way (fewer: minus).
+    fn reveal_rows(&mut self, rows: isize) {
+        self.lay = overlay::reveal(&self.lay, self.run_way * rows);
+        self.revealed += rows;
+        crate::event(
+            "reveal",
+            serde_json::json!({"rows": self.run_way * rows, "box_top": self.lay.box_top}),
+        );
+    }
 }
 
 /// Mouse reports (button events, SGR form) peekme turns on while a box is open
@@ -126,12 +217,17 @@ const SGR_OFF: &str = "\x1b[?1006l";
 /// this long, so a child that never asked for them gets none.
 const STRAY_MOUSE: Duration = Duration::from_secs(1);
 
-/// A wheel turn the child's chat has not moved for in this long found its end.
+/// A wheel turn the child's chat has not moved for in this long, with no
+/// answer at all from the child, found its end.
 const WHEEL_UNMOVED: Duration = Duration::from_millis(150);
-/// Codex answers every wheel turn with a frame that changes nothing, and
-/// scrolls a few ms later if it can: this long after that frame with no
-/// scroll, the turn found the end of the chat.
-const WHEEL_QUIET: Duration = Duration::from_millis(25);
+/// Codex took several turns in one read and answered them with fewer
+/// updates than two a turn: this long after its last answer it is done.
+const WHEEL_QUIET: Duration = Duration::from_millis(100);
+/// Codex's synchronized updates: how one begins and ends, and the one that
+/// changes nothing, its first answer to every turn of the wheel.
+const SYNC_BEGIN_BYTES: &[u8] = b"\x1b[?2026h";
+const SYNC_END_BYTES: &[u8] = b"\x1b[?2026l";
+const CODEX_EMPTY_UPDATE: &[u8] = b"\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[?2026l";
 
 /// How long after a wheel event the child's output is shown under the box.
 const FOLLOW: Duration = Duration::from_millis(1500);
@@ -216,7 +312,10 @@ pub fn run(
     agent: Option<Agent>,
 ) -> std::result::Result<i32, Failure> {
     let setup = setup(program, args).map_err(Failure::Setup)?;
-    event_loop(setup, agent).map_err(Failure::Runtime)
+    let scroll_speed = matches!(agent, Some(Agent::Codex))
+        .then(|| codex::scroll::speed_setting(args))
+        .flatten();
+    event_loop(setup, agent, scroll_speed).map_err(Failure::Runtime)
 }
 
 struct Setup {
@@ -388,7 +487,7 @@ fn setup(program: &str, args: &[String]) -> Result<Setup> {
     })
 }
 
-fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
+fn event_loop(setup: Setup, agent: Option<Agent>, scroll_speed: Option<f64>) -> Result<i32> {
     let Setup {
         mut child,
         helper_pid,
@@ -462,6 +561,7 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         hover: None,
         pointer_on: false,
         child_pointer: None,
+        wheel: codex::scroll::Wheel::new(scroll_speed),
     };
     let mut stdout = std::io::stdout().lock();
     if app.in_tmux {
@@ -655,6 +755,8 @@ struct App {
     pointer_on: bool,
     /// The child's last pointer shape request, to give it back.
     child_pointer: Option<Vec<u8>>,
+    /// Codex's count of wheel rows, kept in step with Codex's own.
+    wheel: codex::scroll::Wheel,
 }
 
 impl App {
@@ -681,7 +783,7 @@ impl App {
         if self.open.is_none() {
             self.pass_through(bytes, out)?;
         } else {
-            self.shadow.advance(bytes);
+            self.advance_open(bytes);
             self.marks_stale = !self.marks.is_empty();
         }
         if let Some(text) = self.osc52.feed(bytes)
@@ -911,9 +1013,14 @@ impl App {
         // Rows match rows: how far the chat moved (where rows repeat, as far
         // as the wheel turns sent say if that fits). The selection's own row
         // when nothing matches (it jumped further than a screen).
-        let turns = open.unmoved.map_or(0, |(n, _)| n);
-        let expect: Vec<isize> = (1..=turns.abs())
-            .map(|j| j * turns.signum() * open.wheel_step)
+        let (way, so_far) = (open.run_way, open.moved);
+        let expect: Vec<isize> = (open.run.iter())
+            .scan(0, |sum, r| {
+                *sum += r.abs();
+                Some(*sum - so_far)
+            })
+            .filter(|&rows| rows > 0)
+            .map(|rows| way * rows)
             .collect();
         let moved = overlay::scroll_delta_near(&open.snap, &now, lo..both, &expect).or_else(|| {
             let f = found.as_ref()?;
@@ -924,36 +1031,17 @@ impl App {
             };
             Some(open.lay.home - home)
         });
-        let still = now.rows.len() == open.snap.rows.len()
-            && (now.rows.iter().zip(&open.snap.rows)).all(|(a, b)| same_cells(a, b));
         if let Some(k) = moved.filter(|&k| k != 0) {
             open.scrolled += k;
             open.lay = overlay::scroll_by(&open.lay, k);
-            // The turns this move answers, a wheel step each.
-            let left = if k.signum() == turns.signum() {
-                if turns.abs() == 1 {
-                    open.wheel_step = open.wheel_step.max(k.abs());
-                }
-                let step = open.wheel_step.max(1);
-                let answered = ((k.abs() + step - 1) / step).min(turns.abs());
-                // Short of whole steps: the chat reached its end on the way,
-                // and the box's rows make up the rest of those turns.
-                let short = answered * step - k.abs();
-                if short > 0 {
-                    open.lay = overlay::reveal(&open.lay, k.signum() * short);
-                }
-                turns - turns.signum() * answered
-            } else {
-                0
-            };
-            open.unmoved = open.unmoved.filter(|_| left != 0).map(|(_, at)| (left, at));
-            open.answered = None;
-        } else if still && turns != 0 {
-            // The child answered the wheel with its screen as it was. Codex
-            // does that first for every turn, then scrolls a moment later
-            // unless its chat is at its end. The first such frame counts: a
-            // quick wheel answered again and again is still at the end.
-            open.answered.get_or_insert_with(Instant::now);
+            open.end = None;
+            if k.signum() == open.run_way {
+                open.moved += k.abs();
+            }
+        }
+        open.settle_run();
+        if open.run.len() == 1 && open.done() && open.revealed == 0 && open.moved > 0 {
+            self.wheel.learn(open.run_way * open.moved);
         }
         for r in lo..hi {
             // A row of the chat keeps its text while it scrolls: a blank one
@@ -978,34 +1066,36 @@ impl App {
         Ok(())
     }
 
-    /// The wheel turned and the child's chat did not move: it is at its end
-    /// (or its start). The box made the chat longer than the child knows, by
-    /// the rows it pushed past the bottom (or the top), so peekme scrolls
-    /// those into view itself, a wheel step at a time: soon after the child
-    /// answered with its screen as it was and then nothing else, or later
-    /// for a child that does not answer at all.
+    /// The wheel turned and a child that does not answer it (Codex does,
+    /// see `answer_turns`) did not move its chat: it is at its end (or its
+    /// start). The box made the chat longer than the child knows, by the
+    /// rows it pushed past the bottom (or the top), so peekme scrolls those
+    /// into view itself, a wheel step at a time.
     fn wheel_past_end(&mut self, out: &mut dyn Write) -> Result<()> {
         let can_draw = self.can_draw();
         let Some(open) = &mut self.open else {
             return Ok(());
         };
-        let Some((turns, at)) = open.unmoved else {
-            return Ok(());
-        };
-        let quiet = open.answered.is_some_and(|t| t.elapsed() >= WHEEL_QUIET);
-        if !(quiet || at.elapsed() >= WHEEL_UNMOVED) || !can_draw {
+        if open.run.is_empty() || !can_draw {
             return Ok(());
         }
-        (open.unmoved, open.answered) = (None, None);
-        let lay = overlay::reveal(&open.lay, turns * open.wheel_step);
-        if lay == open.lay {
+        let before = open.lay;
+        if open.answering {
+            // Codex answered and may have gone quiet: see `Open::settle_run`.
+            open.settle_run();
+        } else if open.sent.elapsed() >= WHEEL_UNMOVED && !open.done() {
+            // No answer at all: a child that does not answer the wheel.
+            let all: isize = open.run.iter().map(|r| r.abs()).sum();
+            open.answers = 2 * open.run.len() as isize;
+            let short = all - open.moved - open.revealed;
+            if short > 0 {
+                open.reveal_rows(short);
+                open.end = Some(open.run_way);
+            }
+        }
+        if open.lay == before {
             return Ok(());
         }
-        crate::event(
-            "reveal",
-            serde_json::json!({"turns": turns, "box_top": lay.box_top}),
-        );
-        open.lay = lay;
         let frame = self.box_bytes();
         out.write_all(frame.as_bytes())?;
         out.flush()?;
@@ -1016,21 +1106,123 @@ impl App {
     /// (full-screen Codex), with the box showing all its text: as many turns
     /// of the wheel as a page of the chat has rows, so the chat scrolls and
     /// the box follows it as it does the wheel. None for other children.
-    fn page_as_wheel(&mut self, down: bool) -> Option<Vec<u8>> {
+    fn page_as_wheel(&mut self, down: bool) -> Option<(Vec<u8>, isize)> {
         if !self.shadow.mouse_mode() || !self.shadow.sgr_mouse() {
             return None;
         }
         let open = self.open.as_mut()?;
         open.strip_top?;
         let (lo, hi) = open.lay.region;
-        let step = open.wheel_step.max(1) as usize;
-        let turns = ((hi - lo).saturating_sub(1) + step / 2) / step;
-        let turns = turns.max(1) as isize;
-        open.follow = Some(Instant::now());
-        let n = open.unmoved.map_or(0, |(n, _)| n);
-        open.unmoved = Some((n + if down { turns } else { -turns }, Instant::now()));
+        let page = (hi - lo).saturating_sub(1) as f64;
+        let turns = ((page / self.wheel.speed()).round() as isize).max(1);
         let report = format!("\x1b[<{};1;{}M", if down { 65 } else { 64 }, lo + 1);
-        Some(report.repeat(turns as usize).into_bytes())
+        let bytes = report.repeat(turns as usize).into_bytes();
+        Some((bytes, if down { turns } else { -turns }))
+    }
+
+    /// Wheel turns on their way to the child (down is plus). At the end of
+    /// the chat already, the box's rows come at once, as many as the turns
+    /// would move the chat; otherwise they wait for it to move, or to show
+    /// its end.
+    fn wheel_turns(&mut self, turns: isize, out: &mut dyn Write) -> Result<()> {
+        let can_draw = self.can_draw();
+        let way = turns.signum();
+        let rows: Vec<isize> = (0..turns.abs()).map(|_| self.wheel.turn(way)).collect();
+        crate::event("wheel", serde_json::json!({"rows": rows}));
+        let Some(open) = &mut self.open else {
+            return Ok(());
+        };
+        open.follow = Some(Instant::now());
+        if open.run_way != way || open.done() {
+            // A new run. What the child still owes the turns before does not
+            // answer these.
+            let owed = (2 * open.run.len() as isize - open.answers).max(0);
+            open.run.clear();
+            (open.run_way, open.answers, open.moved, open.revealed) = (way, -owed, 0, 0);
+            (open.moved_at, open.answering) = (-owed, false);
+            open.heard = false;
+        }
+        // Known to be at the end that way: the box's rows come at once. The
+        // turns still go to the child, which answers them too.
+        if open.end == Some(way) && can_draw {
+            let all: isize = rows.iter().map(|r| r.abs()).sum();
+            open.revealed += all;
+            let lay = overlay::reveal(&open.lay, way * all);
+            if lay != open.lay {
+                open.lay = lay;
+                let frame = self.box_bytes();
+                out.write_all(frame.as_bytes())?;
+                out.flush()?;
+            }
+        } else if open.end.is_some_and(|e| e != way) {
+            open.end = None;
+        }
+        let Some(open) = &mut self.open else {
+            return Ok(());
+        };
+        open.run.extend(rows);
+        (open.sent, open.heard) = (Instant::now(), false);
+        Ok(())
+    }
+
+    /// The child's output with the box open. While wheel turns wait for an
+    /// answer it goes in one synchronized update at a time, each told apart
+    /// by what it does to the chat. Codex answers every turn with two
+    /// updates: one that changes nothing, then the scroll, or a second one
+    /// that changes nothing when the turn moves no row. It sometimes draws
+    /// two turns' rows in one; updates that change other things (its status,
+    /// the selection's highlight) are no answers. Counting the answers tells
+    /// how many turns Codex took, and `Open::settle_run` compares the rows.
+    fn advance_open(&mut self, bytes: &[u8]) {
+        let Some(open) = &mut self.open else {
+            return;
+        };
+        if open.done() {
+            open.partial.clear();
+            self.shadow.advance(bytes);
+            return;
+        }
+        let (lo, hi) = open.lay.region;
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let cut = find(rest, SYNC_END_BYTES).map(|i| i + SYNC_END_BYTES.len());
+            let (seg, tail) = rest.split_at(cut.unwrap_or(rest.len()));
+            let before = cut.map(|_| self.shadow.rows_text(lo, hi));
+            self.shadow.advance(seg);
+            let Some(open) = &mut self.open else {
+                return;
+            };
+            open.partial.extend_from_slice(seg);
+            if let Some(before) = before {
+                let start = rfind(&open.partial, SYNC_BEGIN_BYTES).unwrap_or(0);
+                let answer = if open.partial[start..] == *CODEX_EMPTY_UPDATE {
+                    Answer::Nothing
+                } else if self.shadow.rows_text(lo, hi) != before {
+                    Answer::Scrolled
+                } else {
+                    Answer::Other
+                };
+                crate::event(
+                    "update",
+                    serde_json::json!({"answer": format!("{answer:?}"), "len": open.partial.len() - start}),
+                );
+                open.partial.clear();
+                open.heard = true;
+                if answer != Answer::Other {
+                    open.answers += 1;
+                    (open.answered_at, open.answering) = (Instant::now(), true);
+                }
+                if answer == Answer::Scrolled {
+                    open.moved_at = open.answers;
+                }
+            }
+            rest = tail;
+        }
+        if let Some(open) = &mut self.open
+            && open.partial.len() > 1 << 20
+        {
+            open.partial.clear();
+        }
     }
 
     /// The wheel over an agent that leaves the mouse to the terminal: peekme
@@ -1405,7 +1597,10 @@ impl App {
                         self.page_as_wheel(down)
                     };
                     match wheel {
-                        Some(wheel) => forward.extend_from_slice(&wheel),
+                        Some((wheel, turns)) => {
+                            self.wheel_turns(turns, out)?;
+                            forward.extend_from_slice(&wheel);
+                        }
                         None => self.scroll(down, out)?,
                     }
                 }
@@ -1426,12 +1621,8 @@ impl App {
                     Mouse::WheelUp | Mouse::WheelDown => {
                         if self.shadow.mouse_mode() {
                             // The child scrolls; its new screen shows under the box.
-                            if let Some(open) = &mut self.open {
-                                open.follow = Some(Instant::now());
-                                let turn = if m == Mouse::WheelDown { 1 } else { -1 };
-                                let n = open.unmoved.map_or(0, |(n, _)| n);
-                                open.unmoved = Some((n + turn, Instant::now()));
-                            }
+                            let turn = if m == Mouse::WheelDown { 1 } else { -1 };
+                            self.wheel_turns(turn, out)?;
                             forward.extend_from_slice(&t.bytes);
                         } else {
                             self.lend_mouse(out)?;
@@ -1450,6 +1641,10 @@ impl App {
                 },
                 (Kind::Mouse(m), false) => {
                     self.note_mouse(m, &t.bytes);
+                    // Codex counts these too.
+                    if matches!(m, Mouse::WheelUp | Mouse::WheelDown) && self.shadow.mouse_mode() {
+                        self.wheel.turn(if m == Mouse::WheelDown { 1 } else { -1 });
+                    }
                     forward.extend_from_slice(&t.bytes);
                 }
                 (_, true) => {
@@ -2155,9 +2350,18 @@ impl App {
                 .collect(),
             scrolled: 0,
             fresh: false,
-            unmoved: None,
-            answered: None,
-            wheel_step: 3,
+            run: Vec::new(),
+            run_way: 0,
+            sent: Instant::now(),
+            answers: 0,
+            moved_at: 0,
+            moved: 0,
+            revealed: 0,
+            heard: false,
+            answered_at: Instant::now(),
+            answering: false,
+            partial: Vec::new(),
+            end: None,
             snap,
             lay,
             peek,
@@ -2715,6 +2919,10 @@ fn withheld_mouse_message(agent: Option<Agent>) -> String {
 /// Typed text with Greek letters other than `π`.
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
+}
+
+fn rfind(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).rposition(|w| w == needle)
 }
 
 fn types_greek(bytes: &[u8]) -> bool {
@@ -3578,6 +3786,8 @@ mod tests {
             hover: None,
             pointer_on: false,
             child_pointer: None,
+            // The fixtures are Codex 0.161: 3 rows a turn of the wheel.
+            wheel: codex::scroll::Wheel::new(Some(3.0)),
         }
     }
 
@@ -3771,7 +3981,11 @@ mod tests {
         for turn in 1..=5 {
             app.on_input(b"\x1b[<65;60;5M", &mut Vec::new(), &mut child)
                 .unwrap();
-            app.open.as_mut().unwrap().unmoved.as_mut().unwrap().1 -= WHEEL_UNMOVED;
+            // The first turn waits; once the end is known the rest do not.
+            let open = app.open.as_mut().unwrap();
+            if !open.done() {
+                open.sent -= WHEEL_UNMOVED;
+            }
             app.tick(&mut out).unwrap();
             let lay = app.open.as_ref().unwrap().lay;
             assert_eq!(lay.box_top, home - (3 * turn).min(h), "turn {turn}");
@@ -3782,6 +3996,237 @@ mod tests {
             Some(33),
             "the chat's last row at its place"
         );
+    }
+
+    /// A box over the middle of Codex's chat, with an answer of 8 lines;
+    /// returns the app, the box's place and the first row under the chat.
+    fn box_over_codex_chat() -> (App, isize, isize, usize) {
+        let mut app = test_app(120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(CODEX_0161_FULLSCREEN, &mut out, &mut child)
+            .unwrap();
+        let chat: String = (0..34)
+            .map(|r| format!("\x1b[{};1H\x1b[0m\x1b[2K  chat line {r}", r + 1))
+            .collect();
+        app.on_output(format!("\x1b7{chat}\x1b8").as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        app.selection = SelectionSource::fixed("chat line 5");
+        app.open_peek(&mut out).unwrap();
+        let id = app.open.as_ref().unwrap().id;
+        let answer: String = (1..=8).map(|k| format!("Line {k}.\n\n")).collect();
+        app.on_progress(id, Progress::Delta(answer), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        let open = app.open.as_ref().unwrap();
+        let (home, top, end) = (open.lay.home, open.lay.box_top, open.strip_top.unwrap());
+        (app, home, top, end)
+    }
+
+    /// Codex scrolls a moment after its first, empty answer to a turn. Late
+    /// as that may come (a slower machine), the turn is not the end of the
+    /// chat: the box moves with the chat, 3 rows a turn, no more.
+    #[test]
+    fn a_late_scroll_is_not_the_end_of_the_chat() {
+        let (mut app, home, top, end) = box_over_codex_chat();
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let nothing = b"\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[?2026l";
+        let up3 = format!("\x1b[?2026h\x1b[1;{end}r\x1b[3S\x1b[r\x1b[?2026l");
+        for turn in 1..=3 {
+            app.on_input(b"\x1b[<65;60;5M", &mut out, &mut child)
+                .unwrap();
+            app.on_output(nothing, &mut out, &mut child).unwrap();
+            std::thread::sleep(Duration::from_millis(60));
+            app.tick(&mut out).unwrap();
+            app.on_output(up3.as_bytes(), &mut out, &mut child).unwrap();
+            app.tick(&mut out).unwrap();
+            let lay = app.open.as_ref().unwrap().lay;
+            assert_eq!(
+                (lay.home, lay.box_top),
+                (home - 3 * turn, top - 3 * turn),
+                "turn {turn}"
+            );
+        }
+    }
+
+    /// Mid-chat, a turn that moves the chat fewer rows than usual (another
+    /// step size) is not the end either: the box moves only as the chat does.
+    #[test]
+    fn a_short_turn_in_the_middle_is_not_the_end() {
+        let (mut app, home, top, end) = box_over_codex_chat();
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let nothing = b"\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[?2026l";
+        let up1 = format!("\x1b[?2026h\x1b[1;{end}r\x1b[1S\x1b[r\x1b[?2026l");
+        for turn in 1..=4 {
+            app.on_input(b"\x1b[<65;60;5M", &mut out, &mut child)
+                .unwrap();
+            app.on_output(nothing, &mut out, &mut child).unwrap();
+            app.on_output(up1.as_bytes(), &mut out, &mut child).unwrap();
+            app.tick(&mut out).unwrap();
+            let lay = app.open.as_ref().unwrap().lay;
+            assert_eq!(
+                (lay.home, lay.box_top),
+                (home - turn, top - turn),
+                "turn {turn}"
+            );
+        }
+    }
+
+    /// Codex 0.162 moves its chat `tui.mouse_scroll_speed` rows a turn,
+    /// counting fractions: at 0.5 every other turn moves nothing, and Codex
+    /// answers that turn as it does at the end of the chat. peekme keeps the
+    /// same count: such a turn is not the end. At the end, each turn shows
+    /// as many of the box's rows as it would have moved the chat.
+    #[test]
+    fn a_slow_wheel_turn_that_moves_nothing_is_not_the_end() {
+        for speed in [0.5, 1.0] {
+            let (mut app, home, top, end) = box_over_codex_chat();
+            app.wheel = codex::scroll::Wheel::new(Some(speed));
+            let (mut child, mut out) = (Vec::new(), Vec::new());
+            let nothing = b"\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[?2026l";
+            let up1 = format!("\x1b[?2026h\x1b[1;{end}r\x1b[1S\x1b[r\x1b[?2026l");
+            let mut model = codex::scroll::Wheel::new(Some(speed));
+            let mut moved = 0;
+            for turn in 1..=6 {
+                app.on_input(b"\x1b[<65;60;5M", &mut out, &mut child)
+                    .unwrap();
+                app.on_output(nothing, &mut out, &mut child).unwrap();
+                let rows = model.turn(1);
+                let answer = if rows == 1 { up1.as_bytes() } else { nothing };
+                app.on_output(answer, &mut out, &mut child).unwrap();
+                moved += rows;
+                let lay = app.open.as_ref().unwrap().lay;
+                assert_eq!(
+                    (lay.home, lay.box_top),
+                    (home - moved, top - moved),
+                    "speed {speed}, turn {turn}: only as Codex moved"
+                );
+            }
+            // The end: Codex moves no more; the box's rows come, at the same pace.
+            let lift = |app: &App| {
+                let lay = app.open.as_ref().unwrap().lay;
+                lay.home - lay.box_top
+            };
+            let start = lift(&app);
+            let mut want = start;
+            for turn in 1..=4 {
+                app.on_input(b"\x1b[<65;60;5M", &mut out, &mut child)
+                    .unwrap();
+                app.on_output(nothing, &mut out, &mut child).unwrap();
+                app.on_output(nothing, &mut out, &mut child).unwrap();
+                want += model.turn(1);
+                assert_eq!(lift(&app), want, "speed {speed}, end turn {turn}");
+            }
+            assert!(lift(&app) > start, "speed {speed}: the box's rows came");
+        }
+    }
+
+    /// Codex answers each turn in order with an update that changes nothing
+    /// and then the scroll. Other updates (its status, a redraw) between
+    /// turns do not count, so a quick run of turns mid-chat moves the box
+    /// with the chat only, however the updates come in.
+    #[test]
+    fn codex_answers_are_read_in_order() {
+        let (mut app, home, top, end) = box_over_codex_chat();
+        app.wheel = codex::scroll::Wheel::new(Some(1.0));
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let nothing = "\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[?2026l";
+        let up1 = format!("\x1b[?2026h\x1b[1;{end}r\x1b[1S\x1b[r\x1b[?2026l");
+        let status = format!(
+            "\x1b[?2026h\x1b7\x1b[{};1HCopy sent\x1b8\x1b[?2026l",
+            end + 1
+        );
+        app.on_input(&b"\x1b[<65;60;5M".repeat(4), &mut out, &mut child)
+            .unwrap();
+        // All four turns' answers in one read, a status update first, the
+        // last one cut in two.
+        let all = format!("{status}{nothing}{up1}{nothing}{up1}{nothing}{up1}{nothing}{up1}");
+        let (a, b) = all.split_at(all.len() - 9);
+        app.on_output(a.as_bytes(), &mut out, &mut child).unwrap();
+        app.on_output(b.as_bytes(), &mut out, &mut child).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!((open.lay.home, open.lay.box_top), (home - 4, top - 4));
+        assert!(open.done() && open.end.is_none());
+        // A slow wheel (0.5): turns that move nothing get two updates that
+        // change nothing, with the selection's highlight drawn again in
+        // between; that is not the end of the chat.
+        app.wheel = codex::scroll::Wheel::new(Some(0.5));
+        let mut model = codex::scroll::Wheel::new(Some(0.5));
+        let highlight = "\x1b[?2026h\x1b7\x1b[12;3H\x1b[7mchat\x1b[0m\x1b8\x1b[?2026l";
+        let mut moved = 4;
+        for _ in 0..6 {
+            app.on_input(b"\x1b[<65;60;5M", &mut out, &mut child)
+                .unwrap();
+            let second = if model.turn(1) == 1 {
+                up1.as_str()
+            } else {
+                nothing
+            };
+            moved += isize::from(second != nothing);
+            let answer = format!("{nothing}{highlight}{second}");
+            app.on_output(answer.as_bytes(), &mut out, &mut child)
+                .unwrap();
+            let open = app.open.as_ref().unwrap();
+            assert_eq!(
+                (open.lay.home, open.lay.box_top),
+                (home - moved, top - moved)
+            );
+            assert!(open.end.is_none(), "not the end");
+        }
+    }
+
+    /// Codex sometimes draws two turns' rows in one update and then answers
+    /// the second turn with two updates that change nothing, as seen with a
+    /// slow wheel (0.5, rows 0 1 0 1). Read turn by turn that looks like the
+    /// end of the chat; counted as a whole the rows add up, and the box only
+    /// moves as the chat does.
+    #[test]
+    fn two_turns_drawn_at_once_are_not_the_end() {
+        let (mut app, home, top, end) = box_over_codex_chat();
+        app.wheel = codex::scroll::Wheel::new(Some(0.5));
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let n = "\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[?2026l";
+        let up1 = format!("\x1b[?2026h\x1b[1;{end}r\x1b[1S\x1b[r\x1b[?2026l");
+        let turn = b"\x1b[<65;60;5M";
+        // Turns 1 and 2: 0 rows, then 1 row.
+        app.on_input(&turn.repeat(2), &mut out, &mut child).unwrap();
+        app.on_output(format!("{n}{n}{n}{up1}").as_bytes(), &mut out, &mut child)
+            .unwrap();
+        // Turns 3 and 4 (0 and 1): the row comes with turn 3's answer.
+        app.on_input(&turn.repeat(2), &mut out, &mut child).unwrap();
+        app.on_output(format!("{n}{up1}").as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.on_output(format!("{n}{n}").as_bytes(), &mut out, &mut child)
+            .unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!((open.lay.home, open.lay.box_top), (home - 2, top - 2));
+        assert!(open.end.is_none(), "not the end");
+    }
+
+    /// Turns read at once Codex takes together, answering them with fewer
+    /// updates than two a turn. At the end of the chat: once Codex went quiet
+    /// after answering, the box's rows come for all of them.
+    #[test]
+    fn turns_taken_together_at_the_end() {
+        let (mut app, home, top, _) = box_over_codex_chat();
+        app.wheel = codex::scroll::Wheel::new(Some(0.5));
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let n = "\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[?2026l";
+        app.on_input(&b"\x1b[<65;60;5M".repeat(5), &mut out, &mut child)
+            .unwrap();
+        app.on_output(n.repeat(6).as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.tick(&mut out).unwrap();
+        // Counted, three turns moved nothing: the row of the second one
+        // (the third may still come).
+        let lay = app.open.as_ref().unwrap().lay;
+        assert_eq!(lay.box_top, top - 1, "by count");
+        app.open.as_mut().unwrap().answered_at -= WHEEL_QUIET;
+        app.tick(&mut out).unwrap();
+        let open = app.open.as_ref().unwrap();
+        // 0 1 0 1 0 rows at 0.5 a turn.
+        assert_eq!((open.lay.home, open.lay.box_top), (home, top - 2));
+        assert_eq!(open.end, Some(1));
     }
 
     /// Codex answers a wheel turn at the end of its chat with frames that
@@ -3813,19 +4258,41 @@ mod tests {
         // Codex answers every turn with a frame that changes nothing, then
         // a second one: the same again at the end of its chat.
         let nothing = b"\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[?2026l";
-        let quiet = |app: &mut App, out: &mut Vec<u8>| {
-            app.open.as_mut().unwrap().answered = Some(Instant::now() - WHEEL_QUIET);
-            app.tick(out).unwrap();
-        };
         app.on_input(b"\x1b[<65;60;5M", &mut out, &mut child)
             .unwrap();
         app.on_output(nothing, &mut out, &mut child).unwrap();
-        app.on_output(nothing, &mut out, &mut child).unwrap();
         assert_eq!(app.open.as_ref().unwrap().lay.box_top, home, "not yet");
-        quiet(&mut app, &mut out);
+        app.on_output(nothing, &mut out, &mut child).unwrap();
         let open = app.open.as_ref().unwrap();
-        assert_eq!(open.lay.box_top, home - 3, "one turn, quickly");
-        assert!(open.unmoved.is_none());
+        assert_eq!(open.lay.box_top, home - 3, "one turn, on the second answer");
+        assert!(open.done());
+        // Known to be at the end: the next turn shows the rows at once.
+        app.on_input(b"\x1b[<65;60;5M", &mut out, &mut child)
+            .unwrap();
+        assert_eq!(app.open.as_ref().unwrap().lay.box_top, home - 6, "at once");
+        app.on_output(nothing, &mut out, &mut child).unwrap();
+        app.on_output(nothing, &mut out, &mut child).unwrap();
+        assert_eq!(
+            app.open.as_ref().unwrap().lay.box_top,
+            home - 6,
+            "only once"
+        );
+        // Back up a turn: Codex scrolls again, the end is behind.
+        let down = format!("\x1b[?2026h\x1b[1;{top}r\x1b[3T\x1b[r\x1b[?2026l");
+        app.on_input(b"\x1b[<64;60;5M", &mut out, &mut child)
+            .unwrap();
+        app.on_output(nothing, &mut out, &mut child).unwrap();
+        app.on_output(down.as_bytes(), &mut out, &mut child)
+            .unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!((open.lay.home, open.lay.box_top), (home + 3, home - 3));
+        let up = format!("\x1b[?2026h\x1b[1;{top}r\x1b[3S\x1b[r\x1b[?2026l");
+        app.on_input(b"\x1b[<65;60;5M", &mut out, &mut child)
+            .unwrap();
+        app.on_output(nothing, &mut out, &mut child).unwrap();
+        app.on_output(up.as_bytes(), &mut out, &mut child).unwrap();
+        let (home, lift) = (home, 6);
+        assert_eq!(app.open.as_ref().unwrap().lay.box_top, home - lift);
         // Two turns at once: Codex moves for the first (a row was still
         // below), then has nothing left for the second.
         app.on_input(b"\x1b[<65;60;5M\x1b[<65;60;5M", &mut out, &mut child)
@@ -3835,20 +4302,19 @@ mod tests {
         app.on_output(up.as_bytes(), &mut out, &mut child).unwrap();
         let open = app.open.as_ref().unwrap();
         assert_eq!(open.lay.home, home - 1, "the selection moved a row");
-        assert_eq!(open.unmoved.map(|(n, _)| n), Some(1));
-        assert!(open.answered.is_none(), "Codex scrolled after all");
+        assert_eq!(open.lay.box_top, home - 1 - lift, "and only that, for now");
+        assert!(!open.done(), "the second turn is on its way");
         app.on_output(nothing, &mut out, &mut child).unwrap();
         app.on_output(nothing, &mut out, &mut child).unwrap();
-        quiet(&mut app, &mut out);
         let open = app.open.as_ref().unwrap();
-        // The first turn moved the chat one row and the box's rows the other
-        // two; the second turn is all the box's.
+        // The end showed: the box's rows make up the two rows the first turn
+        // was short, and the second turn.
         assert_eq!(
             open.lay.box_top,
-            home - 1 - 3 - 2 - 3,
+            home - 1 - lift - 2 - 3,
             "the second turn too"
         );
-        assert!(open.unmoved.is_none());
+        assert!(open.done());
     }
 
     /// Codex starts working while the box is open: its status line, taller
@@ -3924,7 +4390,7 @@ mod tests {
             "a page of wheel turns"
         );
         let open = app.open.as_ref().expect("still open");
-        assert_eq!(open.unmoved.map(|(n, _)| n), Some(turns as isize));
+        assert_eq!(open.run.len(), turns);
         child.clear();
         app.on_input(b"\x1b[1;5F", &mut out, &mut child).unwrap();
         assert!(app.open.is_none(), "Ctrl+End closes the box");
@@ -3964,8 +4430,7 @@ mod tests {
         let nothing = b"\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[?2026l";
         app.on_output(nothing, &mut out, &mut child).unwrap();
         let open = app.open.as_mut().unwrap();
-        assert!(open.unmoved.is_none() && open.answered.is_none());
-        open.answered = Some(Instant::now() - WHEEL_UNMOVED);
+        assert!(open.done());
         app.tick(&mut out).unwrap();
         assert_eq!(app.open.as_ref().unwrap().lay, lay);
     }
