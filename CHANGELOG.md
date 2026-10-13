@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.6-beta.6 (2026-10-12)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.6`.
+
+- With a peek box open you could not scroll all the way to the end of the chat: the last rows,
+  as many as the box is tall, stayed below the screen. The box makes the chat longer than Codex
+  knows, so Codex stops scrolling too early. Now when Codex does not move for the wheel, peekme
+  scrolls the rest itself, and the box moves up with its text. The same at the start of the
+  chat.
+
 ## 0.4.6-beta.5 (2026-10-12)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.5`.
