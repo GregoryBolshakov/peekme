@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.6-beta.7 (2026-10-12)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.7`.
+
+- Scrolling down to the end of the chat with a peek box open stopped short first, and then the
+  last rows jumped in a moment later, all at once. peekme waited until the wheel had been still
+  for a while before it scrolled the rest. Now it sees that Codex is at the end from Codex's own
+  answer to each turn of the wheel, so the last rows scroll in with the wheel, a few rows at a
+  time, also when you scroll fast.
+
 ## 0.4.6-beta.6 (2026-10-12)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.6`.
