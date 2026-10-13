@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.6-beta.11 (2026-10-13)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.11`.
+
+- With a peek box open the chat scrolled faster than without it. Codex 0.162 (Codex updates
+  itself) scrolls 1 row per turn of the wheel by default, not 3. peekme took those short moves
+  for the end of the chat and added rows from the box to each one. Now peekme counts rows the
+  way Codex does, with Codex's `tui.mouse_scroll_speed` setting, so the chat moves at the same
+  speed with a box open.
+- peekme now finds the end of the chat by comparing the rows Codex moved with the rows it
+  should have moved, not by how fast Codex answers. A slower machine can't make the box jump.
+
 ## 0.4.6-beta.10 (2026-10-12)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.10`.
