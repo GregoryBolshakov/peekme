@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.6-beta.10 (2026-10-12)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.10`.
+
+- Scrolling Codex's chat with a peek box open now works like scrolling a page with the box
+  printed in it: every turn of the wheel moves the chat and the box 3 rows, from the start of
+  the chat to its end. This was checked frame by frame against real Codex.
+- Fixed: after the box went off the screen, the chat moved 6 rows per turn for a while.
+- Fixed: the box jumped when its answer was still coming in while you scrolled.
+- Fixed: at the start and the end of the chat a turn could move only 1 or 2 rows.
+- Fixed: many rows with the same text could make the chat skip.
+- Fixed: while Codex works, its "Working" line was taken for chat. A blank row could show next
+  to the box. Now the box stays whole above that line.
+- PgUp and PgDn with a box open scroll the chat by a page, as in Codex. A box with more text
+  than the window still scrolls its own text first. Ctrl+Home and Ctrl+End close the box and
+  jump to the start or the end of the chat.
+
 ## 0.4.6-beta.9 (2026-10-12)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.9`.
