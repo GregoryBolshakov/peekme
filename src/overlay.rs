@@ -703,9 +703,22 @@ fn shift_rows(out: &mut String, snap: &Snapshot, lay: &Layout) {
 }
 
 /// How many rows the text of `rows` moved up from `old` to `new` (down is
-/// minus): the shift under which the most non-blank rows are the same, the
-/// smallest among equals. None when too few rows match to tell.
+/// minus): the shift under which the rows agree best (see
+/// `scroll_delta_near`). None when too few rows match to tell.
 pub fn scroll_delta(old: &Snapshot, new: &Snapshot, rows: Range<usize>) -> Option<isize> {
+    scroll_delta_near(old, new, rows, &[])
+}
+
+/// `scroll_delta`, where rows that repeat let more than one shift fit: among
+/// the shifts with about as many rows the same as the best, the one with the
+/// fewest rows different, and among equals one of `expect` (where the wheel
+/// says the text went), then the one with the most rows the same.
+pub fn scroll_delta_near(
+    old: &Snapshot,
+    new: &Snapshot,
+    rows: Range<usize>,
+    expect: &[isize],
+) -> Option<isize> {
     let text = |s: &Snapshot| -> Vec<String> {
         rows.clone()
             .map(|r| s.rows_text(r, r + 1).trim_end().to_string())
@@ -714,27 +727,50 @@ pub fn scroll_delta(old: &Snapshot, new: &Snapshot, rows: Range<usize>) -> Optio
     let (old, new) = (text(old), text(new));
     let n = new.len() as isize;
     let filled = new.iter().filter(|t| !t.trim().is_empty()).count();
-    let mut best: Option<(usize, isize)> = None;
-    let mut second = 0;
-    for k in -(n - 1)..n {
-        let same = (0..n)
-            .filter(|&i| {
+    // (rows the same, rows different, shift) for every shift.
+    let scores: Vec<(usize, usize, isize)> = (-(n - 1)..n)
+        .map(|k| {
+            let (mut same, mut diff) = (0, 0);
+            for i in 0..n {
                 let j = i + k;
-                (0..n).contains(&j)
-                    && !new[i as usize].trim().is_empty()
-                    && new[i as usize] == old[j as usize]
-            })
-            .count();
-        if best.is_none_or(|(b, bk)| same > b || (same == b && k.abs() < bk.abs())) {
-            second = best.map_or(0, |(b, _)| b);
-            best = Some((same, k));
-        } else {
-            second = second.max(same);
-        }
-    }
+                if !(0..n).contains(&j) {
+                    continue;
+                }
+                let (a, b) = (&new[i as usize], &old[j as usize]);
+                if a == b {
+                    same += usize::from(!a.trim().is_empty());
+                } else {
+                    diff += 1;
+                }
+            }
+            (same, diff, k)
+        })
+        .collect();
+    let most = scores.iter().map(|s| s.0).max().unwrap_or(0);
+    let second = {
+        let mut v: Vec<usize> = scores.iter().map(|s| s.0).collect();
+        v.sort_unstable();
+        v.iter().rev().nth(1).copied().unwrap_or(0)
+    };
     // Enough rows agree, or a few with no other shift as good.
-    best.filter(|&(same, _)| same > 0 && (same >= 3.min(filled) || (same >= 2 && same > second)))
-        .map(|(_, k)| k)
+    if most == 0 || !(most >= 3.min(filled) || (most >= 2 && most > second)) {
+        return None;
+    }
+    // Of the shifts with at least half as many rows the same as the best,
+    // the one with the fewest rows different; then where the wheel says,
+    // the most rows the same, the smallest.
+    scores
+        .iter()
+        .filter(|s| s.0 * 2 >= most)
+        .min_by_key(|s| {
+            (
+                s.1,
+                !expect.contains(&s.2),
+                std::cmp::Reverse(s.0),
+                s.2.abs(),
+            )
+        })
+        .map(|s| s.2)
 }
 
 /// While the box is open the cursor stays hidden: its row may now be inside the
@@ -774,24 +810,42 @@ pub fn resize(lay: &Layout, height: usize) -> Layout {
 }
 
 /// The placement after the chat scrolled `k` rows up (down is minus): the
-/// box moves with its selection. While it is on the screen, the chat rows it
-/// pushed away stay away (above it `lift` rows, below it the rest of its
-/// height). Once it has scrolled off, they come back a row for every row the
-/// chat scrolls on, so the screen is soon the child's own again, without a
-/// jump.
+/// box moves with its selection, and the chat rows it pushed away stay away
+/// (above it `lift` rows, below it the rest of its height), on the screen or
+/// off it. The screen is the chat with the box in it, scrolled as far as the
+/// chat scrolled; only `reveal` changes the lift, at the chat's ends.
 pub fn scroll_by(lay: &Layout, k: isize) -> Layout {
-    let h = lay.box_height as isize;
-    let home = lay.home - k;
-    let mut lift = lay.home - lay.box_top;
-    let (lo, hi) = (lay.region.0 as isize, lay.region.1 as isize);
-    if home - lift >= hi && k < 0 {
-        lift -= lift.min(-k);
-    } else if home - lift + h <= lo && k > 0 {
-        lift += (h - lift).min(k);
-    }
     Layout {
-        home,
-        box_top: home - lift,
+        home: lay.home - k,
+        box_top: lay.box_top - k,
+        ..*lay
+    }
+}
+
+/// The placement with the box grown (or shrunk) to `height` rows while the
+/// chat may be scrolled anywhere: the selection keeps its place and the box
+/// grows away from it (down under it, up above it). Only a box that is whole
+/// on the screen and would run past the region's edge stays inside instead,
+/// pushing its selection, as when it opened.
+pub fn grow(lay: &Layout, height: usize) -> Layout {
+    let height = height.min(lay.region.1 - lay.region.0);
+    let (old, h) = (lay.box_height as isize, height as isize);
+    let (lo, hi) = (lay.region.0 as isize, lay.region.1 as isize);
+    let whole = lay.box_top >= lo && lay.box_top + old <= hi;
+    let box_top = if lay.below {
+        let top = lay.box_top;
+        if whole && top + h > hi {
+            (hi - h).max(lo)
+        } else {
+            top
+        }
+    } else {
+        let top = lay.box_top - (h - old);
+        if whole && top < lo { lo } else { top }
+    };
+    Layout {
+        box_top,
+        box_height: height,
         ..*lay
     }
 }
@@ -1059,31 +1113,70 @@ mod tests {
         assert_eq!(l.region, (0, 40));
     }
 
-    /// Off the screen, the box gives the chat its rows back step by step.
+    /// Off the screen the box keeps the rows it pushed away: the screen is
+    /// still the chat with the box in it, a row on for every row scrolled.
     #[test]
-    fn a_box_off_the_screen_gives_the_rows_back() {
+    fn a_box_off_the_screen_keeps_its_place_in_the_chat() {
         // Above its selection near the bottom: everything above is pushed up.
         let mut l = resize(&layout(30, 26, 26), 10);
         assert_eq!(l.home - l.box_top, 10);
-        let mut tops = Vec::new();
         for _ in 0..12 {
             l = scroll_by(&l, -3);
-            tops.push(l.box_top);
+            assert_eq!(l.home - l.box_top, 10);
         }
+        assert!(l.box_top >= 30, "{l:?}");
         assert!(
-            tops.windows(2).all(|w| w[1] >= w[0] && w[1] - w[0] <= 6),
-            "{tops:?}"
+            (0..30).all(|r| l.src_row(r) == Some(r as isize + 10)),
+            "{l:?}"
         );
-        assert!((0..30).all(|r| l.src_row(r) == Some(r as isize)), "{l:?}");
         // Below its selection, leaving at the top.
         let mut l = resize(&layout(30, 3, 3), 10);
         for _ in 0..12 {
             l = scroll_by(&l, 3);
         }
-        assert!((0..30).all(|r| l.src_row(r) == Some(r as isize)), "{l:?}");
+        assert!(l.box_end() <= 0, "{l:?}");
+        assert!(
+            (0..30).all(|r| l.src_row(r) == Some(r as isize - 10)),
+            "{l:?}"
+        );
         // On the screen nothing changes but the place.
         let l = resize(&layout(30, 12, 12), 6);
         assert_eq!(scroll_by(&l, 2).box_top, l.box_top - 2);
+    }
+
+    /// A growing box keeps its selection in place wherever the chat is
+    /// scrolled; only a box whole on the screen that runs into the edge
+    /// pushes its selection, to stay whole.
+    #[test]
+    fn a_growing_box_keeps_its_selection_in_place() {
+        // Below, room to grow: the selection stays.
+        let l = resize(&layout(30, 5, 5), 4);
+        assert_eq!(grow(&l, 8).box_top, l.box_top);
+        // Below, reaching the bottom: the box stays whole.
+        let l = resize(&layout(30, 15, 15), 4);
+        assert!(l.below);
+        let g = grow(&l, 20);
+        assert_eq!((g.box_top, g.box_end()), (10, 30));
+        // Below and cut off at the bottom already: it grows out of sight.
+        let l = scroll_by(&resize(&layout(30, 15, 15), 6), -10);
+        assert!(l.box_end() > 30);
+        assert_eq!(grow(&l, 12).box_top, l.box_top);
+        // Pushed up by the end of the chat (revealed rows), then scrolled
+        // up: the rows it revealed stay revealed.
+        let l = scroll_by(&reveal(&resize(&layout(30, 10, 10), 8), 6), -3);
+        let g = grow(&l, 10);
+        assert_eq!(g.home - g.box_top, l.home - l.box_top);
+        // Above, room to grow: up, the selection stays.
+        let l = resize(&layout(30, 25, 25), 4);
+        let g = grow(&l, 8);
+        assert_eq!((g.box_top, g.box_end()), (l.box_top - 4, l.box_end()));
+        // Above, reaching the top: the box stays whole.
+        let l = resize(&layout(30, 25, 25), 4);
+        assert_eq!(grow(&l, 28).box_top, 0);
+        // Above and cut off at the top: it grows up out of sight.
+        let l = scroll_by(&resize(&layout(30, 25, 25), 6), 22);
+        assert!(l.box_top < 0);
+        assert_eq!(grow(&l, 12).box_end(), l.box_end());
     }
 
     /// Past the end of the chat the box and its selection move up over the
@@ -1115,6 +1208,15 @@ mod tests {
         assert_eq!(scroll_delta(&old, &old, 0..7), Some(0));
         let other = snap(&["x", "y", "z", "", "", "", ""]);
         assert_eq!(scroll_delta(&old, &other, 0..7), None);
+        // Rows that repeat fit more than one shift: the one that leaves no
+        // row different wins, and among equals where the wheel says.
+        let old = snap(&["s", "s", "s", "s", "s", "s", "a"]);
+        let up3 = snap(&["s", "s", "s", "a", "b", "c", "d"]);
+        assert_eq!(scroll_delta(&old, &up3, 0..7), Some(3));
+        let same = snap(&["s", "s", "s", "s", "s", "s", "s"]);
+        let all = snap(&["s", "s", "s", "s", "s", "s", "s"]);
+        assert_eq!(scroll_delta_near(&same, &all, 0..7, &[3]), Some(3));
+        assert_eq!(scroll_delta_near(&same, &all, 0..7, &[]), Some(0));
     }
 
     /// A box taller than its side of the selection takes rows from the other

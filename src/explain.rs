@@ -177,9 +177,22 @@ impl Explainer {
                 for part in ["Test explanation ", "of ", &format!("⟦{sel}⟧.")] {
                     tx(Progress::Delta(part.to_string()));
                 }
-                // A taller answer for end-to-end runs.
-                let more = std::env::var("PEEKME_FAKE_LINES").ok();
+                // A taller answer for end-to-end runs, line by line as slowly
+                // as `PEEKME_FAKE_DELAY_MS` says. `@file` reads "lines [delay]"
+                // from a file at each request.
+                let mut more = std::env::var("PEEKME_FAKE_LINES").ok();
+                let mut delay = std::env::var("PEEKME_FAKE_DELAY_MS").ok();
+                if let Some(path) = more
+                    .clone()
+                    .and_then(|m| m.strip_prefix('@').map(String::from))
+                {
+                    let text = std::fs::read_to_string(path).unwrap_or_default();
+                    let mut words = text.split_whitespace().map(String::from);
+                    (more, delay) = (words.next(), words.next().or(delay));
+                }
+                let delay = delay.and_then(|n| n.parse().ok()).unwrap_or(0);
                 for k in 1..=more.and_then(|n| n.parse::<usize>().ok()).unwrap_or(0) {
+                    std::thread::sleep(std::time::Duration::from_millis(delay));
                     tx(Progress::Delta(format!(
                         "\n\n- Line {k} of the test answer."
                     )));

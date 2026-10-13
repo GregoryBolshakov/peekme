@@ -29,6 +29,24 @@ pub fn selection(snap: &Snapshot) -> Option<Located> {
     })
 }
 
+/// Rows idle full-screen Codex keeps between its chat and its input area: its
+/// status line (blank, or "Copy sent to terminal") and a gap.
+const STATUS_ROWS: usize = 2;
+
+/// The row under the last row of Codex's chat when it draws full screen, its
+/// input area starting at `composer`. They stay put while the chat scrolls.
+/// While Codex works its status is taller: a blank row, "• Working (5s • esc
+/// to interrupt)", and a row or two more, and it changes height as it goes.
+pub fn chat_end(snap: &Snapshot, composer: usize) -> usize {
+    let busy = (composer.saturating_sub(8)..composer)
+        .find(|&r| snap.rows_text(r, r + 1).contains("esc to interrupt"));
+    match busy {
+        Some(r) if r > 0 && snap.rows_text(r - 1, r).trim().is_empty() => r - 1,
+        Some(r) => r,
+        None => composer.saturating_sub(STATUS_ROWS),
+    }
+}
+
 /// First row of Codex's input area when it draws full screen: the row whose
 /// text starts with the prompt mark `›`, lowest on screen, extended up over
 /// rows with the same filled background (the input box padding).
@@ -59,6 +77,33 @@ mod tests {
         let mut s = Shadow::new(cols, rows);
         s.advance(bytes);
         s.snapshot()
+    }
+
+    /// Idle, two rows sit between the chat and the input area; working, the
+    /// status line with a blank row above it starts them, wherever it is.
+    #[test]
+    fn the_chat_ends_above_the_status() {
+        let mut idle = String::new();
+        for r in 0..34 {
+            idle.push_str(&format!("\x1b[{};1Hchat {r}", r + 1));
+        }
+        idle.push_str("\x1b[35;1HCopy sent to terminal\x1b[37;1H› Ask Codex");
+        let s = snap(idle.as_bytes(), 80, 40);
+        assert_eq!(composer_top(&s), Some(36));
+        assert_eq!(chat_end(&s, 36), 34);
+        for at in [33, 34] {
+            let mut busy = String::new();
+            for r in 0..at - 1 {
+                busy.push_str(&format!("\x1b[{};1Hchat {r}", r + 1));
+            }
+            busy.push_str(&format!(
+                "\x1b[{};1H• Working (6s • esc to interrupt)",
+                at + 1
+            ));
+            busy.push_str("\x1b[37;1H› Ask Codex");
+            let s = snap(busy.as_bytes(), 80, 40);
+            assert_eq!(chat_end(&s, 36), at - 1, "status at row {at}");
+        }
     }
 
     #[test]

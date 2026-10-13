@@ -641,7 +641,7 @@ impl App {
         let want = open.peek.fitted_height(open.snap.cols).max(3);
         // The same height keeps its place, wherever the chat scrolled it.
         if open.nested.is_empty() && want != open.lay.box_height {
-            open.lay = overlay::resize(&open.lay, want);
+            open.lay = overlay::grow(&open.lay, want);
         }
     }
 
@@ -728,7 +728,7 @@ impl App {
     }
 
     /// Box `level` has text further up (or down) to scroll to.
-    fn can_scroll(&self, level: usize, down: bool) -> bool {
+    pub(super) fn can_scroll(&self, level: usize, down: bool) -> bool {
         let Some(open) = &self.open else {
             return false;
         };

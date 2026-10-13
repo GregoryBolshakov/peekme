@@ -126,9 +126,6 @@ const SGR_OFF: &str = "\x1b[?1006l";
 /// this long, so a child that never asked for them gets none.
 const STRAY_MOUSE: Duration = Duration::from_secs(1);
 
-/// Rows full-screen Codex keeps between its chat and its input area.
-const CODEX_STATUS_ROWS: usize = 2;
-
 /// A wheel turn the child's chat has not moved for in this long found its end.
 const WHEEL_UNMOVED: Duration = Duration::from_millis(150);
 /// Codex answers every wheel turn with a frame that changes nothing, and
@@ -710,6 +707,16 @@ impl App {
                 match open.strip_top {
                     Some(top) => {
                         open.strip_dirty = true;
+                        // Codex started or stopped working: its status moved
+                        // where the chat ends, so draw it all again.
+                        if self.codex_input_top().is_some()
+                            && self
+                                .codex_chat_end(&self.shadow.snapshot())
+                                .is_some_and(|e| e != top)
+                            && let Some(open) = &mut self.open
+                        {
+                            open.follow = Some(Instant::now());
+                        }
                         // The live area grew into the box (an approval prompt, say):
                         // the child needs the room more than we do.
                         if self.viewport_top.is_some_and(|k| k < top) {
@@ -834,6 +841,27 @@ impl App {
         }
     }
 
+    /// Where full-screen Codex's chat ends on `snap`, with the box open: its
+    /// status above the input area changes height while it works.
+    fn codex_chat_end(&self, snap: &Snapshot) -> Option<usize> {
+        let open = self.open.as_ref()?;
+        let k = self.codex_input_top()?;
+        Some(codex::screen::chat_end(snap, k)).filter(|&end| end > open.lay.region.0)
+    }
+
+    /// Full-screen Codex's input area under the open box, whose chat ends
+    /// where the region does.
+    fn codex_input_top(&self) -> Option<usize> {
+        let codex = !matches!(
+            self.agent,
+            Some(Agent::Claude | Agent::Copilot | Agent::Kiro)
+        );
+        let open = self.open.as_ref()?;
+        (codex && self.shadow.alt_screen() && open.strip_top == Some(open.lay.region.1))
+            .then_some(open.composer)
+            .flatten()
+    }
+
     /// The wheel went to the child a moment ago and it has written since.
     fn following(&self) -> bool {
         self.open
@@ -853,20 +881,41 @@ impl App {
             return self.close(out, false);
         }
         let (history, alt) = (self.shadow.history_size(), self.shadow.alt_screen());
+        let end = self.codex_chat_end(&now);
         let Some(open) = &mut self.open else {
             return Ok(());
         };
-        let (lo, hi) = open.lay.region;
-        let hi = hi.min(now.rows.len()).min(open.snap.rows.len());
+        let (lo, was) = open.lay.region;
+        // Codex's status grew or shrank: the chat ends elsewhere, and what is
+        // under it is drawn as Codex has it.
+        if let Some(end) = end.filter(|&e| e != was) {
+            // A box that was whole stays whole, pushing its selection.
+            let (top, h) = (open.lay.box_top, open.lay.box_height as isize);
+            if top >= lo as isize && top + h <= was as isize && top + h > end as isize {
+                open.lay.box_top = (end as isize - h).max(lo as isize);
+            }
+            open.lay.region.1 = end;
+            open.strip_top = Some(end);
+            open.strip_shown.clear();
+            open.shown.resize(end - lo, None);
+        }
+        let hi = open.lay.region.1;
+        // Rows that are chat on both screens tell how far it moved.
+        let both = hi.min(was).min(now.rows.len()).min(open.snap.rows.len());
         let found = match (&open.selection, &mut open.mark) {
             (Some((sel, _)), Some((place, cells))) if place.alt() == alt => place
                 .find(&now, &select::Text::of(&now), sel, history)
                 .inspect(|f| *cells = f.clone()),
             _ => None,
         };
-        // Rows match rows: how far the chat moved. The selection's own row
+        // Rows match rows: how far the chat moved (where rows repeat, as far
+        // as the wheel turns sent say if that fits). The selection's own row
         // when nothing matches (it jumped further than a screen).
-        let moved = overlay::scroll_delta(&open.snap, &now, lo..hi).or_else(|| {
+        let turns = open.unmoved.map_or(0, |(n, _)| n);
+        let expect: Vec<isize> = (1..=turns.abs())
+            .map(|j| j * turns.signum() * open.wheel_step)
+            .collect();
+        let moved = overlay::scroll_delta_near(&open.snap, &now, lo..both, &expect).or_else(|| {
             let f = found.as_ref()?;
             let home = if open.lay.below {
                 f[f.len() - 1].0 as isize + 1
@@ -877,7 +926,6 @@ impl App {
         });
         let still = now.rows.len() == open.snap.rows.len()
             && (now.rows.iter().zip(&open.snap.rows)).all(|(a, b)| same_cells(a, b));
-        let turns = open.unmoved.map_or(0, |(n, _)| n);
         if let Some(k) = moved.filter(|&k| k != 0) {
             open.scrolled += k;
             open.lay = overlay::scroll_by(&open.lay, k);
@@ -888,6 +936,12 @@ impl App {
                 }
                 let step = open.wheel_step.max(1);
                 let answered = ((k.abs() + step - 1) / step).min(turns.abs());
+                // Short of whole steps: the chat reached its end on the way,
+                // and the box's rows make up the rest of those turns.
+                let short = answered * step - k.abs();
+                if short > 0 {
+                    open.lay = overlay::reveal(&open.lay, k.signum() * short);
+                }
                 turns - turns.signum() * answered
             } else {
                 0
@@ -956,6 +1010,27 @@ impl App {
         out.write_all(frame.as_bytes())?;
         out.flush()?;
         Ok(())
+    }
+
+    /// PageUp or PageDown for a child that scrolls its chat with the wheel
+    /// (full-screen Codex), with the box showing all its text: as many turns
+    /// of the wheel as a page of the chat has rows, so the chat scrolls and
+    /// the box follows it as it does the wheel. None for other children.
+    fn page_as_wheel(&mut self, down: bool) -> Option<Vec<u8>> {
+        if !self.shadow.mouse_mode() || !self.shadow.sgr_mouse() {
+            return None;
+        }
+        let open = self.open.as_mut()?;
+        open.strip_top?;
+        let (lo, hi) = open.lay.region;
+        let step = open.wheel_step.max(1) as usize;
+        let turns = ((hi - lo).saturating_sub(1) + step / 2) / step;
+        let turns = turns.max(1) as isize;
+        open.follow = Some(Instant::now());
+        let n = open.unmoved.map_or(0, |(n, _)| n);
+        open.unmoved = Some((n + if down { turns } else { -turns }, Instant::now()));
+        let report = format!("\x1b[<{};1;{}M", if down { 65 } else { 64 }, lo + 1);
+        Some(report.repeat(turns as usize).into_bytes())
     }
 
     /// The wheel over an agent that leaves the mouse to the terminal: peekme
@@ -1321,7 +1396,24 @@ impl App {
                 }
                 (Kind::PageUp | Kind::PageDown, true) => {
                     self.consumed.consume(&t);
-                    self.scroll(t.kind == Kind::PageDown, out)?;
+                    let down = t.kind == Kind::PageDown;
+                    let depth = self.open.as_ref().map_or(0, |o| o.nested.len());
+                    // A box with more text than rows scrolls; otherwise the chat.
+                    let wheel = if self.can_scroll(depth, down) {
+                        None
+                    } else {
+                        self.page_as_wheel(down)
+                    };
+                    match wheel {
+                        Some(wheel) => forward.extend_from_slice(&wheel),
+                        None => self.scroll(down, out)?,
+                    }
+                }
+                (Kind::ChatJump, true) => {
+                    // Far from the selection: the box closes, Codex jumps.
+                    self.flush_forward(&mut forward, child)?;
+                    self.close(out, false)?;
+                    forward.extend_from_slice(&t.bytes);
                 }
                 (Kind::Passive | Kind::Release, _) => forward.extend_from_slice(&t.bytes),
                 // With the box open: moving the mouse (or the wheel to the
@@ -1907,17 +1999,17 @@ impl App {
                 composer = self
                     .live_top(&snap)
                     .filter(|&k| loc.last_row < k && k < rows && k >= rows / 3);
-                // Full-screen Codex keeps two rows between its chat and its
-                // input area: its status line (a spinner, "Copy sent to
-                // terminal") and a gap. They are not chat: they stay put while
-                // the chat scrolls, so they stay live with the input area.
+                // Full-screen Codex keeps rows between its chat and its input
+                // area: its status line ("Copy sent to terminal", "Working")
+                // and gaps. They are not chat: they stay put while the chat
+                // scrolls, so they stay live with the input area.
                 let codex = !matches!(
                     self.agent,
                     Some(Agent::Claude | Agent::Copilot | Agent::Kiro)
                 );
                 strip = composer.map(|k| {
                     if codex && self.shadow.alt_screen() {
-                        k.saturating_sub(CODEX_STATUS_ROWS).max(loc.last_row + 1)
+                        codex::screen::chat_end(&snap, k).max(loc.last_row + 1)
                     } else {
                         k
                     }
@@ -3749,8 +3841,94 @@ mod tests {
         app.on_output(nothing, &mut out, &mut child).unwrap();
         quiet(&mut app, &mut out);
         let open = app.open.as_ref().unwrap();
-        assert_eq!(open.lay.box_top, home - 1 - 6, "the second turn too");
+        // The first turn moved the chat one row and the box's rows the other
+        // two; the second turn is all the box's.
+        assert_eq!(
+            open.lay.box_top,
+            home - 1 - 3 - 2 - 3,
+            "the second turn too"
+        );
         assert!(open.unmoved.is_none());
+    }
+
+    /// Codex starts working while the box is open: its status line, taller
+    /// than the idle one, is not chat. The chat ends above it and the status
+    /// shows as Codex draws it, also once the chat scrolls.
+    #[test]
+    fn codex_working_ends_the_chat_above_its_status() {
+        let mut app = test_app(120, 40);
+        let mut real = Shadow::new(120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(CODEX_0161_FULLSCREEN, &mut out, &mut child)
+            .unwrap();
+        let chat: String = (0..34)
+            .map(|r| format!("\x1b[{};1H\x1b[0m\x1b[2K  chat line {r}", r + 1))
+            .collect();
+        app.on_output(format!("\x1b7{chat}\x1b8").as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        real.advance(&std::mem::take(&mut out));
+        app.selection = SelectionSource::fixed("chat line 10");
+        app.open_peek(&mut out).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        assert_eq!(app.open.as_ref().unwrap().lay.region.1, 34);
+        // Working: the chat moves up three rows to make room for the status.
+        let busy: String = (0..31)
+            .map(|r| format!("\x1b[{};1H\x1b[0m\x1b[2K  chat line {}", r + 1, r + 3))
+            .collect::<String>()
+            + "\x1b[32;1H\x1b[2K\x1b[33;1H\x1b[2K• Working (1s • esc to interrupt)\x1b[34;1H\x1b[2K";
+        app.on_output(
+            format!("\x1b[?2026h\x1b7{busy}\x1b8\x1b[?2026l").as_bytes(),
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        app.tick(&mut out).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.lay.region.1, 31, "the chat ends above the status");
+        assert_eq!(open.strip_top, Some(31));
+        let shown = real.snapshot();
+        assert!(
+            shown.rows_text(32, 33).contains("Working"),
+            "{:?}",
+            shown.rows_text(28, 36)
+        );
+        let sel = (0..31).find(|&r| shown.rows_text(r, r + 1).contains("chat line 10"));
+        let border = sel.map(|r| shown.rows_text(r + 1, r + 2));
+        assert!(
+            border.as_ref().is_some_and(|b| b.starts_with("╭")),
+            "the box under its line: {border:?}"
+        );
+    }
+
+    /// PageDown with the box showing all its text pages Codex's chat: as
+    /// turns of the wheel, so the box follows as it does the wheel. Ctrl+End
+    /// takes the chat far from the selection: the box closes first.
+    #[test]
+    fn paging_keys_scroll_the_chat_under_the_box() {
+        let mut app = test_app(120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(CODEX_0161_FULLSCREEN, &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        app.open_peek(&mut out).unwrap();
+        let open = app.open.as_ref().unwrap();
+        let rows = open.lay.region.1 - open.lay.region.0;
+        child.clear();
+        app.on_input(b"\x1b[6~", &mut out, &mut child).unwrap();
+        let turns = (rows - 1 + 1) / 3;
+        assert_eq!(
+            child,
+            b"\x1b[<65;1;1M".repeat(turns),
+            "a page of wheel turns"
+        );
+        let open = app.open.as_ref().expect("still open");
+        assert_eq!(open.unmoved.map(|(n, _)| n), Some(turns as isize));
+        child.clear();
+        app.on_input(b"\x1b[1;5F", &mut out, &mut child).unwrap();
+        assert!(app.open.is_none(), "Ctrl+End closes the box");
+        assert_eq!(child, b"\x1b[1;5F");
     }
 
     /// A trackpad sends the wheel to the side along with up and down. Codex

@@ -33,6 +33,8 @@ pub enum Kind {
     Esc,
     PageUp,
     PageDown,
+    /// Ctrl+Home or Ctrl+End: Codex jumps to the start or the end of its chat.
+    ChatJump,
     /// Any other key press, paste or text.
     Key,
     /// A key release event (kitty event type 3).
@@ -374,6 +376,7 @@ fn classify(bytes: &[u8]) -> Kind {
         b"\x1bq" => return Kind::AskHotkey,
         b"\x1b[5~" => return Kind::PageUp,
         b"\x1b[6~" => return Kind::PageDown,
+        b"\x1b[1;5H" | b"\x1b[1;5F" => return Kind::ChatJump,
         b"\x1b[I" | b"\x1b[O" => return Kind::Passive,
         _ => {}
     }
@@ -556,6 +559,8 @@ mod tests {
         assert_eq!(kinds(b"\x1b"), vec![Kind::Esc]);
         assert_eq!(kinds(b"\x1b[27u"), vec![Kind::Esc]);
         assert_eq!(kinds(b"\x1b[5~"), vec![Kind::PageUp]);
+        assert_eq!(kinds(b"\x1b[1;5H"), vec![Kind::ChatJump]);
+        assert_eq!(kinds(b"\x1b[1;5F"), vec![Kind::ChatJump]);
         assert_eq!(kinds(b"\x1b[6;1:1~"), vec![Kind::PageDown]);
     }
 
