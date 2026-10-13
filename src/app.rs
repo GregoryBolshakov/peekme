@@ -108,6 +108,11 @@ struct Open {
     scrolled: isize,
     /// The child wrote since the box was last drawn around its screen.
     fresh: bool,
+    /// Wheel turns sent to the child that its chat has not moved for yet
+    /// (down is plus), and when the last one went.
+    unmoved: Option<(isize, Instant)>,
+    /// Rows the child's chat moves for one turn of the wheel, as last seen.
+    wheel_step: isize,
 }
 
 /// Mouse reports (button events, SGR form) peekme turns on while a box is open
@@ -121,6 +126,9 @@ const STRAY_MOUSE: Duration = Duration::from_secs(1);
 
 /// Rows full-screen Codex keeps between its chat and its input area.
 const CODEX_STATUS_ROWS: usize = 2;
+
+/// A wheel turn the child's chat has not moved for in this long found its end.
+const WHEEL_UNMOVED: Duration = Duration::from_millis(150);
 
 /// How long after a wheel event the child's output is shown under the box.
 const FOLLOW: Duration = Duration::from_millis(1500);
@@ -706,6 +714,7 @@ impl App {
         if self.following() && self.can_draw() {
             self.follow_feed(out)?;
         }
+        self.wheel_past_end(out)?;
         if self.pending.is_some() && self.can_draw() {
             self.pending = None;
             self.open_peek(out)?;
@@ -860,6 +869,10 @@ impl App {
         if let Some(k) = moved {
             open.scrolled += k;
             open.lay = overlay::scroll_by(&open.lay, k);
+            if k != 0 {
+                open.unmoved = None;
+                open.wheel_step = k.abs();
+            }
         }
         for r in lo..hi {
             // A row of the chat keeps its text while it scrolls: a blank one
@@ -880,6 +893,37 @@ impl App {
         let frame = self.box_bytes();
         out.write_all(frame.as_bytes())?;
         self.refresh_strip(out)?;
+        out.flush()?;
+        Ok(())
+    }
+
+    /// The wheel turned and the child's chat did not move: it is at its end
+    /// (or its start). The box made the chat longer than the child knows, by
+    /// the rows it pushed past the bottom (or the top), so peekme scrolls
+    /// those into view itself, a wheel step at a time.
+    fn wheel_past_end(&mut self, out: &mut dyn Write) -> Result<()> {
+        let can_draw = self.can_draw();
+        let Some(open) = &mut self.open else {
+            return Ok(());
+        };
+        let Some((turns, at)) = open.unmoved else {
+            return Ok(());
+        };
+        if at.elapsed() < WHEEL_UNMOVED || !can_draw {
+            return Ok(());
+        }
+        open.unmoved = None;
+        let lay = overlay::reveal(&open.lay, turns * open.wheel_step);
+        if lay == open.lay {
+            return Ok(());
+        }
+        crate::event(
+            "reveal",
+            serde_json::json!({"turns": turns, "box_top": lay.box_top}),
+        );
+        open.lay = lay;
+        let frame = self.box_bytes();
+        out.write_all(frame.as_bytes())?;
         out.flush()?;
         Ok(())
     }
@@ -971,6 +1015,7 @@ impl App {
         if self.following() && self.can_draw() {
             self.follow_feed(out)?;
         }
+        self.wheel_past_end(out)?;
         if self.open.as_ref().is_some_and(|o| o.strip_dirty) {
             self.refresh_strip(out)?;
         }
@@ -1251,6 +1296,9 @@ impl App {
                             // The child scrolls; its new screen shows under the box.
                             if let Some(open) = &mut self.open {
                                 open.follow = Some(Instant::now());
+                                let turn = if m == Mouse::WheelDown { 1 } else { -1 };
+                                let n = open.unmoved.map_or(0, |(n, _)| n);
+                                open.unmoved = Some((n + turn, Instant::now()));
                             }
                             forward.extend_from_slice(&t.bytes);
                         } else {
@@ -1977,6 +2025,8 @@ impl App {
                 .collect(),
             scrolled: 0,
             fresh: false,
+            unmoved: None,
+            wheel_step: 3,
             snap,
             lay,
             peek,
@@ -3551,6 +3601,48 @@ mod tests {
                 "row {r}"
             );
         }
+    }
+
+    /// At the end of the chat Codex does not move for the wheel: peekme
+    /// scrolls the rows the box pushed past the bottom into view itself.
+    #[test]
+    fn the_wheel_reaches_the_end_of_the_chat_past_the_box() {
+        let mut app = test_app(120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(CODEX_0161_FULLSCREEN, &mut out, &mut child)
+            .unwrap();
+        let chat: String = (0..34)
+            .map(|r| format!("\x1b[{};1H\x1b[0m\x1b[2K  chat line {r}", r + 1))
+            .collect();
+        app.on_output(format!("\x1b7{chat}\x1b8").as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        app.selection = SelectionSource::fixed("chat line 5");
+        app.open_peek(&mut out).unwrap();
+        let open = app.open.as_ref().unwrap();
+        let (id, home) = (open.id, open.lay.home);
+        let answer: String = (1..=5).map(|k| format!("Line {k}.\n\n")).collect();
+        app.on_progress(id, Progress::Delta(answer), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert!(open.lay.below && open.lay.box_top == home, "{:?}", open.lay);
+        let h = open.lay.box_height as isize;
+        // Down at the end: Codex sends nothing back.
+        for turn in 1..=5 {
+            app.on_input(b"\x1b[<65;60;5M", &mut Vec::new(), &mut child)
+                .unwrap();
+            app.open.as_mut().unwrap().unmoved.as_mut().unwrap().1 -= WHEEL_UNMOVED;
+            app.tick(&mut out).unwrap();
+            let lay = app.open.as_ref().unwrap().lay;
+            assert_eq!(lay.box_top, home - (3 * turn).min(h), "turn {turn}");
+        }
+        let lay = app.open.as_ref().unwrap().lay;
+        assert_eq!(
+            lay.src_row(33),
+            Some(33),
+            "the chat's last row at its place"
+        );
     }
 
     /// A tall box above a selection near the bottom pushes the chat up; as

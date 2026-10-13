@@ -796,6 +796,18 @@ pub fn scroll_by(lay: &Layout, k: isize) -> Layout {
     }
 }
 
+/// The placement with `rows` more of the chat shown below the box (fewer
+/// above it; minus for the other way), as far as the box pushed rows away:
+/// the box and its selection move up together over the rows above.
+pub fn reveal(lay: &Layout, rows: isize) -> Layout {
+    let h = lay.box_height as isize;
+    let lift = (lay.home - lay.box_top + rows).clamp(0, h);
+    Layout {
+        box_top: lay.home - lift,
+        ..*lay
+    }
+}
+
 /// Repaint the region exactly as it was when the box opened.
 pub fn close_frame(snap: &Snapshot, lay: &Layout) -> String {
     let mut out = String::new();
@@ -1072,6 +1084,21 @@ mod tests {
         // On the screen nothing changes but the place.
         let l = resize(&layout(30, 12, 12), 6);
         assert_eq!(scroll_by(&l, 2).box_top, l.box_top - 2);
+    }
+
+    /// Past the end of the chat the box and its selection move up over the
+    /// rows above, until the rows it pushed past the bottom are all shown.
+    #[test]
+    fn reveal_shows_the_rows_the_box_pushed_away() {
+        let l = resize(&layout(30, 10, 10), 8);
+        assert_eq!(l.home - l.box_top, 0, "everything after it pushed down");
+        let r = reveal(&l, 3);
+        assert_eq!(r.box_top, l.box_top - 3);
+        assert_eq!(r.src_row(29), Some(29 - 5), "3 more rows at the bottom");
+        let all = reveal(&r, 30);
+        assert_eq!(all.box_top, l.home - 8);
+        assert!((all.box_end() as usize..30).all(|r| all.src_row(r) == Some(r as isize)));
+        assert_eq!(reveal(&all, -30), l, "and back at the start of the chat");
     }
 
     #[test]
