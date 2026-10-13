@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.6-beta.8 (2026-10-12)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.8`.
+
+- Scrolling with a trackpad while a peek box was open made the box slide away from its text,
+  faster than the chat. A trackpad also sends small sideways scrolls, and peekme took them for
+  up and down. Codex does not scroll for them, so peekme thought the chat was at its end and
+  scrolled on by itself. Now sideways scrolls are ignored while a box is open.
+
 ## 0.4.6-beta.7 (2026-10-12)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.7`.
