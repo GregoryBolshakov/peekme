@@ -1,6 +1,6 @@
 +++
 title = "Explain any words in a Codex CLI answer"
-description = "peekme for OpenAI Codex CLI: select text in Codex's output, press Alt+P, and a short explanation opens right under it. Alt+Shift+P asks your own question about it."
+description = "peekme for OpenAI Codex CLI: select text in Codex's output, press Alt+P, and a short explanation opens right under it. Alt+Q asks your own question about it."
 weight = 2
 template = "agent.html"
 [extra]
@@ -9,7 +9,7 @@ agent = "Codex CLI"
 media = "codex"
 cmd = "codex"
 og = "og/codex.png"
-lead = "Select words in Codex's output and press <kbd>Alt+P</kbd> (<kbd>Option+P</kbd> on a Mac). A short explanation opens right under them, and Codex's screen stays as it was. Press <kbd>Alt+Shift+P</kbd> to type your own question about them."
+lead = "Select words in Codex's output and press <kbd>Alt+P</kbd> (<kbd>Option+P</kbd> on a Mac). A short explanation opens right under them, and Codex's screen stays as it was. Press <kbd>Alt+Q</kbd> to type your own question about them."
 +++
 
 ## How it works in Codex
@@ -29,7 +29,7 @@ thread that is not saved, so nothing appears in your history. Codex runs a share
 background, and peekme uses it, so it adds only a few MB of memory. Without that server peekme
 starts its own `codex app-server`, which takes about 250 MB.
 
-A peek uses the model your account lists as fast. `/model` in Codex shows the names. A typed question (Alt+Shift+P) uses the
+A peek uses the model your account lists as fast. `/model` in Codex shows the names. A typed question (Alt+Q) uses the
 thread's model and gets a copy of the whole thread. To change either model:
 
 ```

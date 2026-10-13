@@ -21,7 +21,7 @@ Checks per case: the drag reaches the agent; the shortcut opens a box on the
 dragged text and never reaches the agent; typing with the box open reaches the
 agent; a drag over a word in the box and the shortcut open a box inside it,
 and Esc closes only that one; Esc closes it and the screen is as before; the
-ask shortcut (Option+Shift+P or Alt+Shift+P) opens a box for a typed question,
+ask shortcut (Option+Q or Alt+Q) opens a box for a typed question,
 the question stays out of the agent and Enter answers it, also on words inside
 a box; with
 nothing selected, `π` is typed into the agent. The explainer is canned (PEEKME_FAKE_EXPLAINER), so no
@@ -46,8 +46,13 @@ PROFILES = {
     "mac-default": "π".encode(),      # Terminal, iTerm2, Ghostty... with Option not set as Meta
     "meta": b"\x1bp",                 # Option as Meta / Esc+, and Linux terminals' Alt
 }
-# The ask shortcut (Option+Shift+P / Alt+Shift+P): type a question first.
+# The ask shortcut (Option+Q / Alt+Q): type a question first.
 ASK = {
+    "mac-default": "œ".encode(),
+    "meta": b"\x1bq",
+}
+# The ask shortcut before 0.4.6 (Option+Shift+P / Alt+Shift+P), still working.
+ASK_OLD = {
     "mac-default": "∏".encode(),
     "meta": b"\x1bP",
 }
@@ -384,7 +389,7 @@ def run_case(env, case, out):
             check(wait(lambda: any("Test answer to ⟦why π⟧" in l for l in t.screen())),
                   "the answer to the typed question is not on screen")
             typed = [e for e in agent_log("input")[n_in:]
-                     if "why" in e["raw"] or e["raw"] == "\r" or "∏" in e["raw"]]
+                     if "why" in e["raw"] or e["raw"] == "\r" or "œ" in e["raw"]]
             check(not typed, f"the question reached the agent: {typed}")
             t.send(b"\x1b")
             check(wait(lambda: len(events("close")) >= 2), "Esc did not close the question box")

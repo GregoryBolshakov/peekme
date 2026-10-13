@@ -1,6 +1,6 @@
 +++
 title = "Explain any words in a Kiro CLI answer"
-description = "peekme for Kiro CLI: select text in Kiro's output, press Alt+P, and a short explanation opens right under it. Alt+Shift+P asks your own question about it."
+description = "peekme for Kiro CLI: select text in Kiro's output, press Alt+P, and a short explanation opens right under it. Alt+Q asks your own question about it."
 weight = 4
 template = "agent.html"
 [extra]
@@ -9,7 +9,7 @@ agent = "Kiro CLI"
 media = "kiro"
 cmd = "kiro-cli"
 og = "og/kiro-cli.png"
-lead = "Select words in Kiro CLI's output and press <kbd>Alt+P</kbd> (<kbd>Option+P</kbd> on a Mac). A short explanation opens right under them, and Kiro's screen stays as it was. Press <kbd>Alt+Shift+P</kbd> to type your own question about them."
+lead = "Select words in Kiro CLI's output and press <kbd>Alt+P</kbd> (<kbd>Option+P</kbd> on a Mac). A short explanation opens right under them, and Kiro's screen stays as it was. Press <kbd>Alt+Q</kbd> to type your own question about them."
 +++
 
 ## How it works in Kiro CLI
@@ -31,7 +31,7 @@ has no tools. Each explanation is a short session, and peekme deletes it afterwa
 appears in your session list. One explanation costs about 0.01 Kiro credits.
 
 A peek uses `claude-haiku-4.5` (Auto if your plan doesn't have it). A typed question
-(Alt+Shift+P) uses the model your chat runs on, with the whole conversation. To change either
+(Alt+Q) uses the model your chat runs on, with the whole conversation. To change either
 model:
 
 ```

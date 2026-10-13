@@ -3,7 +3,7 @@ title = "Privacy"
 description = "What text peekme sends, to which model, and on whose login. No peekme server, no telemetry."
 weight = 30
 [extra]
-lead = "peekme has no server and no account. It sends text only when you press Alt+P or Alt+Shift+P, and only through the agent you are already using."
+lead = "peekme has no server and no account. It sends text only when you press Alt+P or Alt+Q, and only through the agent you are already using."
 +++
 
 ## What is sent, and where
@@ -22,7 +22,7 @@ For a peek (Alt+P) the model gets:
 
 That is usually 1 to 7 KB. Alt+P again sends the whole conversation, and above about 40k tokens
 peekme shows the size first and sends it only after one more Alt+P. A typed question
-(Alt+Shift+P) sends the whole conversation to the model your chat runs on.
+(Alt+Q) sends the whole conversation to the model your chat runs on.
 
 ## What stays on your machine
 

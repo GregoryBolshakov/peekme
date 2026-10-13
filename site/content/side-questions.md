@@ -39,7 +39,7 @@ docs.
 - **Same keys in four agents.** If you switch between Claude Code, Codex, Copilot CLI and Kiro
   CLI, you learn one thing.
 
-For your own question about the words, press Alt+Shift+P. It goes to the model your chat runs on,
+For your own question about the words, press Alt+Q. It goes to the model your chat runs on,
 with the whole conversation, like a side question does, and opens in the same place.
 
 ## When to use which

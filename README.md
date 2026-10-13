@@ -4,7 +4,7 @@ Pick me. Select text in [Claude Code](https://github.com/anthropics/claude-code)
 [Codex CLI](https://github.com/openai/codex),
 [GitHub Copilot CLI](https://github.com/github/copilot-cli) or [Kiro CLI](https://kiro.dev/cli/) output, press **Alt+P** (**Option+P** on a Mac), and a short
 explanation opens right next to that text, inside the terminal. The other lines move to make
-room, like Peek in VS Code. Or press **Alt+Shift+P** and type your own question first. Esc
+room, like Peek in VS Code. Or press **Alt+Q** and type your own question first. Esc
 closes the box and the screen is exactly as before.
 
 ![peekme in Claude Code: select "HOT updates" and press Alt+P for a short explanation. In the box select "fillfactor", press Alt+Shift+P and ask "What value should I set it to?". Esc closes both boxes, and a click on the underlined words opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-claude.gif)
@@ -20,10 +20,10 @@ Website and docs: **[peekme.dev](https://peekme.dev)**
 - **Peek: Alt+P** (Option+P). Select text and press Alt+P. A short explanation opens under the
   text. It comes from a small, fast model, and the model knows the conversation: if you select
   "its split panes" in an answer that recommends Kitty, it tells you it is about Kitty.
-- **Ask: Alt+Shift+P** (Option+Shift+P). Select text, press Alt+Shift+P and type your own
+- **Ask: Alt+Q** (Option+Q), Q for question. Select text, press Alt+Q and type your own
   question, for example "why not use a mutex here?". Enter sends it. The answer comes from the
   model your chat runs on, with the whole conversation, so it is slower and better than a peek.
-- **Boxes inside boxes.** In an open box, select words and press Alt+P or Alt+Shift+P again. A
+- **Boxes inside boxes.** In an open box, select words and press Alt+P or Alt+Q again. A
   new box opens inside, under that line. You can go several levels deep.
 - **Saved answers.** Text you asked about gets a dotted underline. Click it and the answer opens
   again, with no new request.
@@ -73,9 +73,9 @@ the selection itself, and peekme uses that selection.
 | Key | When | What it does |
 |---|---|---|
 | Alt+P (Mac: Option+P) | text is selected | explain it |
-| Alt+Shift+P (Mac: Option+Shift+P) | text is selected | type a question about it first, Enter sends it |
+| Alt+Q (Mac: Option+Q) | text is selected | type a question about it first, Enter sends it |
 | Alt+P again | box is open, same selection | explain again using the whole conversation |
-| Alt+P or Alt+Shift+P on text in the box | box is open | open a new box inside it, under that line |
+| Alt+P or Alt+Q on text in the box | box is open | open a new box inside it, under that line |
 | click on underlined text | any time | show the saved answer, with no new request |
 | PgUp / PgDn, mouse wheel | box is open | scroll a long answer |
 | Esc | box is open | close the innermost box |
@@ -90,15 +90,15 @@ In Claude Code, Alt+P opens the model picker. With peekme it explains the select
 
 ### Ask a question
 
-After Alt+Shift+P the box opens empty and you type. Enter sends the question, Esc cancels. While
+After Alt+Q the box opens empty and you type. Enter sends the question, Esc cancels. While
 you type, the keys stay in the box and don't go to the agent.
 
 The question goes to the model your chat runs on, not the small one, together with the whole
 conversation (Codex gets a copy of the thread). So it takes longer and costs more than a peek.
 To use another model, see [Settings](#settings).
 
-- With a box open and nothing new selected, Alt+Shift+P asks about the text that box explains.
-- Inside a box, select words and press Alt+Shift+P. The question opens in a box inside, and the
+- With a box open and nothing new selected, Alt+Q asks about the text that box explains.
+- Inside a box, select words and press Alt+Q. The question opens in a box inside, and the
   model also gets the answers around it.
 - The answer is saved with the question, and a click on the underline shows both.
 
@@ -129,8 +129,9 @@ It does use your plan, a little for each explanation. Nothing starts before the 
 Option+P works as it is, with no terminal setting, also over SSH and inside tmux. A Mac
 terminal sends Option+P as the character `π`. When something is selected, peekme takes `π` as
 the shortcut. When nothing is selected, `π` is typed as usual, so you never lose the letter.
-Option+Shift+P types `∏` and works the same way for questions. If
-you type Greek, `π` stays a letter. If your terminal sends Option as Meta, Option+P works too.
+Option+Q types `œ` and works the same way for questions. If you type Greek, `π` stays a
+letter, and if you type French, so does `œ`. If your terminal sends Option as Meta, Option+P
+works too.
 
 When the agent draws full screen, peekme gets the selection from the agent. Otherwise (Claude
 Code's classic screen, Kiro CLI before `/fullscreen`) the selection is your terminal's own:
@@ -158,10 +159,10 @@ tmux there. What peekme can read depends on who takes the mouse:
 | Claude Code classic screen, Kiro CLI inline | tmux's selection, also over SSH | your terminal's selection, not readable over SSH |
 
 With tmux's mouse on and an agent that leaves the mouse alone, a drag is tmux's selection.
-Alt+P and Alt+Shift+P explain it, also when your tmux stays in copy mode after the drag, and a
+Alt+P and Alt+Q explain it, also when your tmux stays in copy mode after the drag, and a
 click on underlined text opens the saved answer (tmux 3.2 or newer). Drags and the wheel stay
 with tmux. For this peekme adds key bindings to tmux that act only in its own pane (Option+P and
-Option+Shift+P in copy mode, and a plain click), and leaves keys you bound yourself alone.
+Option+Q in copy mode, and a plain click), and leaves keys you bound yourself alone.
 
 Codex asks tmux at startup whether it has the mouse. After `set -g mouse on`, restart Codex.
 peekme tells you this the first time you press Alt+P there.

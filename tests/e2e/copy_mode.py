@@ -7,9 +7,9 @@ With `mouse on`, a drag over an agent that leaves the mouse alone (Claude
 Code's classic screen, Codex in its scrollback mode) is tmux's selection.
 Many configs bind the end of a drag to `copy-selection`, which copies and stays
 in copy mode, so the next keys go to tmux and Option+P used to do nothing.
-peekme binds Option+P and Option+Shift+P in copy mode for its own pane: the key
-must open a box on the dragged text, in tmux directly and over SSH, as `π` /
-`∏` and as Alt+P / Alt+Shift+P.
+peekme binds Option+P, Option+Q and Option+Shift+P (the old ask key) in copy
+mode for its own pane: the key must open a box on the dragged text, in tmux
+directly and over SSH, as `π` / `œ` / `∏` and as Alt+P / Alt+Q / Alt+Shift+P.
 
 The agent leaves the mouse alone, so tmux keeps plain clicks too. peekme binds
 a click in its pane to hand it over: after a peek, a click on the underlined
@@ -35,8 +35,9 @@ def run_case(env, case, out):
     paths = {"events": os.path.join(d, "events.jsonl"), "agent": os.path.join(d, "agent.jsonl")}
     argv, socks = m.build_command(env, dict(case, agent="classic", mouse="on", extkeys="off"), paths)
     t = m.Term(argv, m.clean_env(TERM="xterm-256color"), os.path.join(d, "terminal.bin"))
-    ask = case["shortcut"] == "ask"
-    hotkey = (m.ASK if ask else m.PROFILES)[case["profile"]]
+    ask = case["shortcut"] != "peek"
+    keys = {"peek": m.PROFILES, "ask": m.ASK, "old-ask": m.ASK_OLD}[case["shortcut"]]
+    hotkey = keys[case["profile"]]
     fails = []
 
     def check(ok, msg):
@@ -100,7 +101,7 @@ def main():
                 f.write(CONF + f"set -g mode-keys {keys}\n")
             env.tmux_conf = lambda mouse, ext, c=conf + keys: c
             for layers in ("tmux", "ssh+tmux"):
-                for profile, shortcut in itertools.product(m.PROFILES, ("peek", "ask")):
+                for profile, shortcut in itertools.product(m.PROFILES, ("peek", "ask", "old-ask")):
                     case = dict(layers=layers, profile=profile, keys=keys, shortcut=shortcut, n=n)
                     n += 1
                     name, fails = run_case(env, case, out)

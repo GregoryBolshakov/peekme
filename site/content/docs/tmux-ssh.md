@@ -30,12 +30,12 @@ its mouse on instead, and tmux makes the selection on the remote machine.
 ## Inside tmux
 
 With `set -g mouse on` and an agent that leaves the mouse alone, a drag is tmux's selection.
-Alt+P and Alt+Shift+P explain it, also when your tmux stays in copy mode after the drag, and a
+Alt+P and Alt+Q explain it, also when your tmux stays in copy mode after the drag, and a
 click on underlined text opens the saved answer (tmux 3.2 or newer). Drags and the wheel stay
 with tmux.
 
 For this peekme adds key bindings to tmux that act only in its own pane: Option+P and
-Option+Shift+P in copy mode, and a plain click. Keys you bound yourself are left alone.
+Option+Q in copy mode, and a plain click. Keys you bound yourself are left alone.
 
 Codex asks tmux at startup whether it has the mouse. With tmux's mouse off, which is tmux's
 default, Codex leaves the mouse to the terminal. Add this to `~/.tmux.conf` and restart Codex:

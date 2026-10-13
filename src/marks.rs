@@ -45,7 +45,7 @@ pub struct Answer {
     /// The words it explains.
     pub text: String,
     pub answer: String,
-    /// The question the user typed, when the answer is to one (Alt+Shift+P).
+    /// The question the user typed, when the answer is to one (Alt+Q).
     /// Kept apart from the text, whose char positions the marks inside use.
     pub question: Option<String>,
     pub model: String,

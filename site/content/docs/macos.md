@@ -11,8 +11,9 @@ lead = "Option+P works as it is, with no terminal setting, also over SSH and ins
 
 A Mac terminal sends Option+P as the character `π`. When something is selected, peekme takes `π`
 as the shortcut. When nothing is selected, `π` is typed as usual, so you never lose the letter.
-Option+Shift+P types `∏` and works the same way for questions. If you type Greek, `π` stays a
-letter. If your terminal sends Option as Meta, Option+P works too.
+Option+Q types `œ` and works the same way for questions. If you type Greek, `π` stays a
+letter, and if you type French, so does `œ`. If your terminal sends Option as Meta, Option+P
+works too.
 
 ## Where the selection comes from
 

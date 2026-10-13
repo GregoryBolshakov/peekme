@@ -229,11 +229,11 @@ pub struct PeekBox {
     pub confirm_deep: bool,
     /// A short notice in the bottom border.
     pub note: Option<&'static str>,
-    /// The question being typed (Alt+Shift+P), until Enter sends it.
+    /// The question being typed (Alt+Q), until Enter sends it.
     pub input: Option<String>,
     /// The question the text answers, shown above it.
     pub question: Option<String>,
-    /// Offer Alt+Shift+P to ask a question about the selection.
+    /// Offer Alt+Q to ask a question about the selection.
     pub ask_available: bool,
 }
 
@@ -465,7 +465,7 @@ impl PeekBox {
                 hints.push("Alt+P again: use whole chat".into());
             }
             if self.ask_available {
-                hints.push("Alt+Shift+P: ask".into());
+                hints.push("Alt+Q: ask".into());
             }
             if self.confirm_deep {
                 hints.push("Alt+P: send anyway".into());

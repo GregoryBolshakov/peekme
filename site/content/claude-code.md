@@ -1,6 +1,6 @@
 +++
 title = "Explain any words in a Claude Code answer"
-description = "peekme for Claude Code: select text in Claude Code's output, press Alt+P, and a short explanation opens right under it. Alt+Shift+P asks your own question about it."
+description = "peekme for Claude Code: select text in Claude Code's output, press Alt+P, and a short explanation opens right under it. Alt+Q asks your own question about it."
 weight = 1
 template = "agent.html"
 [extra]
@@ -9,7 +9,7 @@ agent = "Claude Code"
 media = "claude"
 cmd = "claude"
 og = "og/claude-code.png"
-lead = "Select words in Claude Code's output and press <kbd>Alt+P</kbd> (<kbd>Option+P</kbd> on a Mac). A short explanation opens right under them, and Claude's screen stays as it was. Press <kbd>Alt+Shift+P</kbd> to type your own question about them."
+lead = "Select words in Claude Code's output and press <kbd>Alt+P</kbd> (<kbd>Option+P</kbd> on a Mac). A short explanation opens right under them, and Claude's screen stays as it was. Press <kbd>Alt+Q</kbd> to type your own question about them."
 +++
 
 ## How it works in Claude Code
@@ -35,7 +35,7 @@ and without saving the session, so nothing appears in `/resume`. After the first
 `claude -p` waits in the background for the next one, so it starts in about half a second. It
 takes about 210 MB of memory.
 
-A typed question (Alt+Shift+P) goes to the model your chat runs on, with the whole
+A typed question (Alt+Q) goes to the model your chat runs on, with the whole
 conversation. To change either model:
 
 ```

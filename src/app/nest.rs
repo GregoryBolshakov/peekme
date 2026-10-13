@@ -392,7 +392,7 @@ impl App {
     }
 
     /// Open a box inside box `level` for the text selected in it; with `ask`
-    /// (Alt+Shift+P) it waits for a typed question.
+    /// (Alt+Q) it waits for a typed question.
     pub(super) fn open_nested(&mut self, ask: bool, out: &mut dyn Write) -> Result<()> {
         let Some(d) = self.box_selection() else {
             return Ok(());
@@ -419,7 +419,7 @@ impl App {
         self.push_level(d.level, words, range, to.0, saved, ask, out)
     }
 
-    /// Alt+Shift+P with boxes inside and nothing selected: ask about the
+    /// Alt+Q with boxes inside and nothing selected: ask about the
     /// words the innermost box explains, in its place.
     pub(super) fn ask_in_nested(&mut self, out: &mut dyn Write) -> Result<()> {
         let Some(n) = self.open.as_ref().and_then(|o| o.nested.last()) else {

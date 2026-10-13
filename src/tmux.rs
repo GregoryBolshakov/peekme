@@ -20,9 +20,17 @@ pub fn inside() -> bool {
 }
 
 /// Keys that mean Option+P / Alt+P to tmux: Option as Meta, and `π` from a
-/// Mac terminal in its default setting. Then Option+Shift+P / Alt+Shift+P
-/// (`∏`), and the key peekme gets for each.
-const HOTKEYS: [(&str, &str); 4] = [("M-p", "M-p"), ("π", "M-p"), ("M-P", "M-P"), ("∏", "M-P")];
+/// Mac terminal in its default setting. Then the ask keys: Option+Q / Alt+Q
+/// (`œ`), and the older Option+Shift+P / Alt+Shift+P (`∏`). Each with the
+/// key peekme gets for it.
+const HOTKEYS: [(&str, &str); 6] = [
+    ("M-p", "M-p"),
+    ("π", "M-p"),
+    ("M-q", "M-q"),
+    ("œ", "M-q"),
+    ("M-P", "M-P"),
+    ("∏", "M-P"),
+];
 const COPY_TABLES: [&str; 2] = ["copy-mode", "copy-mode-vi"];
 
 /// A plain click (press and release without a drag) in a pane whose program

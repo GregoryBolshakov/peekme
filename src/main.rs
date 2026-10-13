@@ -10,9 +10,9 @@ const HELP: &str = "\
 peekme {version}
 Select text in Claude Code, Codex CLI, GitHub Copilot CLI or Kiro CLI output
 with the mouse, press Alt+P (Option+P on a Mac), and an explanation from a
-smaller model opens right next to it. Esc closes it. Alt+Shift+P (Option+Shift+P)
-asks first: type a question about the selection, and the chat's own model
-answers it with the whole conversation.
+smaller model opens right next to it. Esc closes it. Alt+Q (Option+Q), Q for
+question, asks first: type a question about the selection, and the chat's own
+model answers it with the whole conversation.
 
 USAGE:
     peekme                     run the first installed of claude, codex, copilot, kiro-cli

@@ -79,7 +79,7 @@ pub struct Request {
     pub agent_pid: Option<u32>,
     /// Words of an earlier answer, when the peek is inside another one.
     pub nested: Option<Nested>,
-    /// A question the user typed about the selection (Alt+Shift+P): answered
+    /// A question the user typed about the selection (Alt+Q): answered
     /// by the chat's own model, with the whole conversation.
     pub question: Option<String>,
 }

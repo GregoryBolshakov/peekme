@@ -204,7 +204,7 @@ struct PendingOpen {
 struct PendingHotkey {
     since: Instant,
     option_p: Option<Vec<u8>>,
-    /// Alt+Shift+P: the box asks for a question first.
+    /// Alt+Q: the box asks for a question first.
     ask: bool,
 }
 
@@ -432,6 +432,7 @@ fn event_loop(setup: Setup, agent: Option<Agent>) -> Result<i32> {
         tmux_baseline: None,
         boundary: Boundary::default(),
         greek_typed: false,
+        french_typed: false,
         told_hidden: false,
         can_offer_accessibility: cfg!(target_os = "macos")
             && std::env::var_os("SSH_CONNECTION").is_none()
@@ -602,6 +603,8 @@ struct App {
     known_from: usize,
     /// The user typed Greek letters: `π` is a letter for them, never the hotkey.
     greek_typed: bool,
+    /// The user typed French accents: `œ` is a letter for them, never the hotkey.
+    french_typed: bool,
     /// Told the user once that the terminal keeps the mouse (tmux mouse off, or
     /// a terminal that never reports it), so no selection can be seen.
     told_hidden: bool,
@@ -647,7 +650,7 @@ struct App {
     focus_in_at: Option<Instant>,
     /// A mark the user clicked, for the next open instead of the selection.
     clicked: Option<MarkHit>,
-    /// The next box asks for a question instead of explaining (Alt+Shift+P).
+    /// The next box asks for a question instead of explaining (Alt+Q).
     ask_next: bool,
     /// Cells of the mark under the pointer, drawn with a solid underline.
     hover: Option<Vec<(usize, usize)>>,
@@ -1149,10 +1152,19 @@ impl App {
             if t.kind == Kind::Key && !pasting && types_greek(&t.bytes) {
                 self.greek_typed = true;
             }
-            if matches!(t.kind, Kind::OptionP | Kind::OptionShiftP) {
-                let ask = t.kind == Kind::OptionShiftP;
-                let mut hotkey = self.option_p_is_hotkey();
-                if !hotkey && !self.greek_typed && self.hotkey_follows_drag() {
+            if t.kind == Kind::Key && !pasting && types_french(&t.bytes) {
+                self.french_typed = true;
+            }
+            if matches!(t.kind, Kind::OptionP | Kind::OptionQ | Kind::OptionShiftP) {
+                let ask = t.kind != Kind::OptionP;
+                // `œ` is a letter for whoever types French, `π` and `∏` for Greek.
+                let letter = if t.kind == Kind::OptionQ {
+                    self.french_typed
+                } else {
+                    self.greek_typed
+                };
+                let mut hotkey = !letter && self.option_p_is_hotkey();
+                if !hotkey && !letter && self.hotkey_follows_drag() {
                     self.flush_forward(&mut forward, child)?;
                     crate::event(
                         "option_p_wait",
@@ -1166,7 +1178,7 @@ impl App {
                     continue;
                 }
                 if !hotkey
-                    && !self.greek_typed
+                    && !letter
                     && !self.told_hidden
                     && (self.selection_hidden()
                         || (cfg!(target_os = "macos") && self.mouse_withheld()))
@@ -1176,7 +1188,7 @@ impl App {
                     hotkey = true;
                     self.told_hidden = true;
                 }
-                if !hotkey && !self.greek_typed && self.offers_accessibility() {
+                if !hotkey && !letter && self.offers_accessibility() {
                     // Terminal.app keeps the drag to itself: offer, once, to
                     // let peekme read it instead of typing π without a word.
                     hotkey = true;
@@ -1265,14 +1277,14 @@ impl App {
                             continue;
                         }
                         // Boxes inside: Alt+P with nothing selected in them does
-                        // nothing, Alt+Shift+P asks about the innermost box's words.
+                        // nothing, Alt+Q asks about the innermost box's words.
                         if self.open.as_ref().is_some_and(|o| !o.nested.is_empty()) {
                             if ask {
                                 self.ask_in_nested(out)?;
                             }
                             continue;
                         }
-                        // Alt+Shift+P in a box: a question about its selection.
+                        // Alt+Q in a box: a question about its selection.
                         if ask && self.ask_in_box(out)? {
                             continue;
                         }
@@ -1621,14 +1633,12 @@ impl App {
         }
     }
 
-    /// Whether `π` (Option+P on a Mac) means "explain": when a box is open or
-    /// a selection is on screen. Otherwise it is typed, so nobody loses the
-    /// letter, and never once the user types Greek. Nothing else can tell a
-    /// Mac keyboard apart: over SSH and in tmux the environment says nothing.
+    /// Whether `π` (Option+P on a Mac) means "explain", or `œ` (Option+Q)
+    /// "ask": when a box is open or a selection is on screen. Otherwise it is
+    /// typed, so nobody loses the letter (and never once the user types Greek,
+    /// or French for `œ`). Nothing else can tell a Mac keyboard apart: over
+    /// SSH and in tmux the environment says nothing.
     fn option_p_is_hotkey(&mut self) -> bool {
-        if self.greek_typed {
-            return false;
-        }
         if self.open.is_some() {
             return true;
         }
@@ -2305,7 +2315,7 @@ impl App {
         self.redraw_box(out)
     }
 
-    /// Alt+Shift+P with a box open: ask about the words that box explains,
+    /// Alt+Q with a box open: ask about the words that box explains,
     /// in a new box of full size (the old one may have shrunk to its answer).
     /// Returns false when the box explains no selection.
     fn ask_in_box(&mut self, out: &mut dyn Write) -> Result<bool> {
@@ -2619,6 +2629,13 @@ fn types_greek(bytes: &[u8]) -> bool {
     String::from_utf8_lossy(bytes).chars().any(|c| {
         matches!(c, '\u{0370}'..='\u{03ff}' | '\u{1f00}'..='\u{1fff}') && c != input::MAC_OPTION_P
     })
+}
+
+/// Typed text with the accents French writes words with `œ` among.
+fn types_french(bytes: &[u8]) -> bool {
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .any(|c| "éèêëàâçîïôûùÿÉÈÊÀÇ".contains(c))
 }
 
 /// Where to show a one-line message: just above the cursor's row.
@@ -3430,6 +3447,7 @@ mod tests {
             known_from: 0,
             boundary: Boundary::default(),
             greek_typed: false,
+            french_typed: false,
             told_hidden: false,
             can_offer_accessibility: false,
             offered_accessibility: false,
@@ -4192,6 +4210,41 @@ mod tests {
         assert_eq!(child, "π".as_bytes());
     }
 
+    /// Option+Q on a Mac arrives as `œ`: like `π`, it asks about a selection
+    /// and is typed otherwise, and always for someone who types French.
+    #[test]
+    fn option_q_asks_about_a_selection_and_types_otherwise() {
+        let mut app = test_app_for(Agent::Claude, 120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(CLAUDE[0], &mut out, &mut child).unwrap();
+        app.shadow.flush_sync();
+        app.mouse_seen = true;
+
+        app.selection = SelectionSource::without_system();
+        app.on_input("œ".as_bytes(), &mut out, &mut child).unwrap();
+        assert!(app.open.is_none(), "no box without a selection");
+        assert_eq!(child, "œ".as_bytes());
+        child.clear();
+
+        app.on_input(b"\x1b[<0;5;10M\x1b[<0;12;10m", &mut out, &mut child)
+            .unwrap();
+        app.on_output(b"\x1b]52;c;bWVyZ2UgYw==\x07", &mut out, &mut child)
+            .unwrap();
+        child.clear();
+        app.on_input("œ".as_bytes(), &mut out, &mut child).unwrap();
+        let open = app.open.as_ref().expect("œ opened the box");
+        assert_eq!(open.peek.input.as_deref(), Some(""), "waits for a question");
+        assert!(child.is_empty(), "œ did not reach Claude");
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+
+        app.on_input("café".as_bytes(), &mut out, &mut child)
+            .unwrap();
+        child.clear();
+        app.on_input("œ".as_bytes(), &mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+        assert_eq!(child, "œ".as_bytes());
+    }
+
     #[test]
     fn option_p_waits_for_codex_selection_repaint() {
         let mut app = test_app(40, 8);
@@ -4618,10 +4671,10 @@ mod tests {
         }
     }
 
-    /// Alt+Shift+P: the box asks for a question first; Enter sends it with
+    /// Alt+Q: the box asks for a question first; Enter sends it with
     /// the selection, and the answer is saved with the question.
     #[test]
-    fn alt_shift_p_asks_a_typed_question() {
+    fn alt_q_asks_a_typed_question() {
         let mut app = test_app(40, 24);
         let (tx, rx) = mpsc::channel();
         app.tx = tx;
@@ -4629,7 +4682,7 @@ mod tests {
         app.selection = SelectionSource::fixed("true colour");
         let (mut out, mut child) = (Vec::new(), Vec::new());
         app.on_output(SCREEN, &mut out, &mut child).unwrap();
-        app.on_input(b"\x1bP", &mut out, &mut child).unwrap();
+        app.on_input(b"\x1bq", &mut out, &mut child).unwrap();
         let open = app.open.as_ref().expect("a box");
         assert_eq!(open.peek.input.as_deref(), Some(""), "waits for a question");
         assert!(rx.try_recv().is_err(), "nothing sent before the question");
@@ -4677,13 +4730,13 @@ mod tests {
         assert!(child.is_empty());
     }
 
-    /// Alt+Shift+P in a box that explained something: a new box asks about
+    /// Alt+Q in a box that explained something: a new box asks about
     /// the same words; Esc while typing closes it and nothing is sent.
     #[test]
-    fn alt_shift_p_in_a_box_asks_about_its_words() {
+    fn alt_q_in_a_box_asks_about_its_words() {
         let mut app = app_with_an_answer("short", false);
         let (mut out, mut child) = (Vec::new(), Vec::new());
-        app.on_input(b"\x1bP", &mut out, &mut child).unwrap();
+        app.on_input(b"\x1bq", &mut out, &mut child).unwrap();
         let open = app.open.as_ref().expect("a box");
         assert_eq!(open.peek.input.as_deref(), Some(""));
         assert_eq!(open.peek.title, "true colour");
@@ -4694,11 +4747,11 @@ mod tests {
         assert!(child.is_empty());
     }
 
-    /// Alt+Shift+P on words in a box: a box inside it waits for a question;
+    /// Alt+Q on words in a box: a box inside it waits for a question;
     /// it is sent with the answers around it, and saved with the question.
-    /// Alt+Shift+P with nothing selected asks again about the same words.
+    /// Alt+Q with nothing selected asks again about the same words.
     #[test]
-    fn alt_shift_p_on_words_in_a_box_asks_about_them() {
+    fn alt_q_on_words_in_a_box_asks_about_them() {
         let answer = "A pseudo-terminal lets job control work inside tmux panes.";
         let mut app = app_with_an_answer(answer, true);
         let (tx, rx) = mpsc::channel();
@@ -4711,7 +4764,7 @@ mod tests {
         drag.extend(mouse(32, at(33), true));
         drag.extend(mouse(0, at(33), false));
         app.on_input(&drag, &mut out, &mut child).unwrap();
-        app.on_input(b"\x1bP", &mut out, &mut child).unwrap();
+        app.on_input(b"\x1bq", &mut out, &mut child).unwrap();
         let open = app.open.as_ref().unwrap();
         assert_eq!(open.nested.len(), 1);
         let n = &open.nested[0];
@@ -4745,7 +4798,8 @@ mod tests {
         assert_eq!(saved.question.as_deref(), Some("how does fg work?"));
         assert!(saved.answer.starts_with("Test answer to"));
 
-        // Nothing selected now: Alt+Shift+P asks about the same words again.
+        // Nothing selected now: Alt+Shift+P (the old ask key, still there)
+        // asks about the same words again.
         app.on_input(b"\x1bP", &mut out, &mut child).unwrap();
         let open = app.open.as_ref().unwrap();
         assert_eq!(open.nested.len(), 1);
@@ -4764,7 +4818,7 @@ mod tests {
     #[test]
     fn a_new_answer_does_not_show_the_old_answers_inner_marks() {
         let answer = "A pseudo-terminal lets job control work inside tmux panes.";
-        for again in [&b"\x1bp"[..], b"\x1bP"] {
+        for again in [&b"\x1bp"[..], b"\x1bq"] {
             let mut app = app_with_an_answer(answer, true);
             let (mut child, mut out) = (Vec::new(), Vec::new());
             let top = app.open.as_ref().unwrap().lay.box_top as usize;
@@ -4796,7 +4850,7 @@ mod tests {
             );
             // A new answer: the whole chat (Alt+P again) or a typed question.
             app.on_input(again, &mut out, &mut child).unwrap();
-            if again == b"\x1bP" {
+            if again == b"\x1bq" {
                 app.on_input(b"why?\r", &mut out, &mut child).unwrap();
             }
             let id = app.open.as_ref().unwrap().id;
@@ -4833,7 +4887,7 @@ mod tests {
         app.on_output(SCREEN, &mut out, &mut child).unwrap();
         app.on_output(b"\x1b[?1000h\x1b[?1003h\x1b[?1006h", &mut out, &mut child)
             .unwrap();
-        app.on_input(b"\x1bP", &mut out, &mut child).unwrap();
+        app.on_input(b"\x1bq", &mut out, &mut child).unwrap();
         app.on_input(b"why?\r", &mut out, &mut child).unwrap();
         let id = app.open.as_ref().unwrap().id;
         let answer = "A pseudo-terminal lets job control work inside tmux panes.";

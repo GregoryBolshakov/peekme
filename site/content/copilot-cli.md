@@ -1,6 +1,6 @@
 +++
 title = "Explain any words in a GitHub Copilot CLI answer"
-description = "peekme for GitHub Copilot CLI: select text in Copilot's output, press Alt+P, and a short explanation opens right under it. Alt+Shift+P asks your own question about it."
+description = "peekme for GitHub Copilot CLI: select text in Copilot's output, press Alt+P, and a short explanation opens right under it. Alt+Q asks your own question about it."
 weight = 3
 template = "agent.html"
 [extra]
@@ -9,7 +9,7 @@ agent = "GitHub Copilot CLI"
 media = "copilot"
 cmd = "copilot"
 og = "og/copilot-cli.png"
-lead = "Select words in Copilot CLI's output and press <kbd>Alt+P</kbd> (<kbd>Option+P</kbd> on a Mac). A short explanation opens right under them, and Copilot's screen stays as it was. Press <kbd>Alt+Shift+P</kbd> to type your own question about them."
+lead = "Select words in Copilot CLI's output and press <kbd>Alt+P</kbd> (<kbd>Option+P</kbd> on a Mac). A short explanation opens right under them, and Copilot's screen stays as it was. Press <kbd>Alt+Q</kbd> to type your own question about them."
 +++
 
 ## How it works in Copilot CLI
@@ -25,7 +25,7 @@ No API key is needed. On the first explanation peekme starts Copilot's headless 
 a short session without tools, and peekme deletes it afterwards, so nothing appears in your
 session list. It uses a little of your AI credits for each explanation.
 
-A peek uses Copilot's Auto model. A typed question (Alt+Shift+P) uses the model your chat runs
+A peek uses Copilot's Auto model. A typed question (Alt+Q) uses the model your chat runs
 on, with the whole conversation. To change either model:
 
 ```
