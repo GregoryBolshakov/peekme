@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.6-beta.5 (2026-10-12)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.5`.
+
+- Scrolling with a peek box open could leave a blank band where the box had been, with stray
+  bits of the chat in it. peekme took Codex's status line and the empty row under it for chat,
+  and they don't scroll. Now they stay with Codex's input area and stay live, so a status like
+  "Copy sent to terminal" shows there as usual.
+- When the box has scrolled off the screen, the chat rows it pushed away come back as you keep
+  scrolling, so the screen is soon exactly Codex's again.
+
 ## 0.4.6-beta.4 (2026-10-12)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.4`.
