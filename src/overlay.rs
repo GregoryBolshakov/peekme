@@ -715,6 +715,7 @@ pub fn scroll_delta(old: &Snapshot, new: &Snapshot, rows: Range<usize>) -> Optio
     let n = new.len() as isize;
     let filled = new.iter().filter(|t| !t.trim().is_empty()).count();
     let mut best: Option<(usize, isize)> = None;
+    let mut second = 0;
     for k in -(n - 1)..n {
         let same = (0..n)
             .filter(|&i| {
@@ -725,10 +726,14 @@ pub fn scroll_delta(old: &Snapshot, new: &Snapshot, rows: Range<usize>) -> Optio
             })
             .count();
         if best.is_none_or(|(b, bk)| same > b || (same == b && k.abs() < bk.abs())) {
+            second = best.map_or(0, |(b, _)| b);
             best = Some((same, k));
+        } else {
+            second = second.max(same);
         }
     }
-    best.filter(|&(same, _)| same >= 3.min(filled) && same > 0)
+    // Enough rows agree, or a few with no other shift as good.
+    best.filter(|&(same, _)| same > 0 && (same >= 3.min(filled) || (same >= 2 && same > second)))
         .map(|(_, k)| k)
 }
 
@@ -764,6 +769,29 @@ pub fn resize(lay: &Layout, height: usize) -> Layout {
     Layout {
         box_top,
         box_height: height,
+        ..*lay
+    }
+}
+
+/// The placement after the chat scrolled `k` rows up (down is minus): the
+/// box moves with its selection. While it is on the screen, the chat rows it
+/// pushed away stay away (above it `lift` rows, below it the rest of its
+/// height). Once it has scrolled off, they come back a row for every row the
+/// chat scrolls on, so the screen is soon the child's own again, without a
+/// jump.
+pub fn scroll_by(lay: &Layout, k: isize) -> Layout {
+    let h = lay.box_height as isize;
+    let home = lay.home - k;
+    let mut lift = lay.home - lay.box_top;
+    let (lo, hi) = (lay.region.0 as isize, lay.region.1 as isize);
+    if home - lift >= hi && k < 0 {
+        lift -= lift.min(-k);
+    } else if home - lift + h <= lo && k > 0 {
+        lift += (h - lift).min(k);
+    }
+    Layout {
+        home,
+        box_top: home - lift,
         ..*lay
     }
 }
@@ -1017,6 +1045,33 @@ mod tests {
         assert!(!l.below);
         assert_eq!((l.box_top as usize) + l.box_height, 37);
         assert_eq!(l.region, (0, 40));
+    }
+
+    /// Off the screen, the box gives the chat its rows back step by step.
+    #[test]
+    fn a_box_off_the_screen_gives_the_rows_back() {
+        // Above its selection near the bottom: everything above is pushed up.
+        let mut l = resize(&layout(30, 26, 26), 10);
+        assert_eq!(l.home - l.box_top, 10);
+        let mut tops = Vec::new();
+        for _ in 0..12 {
+            l = scroll_by(&l, -3);
+            tops.push(l.box_top);
+        }
+        assert!(
+            tops.windows(2).all(|w| w[1] >= w[0] && w[1] - w[0] <= 6),
+            "{tops:?}"
+        );
+        assert!((0..30).all(|r| l.src_row(r) == Some(r as isize)), "{l:?}");
+        // Below its selection, leaving at the top.
+        let mut l = resize(&layout(30, 3, 3), 10);
+        for _ in 0..12 {
+            l = scroll_by(&l, 3);
+        }
+        assert!((0..30).all(|r| l.src_row(r) == Some(r as isize)), "{l:?}");
+        // On the screen nothing changes but the place.
+        let l = resize(&layout(30, 12, 12), 6);
+        assert_eq!(scroll_by(&l, 2).box_top, l.box_top - 2);
     }
 
     #[test]

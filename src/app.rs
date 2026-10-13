@@ -82,6 +82,10 @@ struct Open {
     /// First row of the child's live area (Codex's composer and status),
     /// kept updating while the box is open.
     strip_top: Option<usize>,
+    /// Where the child's input area starts, to see it move. On the full
+    /// screen `strip_top` is above it: the blank rows the child keeps between
+    /// the chat and its input (its status line shows there) are live too.
+    composer: Option<usize>,
     /// What the live rows currently show on the terminal.
     strip_shown: Vec<Vec<Cell>>,
     strip_dirty: bool,
@@ -114,6 +118,9 @@ const SGR_OFF: &str = "\x1b[?1006l";
 /// Reports still on their way after peekme turned them off are dropped for
 /// this long, so a child that never asked for them gets none.
 const STRAY_MOUSE: Duration = Duration::from_secs(1);
+
+/// Rows full-screen Codex keeps between its chat and its input area.
+const CODEX_STATUS_ROWS: usize = 2;
 
 /// How long after a wheel event the child's output is shown under the box.
 const FOLLOW: Duration = Duration::from_millis(1500);
@@ -822,7 +829,7 @@ impl App {
     /// the rows that changed are written.
     fn follow_feed(&mut self, out: &mut dyn Write) -> Result<()> {
         let now = self.shadow.snapshot();
-        if let Some(top) = self.open.as_ref().and_then(|o| o.strip_top)
+        if let Some(top) = self.open.as_ref().and_then(|o| o.composer)
             && self.strip_moved(&now, top)
         {
             return self.close(out, false);
@@ -852,12 +859,15 @@ impl App {
         });
         if let Some(k) = moved {
             open.scrolled += k;
-            open.lay.home -= k;
-            open.lay.box_top -= k;
+            open.lay = overlay::scroll_by(&open.lay, k);
         }
         for r in lo..hi {
-            open.mem
-                .insert(r as isize + open.scrolled, render::row_text(&now.rows[r]));
+            // A row of the chat keeps its text while it scrolls: a blank one
+            // over a remembered one is something that stays put, not chat.
+            let key = r as isize + open.scrolled;
+            if !now.rows_text(r, r + 1).trim().is_empty() || !open.mem.contains_key(&key) {
+                open.mem.insert(key, render::row_text(&now.rows[r]));
+            }
         }
         crate::event(
             "follow",
@@ -904,7 +914,7 @@ impl App {
             return Ok(());
         };
         let now = self.shadow.snapshot();
-        if self.strip_moved(&now, top) {
+        if open.composer.is_some_and(|k| self.strip_moved(&now, k)) {
             return self.close(out, false);
         }
         let Some(open) = &mut self.open else {
@@ -1800,6 +1810,7 @@ impl App {
         let withheld = selection.is_none() && !hidden && self.mouse_withheld();
         let mut remembered = None;
         let mut strip = None;
+        let mut composer = None;
         let mut mark = None;
         let mut saved = None;
         let mut replace = None;
@@ -1807,9 +1818,24 @@ impl App {
             (Some(sel), Some(loc)) => {
                 // Keep the child's live area (input line, status) out of the box's
                 // way when we know where it starts and the selection is above it.
-                strip = self
+                composer = self
                     .live_top(&snap)
                     .filter(|&k| loc.last_row < k && k < rows && k >= rows / 3);
+                // Full-screen Codex keeps two rows between its chat and its
+                // input area: its status line (a spinner, "Copy sent to
+                // terminal") and a gap. They are not chat: they stay put while
+                // the chat scrolls, so they stay live with the input area.
+                let codex = !matches!(
+                    self.agent,
+                    Some(Agent::Claude | Agent::Copilot | Agent::Kiro)
+                );
+                strip = composer.map(|k| {
+                    if codex && self.shadow.alt_screen() {
+                        k.saturating_sub(CODEX_STATUS_ROWS).max(loc.last_row + 1)
+                    } else {
+                        k
+                    }
+                });
                 let lay = overlay::layout_within(
                     self.known_top(),
                     strip.unwrap_or(rows),
@@ -1956,6 +1982,7 @@ impl App {
             peek,
             held: Vec::new(),
             strip_top: strip,
+            composer,
             strip_shown,
             strip_dirty: false,
             drawn_at: Instant::now(),
@@ -3526,6 +3553,93 @@ mod tests {
         }
     }
 
+    /// A tall box above a selection near the bottom pushes the chat up; as
+    /// the chat scrolls down under it, every chat row stays the chat's own:
+    /// no blank band where the box was, and Codex's status line (which stays
+    /// put) never shows up among the chat rows.
+    #[test]
+    fn scrolling_leaves_no_dead_zone_where_the_box_was() {
+        let mut app = test_app(120, 40);
+        let mut real = Shadow::new(120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(CODEX_0161_FULLSCREEN, &mut out, &mut child)
+            .unwrap();
+        let chat: String = (0..34)
+            .map(|r| format!("\x1b[{};1H\x1b[0m\x1b[2K  chat line {r}", r + 1))
+            .collect();
+        let status = "\x1b[35;1H\x1b[2K  Copy sent to terminal";
+        app.on_output(
+            format!("\x1b7{chat}{status}\x1b8").as_bytes(),
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        app.shadow.flush_sync();
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+        app.selection = SelectionSource::fixed("chat line 30");
+        app.open_peek(&mut out).unwrap();
+        let open = app.open.as_ref().unwrap();
+        let (id, top) = (open.id, open.strip_top.unwrap());
+        assert_eq!(top, 34, "Codex's status rows are not chat");
+        let answer: String = (1..=12).map(|k| format!("Line {k}.\n\n")).collect();
+        app.on_progress(id, Progress::Delta(answer), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        assert!(!app.open.as_ref().unwrap().lay.below, "above its selection");
+        let mut older = 0;
+        for step in 0..14 {
+            app.on_input(b"\x1b[<64;60;5M", &mut Vec::new(), &mut Vec::new())
+                .unwrap();
+            older += 3;
+            let lines: String = (0..3)
+                .map(|i| format!("\x1b[{};1H  chat line -{}", i + 1, older - i))
+                .collect();
+            // Codex scrolls its chat rows only; the status line stays put.
+            let bytes = format!("\x1b[?2026h\x1b[1;34r\x1b[3T\x1b[r{lines}\x1b[?2026l");
+            app.on_output(bytes.as_bytes(), &mut out, &mut Vec::new())
+                .unwrap();
+            app.shadow.flush_sync();
+            app.tick(&mut out).unwrap();
+            real.advance(&std::mem::take(&mut out));
+            real.flush_sync();
+            let shown = real.snapshot();
+            let mut seen: Vec<i64> = Vec::new();
+            for r in 0..34 {
+                let t = shown.rows_text(r, r + 1);
+                let t = t.trim();
+                if t.starts_with(['│', '╭', '╰']) {
+                    continue;
+                }
+                assert!(
+                    !t.contains("Copy sent"),
+                    "step {step} row {r}: status in the chat"
+                );
+                let n = t.strip_prefix("chat line ").and_then(|n| n.parse().ok());
+                let n = n.unwrap_or_else(|| panic!("step {step} row {r}: {t:?} is not a chat row"));
+                seen.push(n);
+            }
+            let mut want: Vec<i64> = seen.clone();
+            want.sort();
+            want.dedup();
+            assert_eq!(seen, want, "step {step}: in order, none twice");
+            // The box hides some rows while it is on the screen, no more.
+            let gap = seen.windows(2).filter(|w| w[1] != w[0] + 1).count();
+            assert!(gap <= 1, "step {step}: {seen:?}");
+        }
+        app.close(&mut out, false).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let (now, shown) = (app.shadow.snapshot(), real.snapshot());
+        for r in 0..40 {
+            assert_eq!(
+                shown.rows_text(r, r + 1),
+                now.rows_text(r, r + 1),
+                "row {r}"
+            );
+        }
+    }
+
     /// The chat scrolls the selection off the top: the box goes with it,
     /// cut at the edge of the screen, and comes back whole when the chat
     /// scrolls back. Each step writes only the rows that changed.
@@ -3535,6 +3649,12 @@ mod tests {
         let mut real = Shadow::new(120, 40);
         let (mut child, mut out) = (Vec::new(), Vec::new());
         app.on_output(CODEX_0161_FULLSCREEN, &mut out, &mut child)
+            .unwrap();
+        // A chat under the banner, as in a session that has been going a while.
+        let chat: String = (4..34)
+            .map(|r| format!("\x1b[{};3Hchat line {r}", r + 1))
+            .collect();
+        app.on_output(format!("\x1b7{chat}\x1b8").as_bytes(), &mut out, &mut child)
             .unwrap();
         app.shadow.flush_sync();
         real.advance(&std::mem::take(&mut out));
@@ -3565,12 +3685,13 @@ mod tests {
         assert_eq!(open.lay.box_top, above - 3);
         let body = shown.rows_text(0, 1);
         assert!(body.starts_with("│ "), "the box, cut at the top: {body}");
-        // Down 3 again: whole, back where it was; only the rows that moved.
+        // Down 3 again: whole, back where it was.
         let (shown, rows) = step(&mut app, "\x1b[3T");
         assert_eq!(app.open.as_ref().unwrap().lay.box_top, above);
         let border = shown.rows_text(above as usize, above as usize + 1);
         assert!(border.starts_with("╭─ peek"), "{border}");
-        assert!(rows < top, "{rows} rows written");
+        // Each chat row at most once (and the cursor put back).
+        assert!(rows <= top + 1, "{rows} rows written");
         // The rows the chat scrolled off came back from memory, not blank.
         let first = shown.rows_text(0, 1);
         assert_eq!(first, app.shadow.snapshot().rows_text(0, 1));

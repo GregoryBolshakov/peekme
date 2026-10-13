@@ -177,6 +177,13 @@ impl Explainer {
                 for part in ["Test explanation ", "of ", &format!("⟦{sel}⟧.")] {
                     tx(Progress::Delta(part.to_string()));
                 }
+                // A taller answer for end-to-end runs.
+                let more = std::env::var("PEEKME_FAKE_LINES").ok();
+                for k in 1..=more.and_then(|n| n.parse::<usize>().ok()).unwrap_or(0) {
+                    tx(Progress::Delta(format!(
+                        "\n\n- Line {k} of the test answer."
+                    )));
+                }
                 tx(Progress::Done);
             }
         }
