@@ -22,6 +22,10 @@ Codex's place in the chat still moves by its count, so at a turn boundary
 the rows on screen move one row less or more as the header comes and goes;
 the box moves with them.
 
+The terminal answers Codex's colour queries as GNOME Terminal does (Codex
+then tints its input area, a row taller above the prompt line), except in
+the sessions marked `colors=False`, like a terminal that does not answer.
+
     python3 tests/e2e/scroll.py [--only NAME] [--repeat N]
 """
 import json
@@ -100,7 +104,7 @@ class Session:
     """One Codex under peekme, with a chat made of labelled rows."""
 
     def __init__(self, out, blocks, rep=False, size=(120, 40), block_rows=40, late=False,
-                 speed=None, prompts=False):
+                 speed=None, prompts=False, colors=True):
         m.COLS, m.ROWS = size
         self.out = out
         self.used = set()
@@ -126,7 +130,7 @@ class Session:
         self.model = Wheel(speed or 1.0)
         self.t = m.Term([m.PEEKME] + relay + [ra.real_binary("codex"), "-c",
                          "check_for_update_on_startup=false"] + setting + resume, env,
-                        os.path.join(out, "terminal.bin"))
+                        os.path.join(out, "terminal.bin"), colors=colors)
         self.ready()
         for b in range(0 if prompts else blocks):
             fill = "same row of a repeated output" if rep and b == 1 else None
@@ -858,10 +862,10 @@ def cases_rep(s):
                                               ("burst", True, 15), ("burst", False, 25)])
 
 
-SESSIONS = [("long", dict(blocks=4), cases_long), ("more", dict(blocks=3), cases_more),
+SESSIONS = [("long", dict(blocks=4), cases_long), ("more", dict(blocks=3, colors=False), cases_more),
             ("short", dict(blocks=1, block_rows=10), cases_short),
             ("repeated", dict(blocks=3, rep=True), cases_rep),
-            ("small", dict(blocks=3, size=(80, 24)), cases_small),
+            ("small", dict(blocks=3, size=(80, 24), colors=False), cases_small),
             ("live", dict(blocks=2), cases_live),
             ("late", dict(blocks=3, late=True), cases_late),
             ("speed 0.5", dict(blocks=3, speed=0.5), cases_speed),
@@ -887,7 +891,7 @@ def main():
         os.makedirs(out, exist_ok=True)
         s = Session(out, kw["blocks"], kw.get("rep", False), kw.get("size", (120, 40)),
                     kw.get("block_rows", 40), kw.get("late", False), kw.get("speed"),
-                    kw.get("prompts", False))
+                    kw.get("prompts", False), kw.get("colors", True))
         try:
             for _ in range(repeat):
                 for name, fn in cases(s):

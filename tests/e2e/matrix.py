@@ -67,8 +67,9 @@ AGENTS = {"claude": "claude", "copilot": "copilot", "codex": "codex", "classic":
 class Term:
     """A pseudo-terminal we drive like a terminal emulator would."""
 
-    def __init__(self, argv, env, log_path):
+    def __init__(self, argv, env, log_path, colors=False):
         self.data = bytearray()
+        self.colors = colors
         # The reader thread grows `data` while other threads save it: writing a
         # bytearray that is being resized raises BufferError.
         self.lock = threading.Lock()
@@ -103,6 +104,12 @@ class Term:
                 os.write(self.fd, b"\x1b[?62;22c")
             if b"\x1b[>c" in b or b"\x1b[>0c" in b:
                 os.write(self.fd, b"\x1b[>41;354;0c")
+            # Colours, when asked to answer them (GNOME Terminal's default
+            # dark theme): Codex then tints its input area and prompts.
+            if self.colors:
+                for code, rgb in ((10, b"ffff/ffff/ffff"), (11, b"3030/0a0a/2424")):
+                    if b"\x1b]%d;?" % code in b:
+                        os.write(self.fd, b"\x1b]%d;rgb:%s\x1b\\" % (code, rgb))
         self.alive = False
 
     def save(self):

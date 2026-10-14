@@ -29,8 +29,10 @@ pub fn selection(snap: &Snapshot) -> Option<Located> {
     })
 }
 
-/// Rows idle full-screen Codex keeps between its chat and its input area: its
-/// status line (blank, or "Copy sent to terminal") and a gap.
+/// Rows idle full-screen Codex keeps between its chat and its prompt line:
+/// its status line (blank, "Copy sent to terminal" or "↓ Back to bottom")
+/// and the input area's top padding. The padding is blank, or tinted when the
+/// terminal told Codex its colours (`composer_top` then starts there).
 const STATUS_ROWS: usize = 2;
 
 /// The row under the last row of Codex's chat when it draws full screen, its
@@ -40,10 +42,13 @@ const STATUS_ROWS: usize = 2;
 pub fn chat_end(snap: &Snapshot, composer: usize) -> usize {
     let busy = (composer.saturating_sub(8)..composer)
         .find(|&r| snap.rows_text(r, r + 1).contains("esc to interrupt"));
+    let prompt = (composer..snap.rows.len())
+        .find(|&r| snap.rows_text(r, r + 1).starts_with('›'))
+        .unwrap_or(composer);
     match busy {
         Some(r) if r > 0 && snap.rows_text(r - 1, r).trim().is_empty() => r - 1,
         Some(r) => r,
-        None => composer.saturating_sub(STATUS_ROWS),
+        None => prompt.saturating_sub(STATUS_ROWS),
     }
 }
 
@@ -100,6 +105,20 @@ mod tests {
         let s = snap(idle.as_bytes(), 80, 40);
         assert_eq!(composer_top(&s), Some(36));
         assert_eq!(chat_end(&s, 36), 34);
+        // A terminal that tells Codex its colours: the input area is tinted,
+        // its top padding row too, so it starts a row higher; the chat does not
+        // end any higher.
+        let band = "\x1b[48;2;72;39;62m";
+        let tinted = idle.replace("\x1b[37;1H› Ask Codex", "")
+            + &format!(
+                "\x1b[36;1H{band}{}\x1b[37;1H{band}› Ask Codex{}\x1b[38;1H{band}{}\x1b[0m",
+                " ".repeat(80),
+                " ".repeat(69),
+                " ".repeat(80)
+            );
+        let s = snap(tinted.as_bytes(), 80, 40);
+        assert_eq!(composer_top(&s), Some(35));
+        assert_eq!(chat_end(&s, 35), 34);
         for at in [33, 34] {
             let mut busy = String::new();
             for r in 0..at - 1 {
