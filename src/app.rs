@@ -5532,10 +5532,17 @@ mod tests {
         assert_eq!(n.words, "job control");
         assert_eq!(n.peek.input.as_deref(), Some(""), "waits for a question");
         assert!(rx.try_recv().is_err(), "nothing sent before the question");
+        // As small as its text, like an outer box waiting for a question.
+        let cols = open.snap.cols;
+        let fitted = |n: &nest::Nested| n.peek.line_count(overlay::text_width(cols, 1)) + 2;
+        assert_eq!(n.height, fitted(n).max(3), "small, not its most rows");
+        assert!(n.height <= 4, "{} rows", n.height);
 
         app.on_input(b"how does fg work?", &mut out, &mut child)
             .unwrap();
         app.on_input(b"\r", &mut out, &mut child).unwrap();
+        let n = &app.open.as_ref().unwrap().nested[0];
+        assert_eq!(n.height, fitted(n), "its question and \"thinking…\" only");
         let wait_done = |app: &mut App, out: &mut Vec<u8>| loop {
             if let Msg::Peek(id, p) = rx.recv_timeout(Duration::from_secs(5)).expect("progress") {
                 let done = matches!(p, Progress::Done);
@@ -5547,6 +5554,7 @@ mod tests {
         };
         wait_done(&mut app, &mut out);
         let n = &app.open.as_ref().unwrap().nested[0];
+        assert_eq!(n.height, fitted(n), "as tall as its answer");
         assert_eq!(n.peek.question.as_deref(), Some("how does fg work?"));
         assert!(
             n.peek

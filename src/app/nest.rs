@@ -101,7 +101,11 @@ impl App {
     /// rows around it: only the rows that differ from what the terminal shows,
     /// written in place, so nothing on screen blinks.
     pub(super) fn box_bytes(&mut self) -> String {
-        self.fit_top();
+        if self.open.as_ref().is_some_and(|o| o.nested.is_empty()) {
+            self.fit_top();
+        } else {
+            self.fit();
+        }
         let Some(open) = &self.open else {
             return String::new();
         };
@@ -447,7 +451,9 @@ impl App {
         if question.is_empty() {
             return Ok(());
         }
-        let (range, height) = (n.range.clone(), n.height);
+        let range = n.range.clone();
+        // The answer may fill the most rows this box can take (it starts small).
+        let height = self.caps().get(level + 1).copied().unwrap_or(n.height);
         let screen = open.selection.as_ref().map(|(_, s)| s.clone());
         crate::event(
             "nested_ask",
@@ -600,9 +606,10 @@ impl App {
         caps
     }
 
-    /// Size every box to its text and the box inside it, within the caps. A
-    /// box whose answer is still coming keeps its cap, so it does not jump on
-    /// every line. With no boxes inside, the outer box goes back to its height.
+    /// Size every box to its text and the box inside it, within the caps: a
+    /// box starts as small as its text (a question waiting to be typed, or
+    /// "thinking…") and grows as its answer comes in, like the outer box. With
+    /// no boxes inside, the outer box goes back to its height.
     pub(super) fn fit(&mut self) {
         let caps = self.caps();
         let Some(open) = &mut self.open else {
@@ -619,17 +626,16 @@ impl App {
         let mut inner = 0;
         for k in (1..=open.nested.len()).rev() {
             let n = &mut open.nested[k - 1];
-            let want = if matches!(n.peek.status, Status::Thinking | Status::Streaming) {
-                caps[k]
-            } else {
-                n.peek.line_count(overlay::text_width(cols, k)) + 2 + inner
-            };
+            let want = n.peek.line_count(overlay::text_width(cols, k)) + 2 + inner;
             n.height = want.min(caps[k]).max(MIN_ROWS);
             inner = n.height;
         }
         let own = open.peek.line_count(overlay::text_width(cols, 0));
         let h0 = (own + 2 + inner).min(caps[0]).max(MIN_ROWS);
-        open.lay = overlay::resize(&open.lay, h0);
+        // Only the height changes, wherever the chat scrolled the box.
+        if h0 != open.lay.box_height {
+            open.lay = overlay::grow(&open.lay, h0);
+        }
     }
 
     /// With no boxes inside, the outer box is as tall as its text, from 3
