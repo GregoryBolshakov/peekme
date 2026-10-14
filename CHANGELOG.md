@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.6-beta.12 (2026-10-13)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.12`.
+
+- Fixed: with a peek box open, the last line of the chat above Codex's input sometimes showed
+  and sometimes didn't as you scrolled. Codex 0.162 shows the prompt you are reading the answer
+  to on the chat's top row, and that row comes and goes at every prompt. When it came, one turn
+  of the wheel moved no chat row. peekme took that for the end of the chat and moved the box a
+  row on its own. Now peekme knows that row, and the box moves exactly as the chat does.
+- Fixed: the prompt from that top row could show up as a line of the chat next to the box.
+- Fixed: PgUp and PgDn with a box open did nothing while Codex showed that row.
+
 ## 0.4.6-beta.11 (2026-10-13)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.11`.
