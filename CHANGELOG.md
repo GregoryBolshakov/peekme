@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.6-beta.14 (2026-10-13)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.14`.
+
+- A box opened inside another box (Alt+Q or Alt+P on words in a box) now starts as small as its
+  text and grows as the answer comes in, like the outer box. Before, it opened at the most rows
+  it could take, so a question box was much taller than its two lines.
+
 ## 0.4.6-beta.13 (2026-10-13)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.13`.
