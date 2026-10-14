@@ -22,6 +22,13 @@ default. A selection is then your terminal's own, and over SSH peekme cannot rea
 `set -g mouse on` to `~/.tmux.conf` and restart Codex. peekme tells you this the first time you
 press Alt+P there.
 
+## Scrolling with a box open
+
+Scroll as usual. The chat and the box move together, as many rows per turn of the wheel as
+Codex scrolls on its own, including its `tui.mouse_scroll_speed` setting. PgUp and PgDn move
+a page. At the end of the chat the rows the box pushed down come into view. The prompt Codex
+keeps at the top of the screen and its input area stay where they are.
+
 ## Which model explains
 
 No API key is needed. peekme asks Codex's own `app-server`, with your Codex login, on a temporary

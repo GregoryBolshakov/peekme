@@ -14,13 +14,19 @@ lead = "Select text with the mouse as you normally do, then press Alt+P. On a Ma
 | Alt+P again | box is open, same selection | explain again using the whole conversation |
 | Alt+P or Alt+Q on text in the box | box is open | open a new box inside it, under that line |
 | click on underlined text | any time | show the saved answer, with no new request |
-| PgUp / PgDn, mouse wheel | box is open | scroll a long answer |
+| mouse wheel | box is open | scroll the answer under the pointer, or the chat with the box in it |
+| PgUp / PgDn | box is open | scroll a long answer, then the chat by a page |
+| Ctrl+Home / Ctrl+End | box is open | close the box and jump to the start or the end of the chat |
 | Esc | box is open | close the innermost box |
 | typing | box is open | goes to the agent's input line, the box stays open |
 | Enter | box is open | sends your message and closes the box |
 
 A second click on underlined text closes the saved answer. Boxes inside boxes go several levels
-deep while the window is wide enough. The wheel scrolls the box under the pointer.
+deep while the window is wide enough.
+
+In Codex, scrolling with a box open works as if the box were printed in the chat. The box keeps
+its size and grows only while its answer comes in. The chat and the box move together, as many
+rows per turn of the wheel as Codex scrolls without peekme, from the start of the chat to its end.
 
 When the agent draws full screen (Claude Code with `"tui": "fullscreen"`, Codex since 0.157,
 Copilot CLI, Kiro CLI after `/fullscreen`), it makes the selection itself, and peekme uses that
