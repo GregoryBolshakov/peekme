@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.6-beta.13 (2026-10-13)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.13`.
+
+- Fixed: with a peek box open, the last line of the chat, just above "Back to bottom", showed
+  whatever Codex had there without the box: a line from elsewhere in the chat, a blank row, or
+  the selected line in place of the box's border. In a terminal that tells programs its colours
+  (GNOME Terminal, iTerm2, Terminal.app), Codex tints its input area and pads it with a row above
+  the prompt. peekme took that row for Codex's status line and thought the chat ended a row
+  higher. Now it counts from the prompt line.
+
 ## 0.4.6-beta.12 (2026-10-13)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.12`.
