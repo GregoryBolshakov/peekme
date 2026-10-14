@@ -54,5 +54,17 @@ fn main() {
             }
         }
     }
+    if std::env::var_os("VTDUMP_STYLE").is_some() {
+        // Print each row's colours and flags at its first, third and last cells.
+        for (r, row) in snap.rows.iter().enumerate() {
+            let at = |c: usize| row.get(c).map(|x| (x.c, x.fg, x.bg, x.flags));
+            println!(
+                "-- style row {r}: {:?} {:?} {:?}",
+                at(0),
+                at(2),
+                at(row.len() - 1)
+            );
+        }
+    }
     println!("-- cursor {:?}", snap.cursor);
 }

@@ -47,6 +47,15 @@ pub fn chat_end(snap: &Snapshot, composer: usize) -> usize {
     }
 }
 
+/// Codex (since 0.162) pins the prompt of the answer being read on the top
+/// row of its chat ("› the prompt", cut to one row) whenever that row would
+/// show an answer, and the chat rows start under it. A prompt's own first row
+/// looks the same, so this only says `row` can be the header; how the chat
+/// moved tells which (see `App::codex_header`).
+pub fn may_be_header(snap: &Snapshot, row: usize) -> bool {
+    row < snap.rows.len() && snap.rows_text(row, row + 1).starts_with('›')
+}
+
 /// First row of Codex's input area when it draws full screen: the row whose
 /// text starts with the prompt mark `›`, lowest on screen, extended up over
 /// rows with the same filled background (the input box padding).

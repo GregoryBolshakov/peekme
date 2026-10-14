@@ -15,6 +15,13 @@ whole on the screen and running into its edge (it then pushes the
 selection). T is read from Codex itself before the box opens: scrolled to
 the top, then a page at a time to the end.
 
+A chat with real prompts (a saved session, see chat_session.py) adds Codex's
+prompt header: while the top of the screen is in an answer, its top row shows
+that answer's prompt instead of the chat, and the chat rows start below it.
+Codex's place in the chat still moves by its count, so at a turn boundary
+the rows on screen move one row less or more as the header comes and goes;
+the box moves with them.
+
     python3 tests/e2e/scroll.py [--only NAME] [--repeat N]
 """
 import json
@@ -28,6 +35,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import chat_session  # noqa: E402
 import matrix as m  # noqa: E402
 import real_agents as ra  # noqa: E402
 
@@ -63,6 +71,26 @@ BOX = ("╭", "│", "╰")
 LABEL = re.compile(r"\bb\d+r\d\d\b")
 
 
+class AnyRow(str):
+    """Codex's prompt header on the top row: stands for whatever chat row is
+    under it (it compares equal to any row)."""
+
+    def __eq__(self, other):
+        return True
+
+    def __ne__(self, other):
+        return False
+
+    __hash__ = str.__hash__
+
+
+def headed(chat, prompts):
+    """`chat` with a prompt header on its top row matching any row."""
+    if prompts and chat and chat[0].startswith("› q"):
+        return [AnyRow(chat[0])] + list(chat[1:])
+    return chat
+
+
 def wheel_bytes(up, x, y, side=False):
     b = (66 if up else 67) if side else (64 if up else 65)
     return f"\x1b[<{b};{x};{y}M".encode()
@@ -72,14 +100,20 @@ class Session:
     """One Codex under peekme, with a chat made of labelled rows."""
 
     def __init__(self, out, blocks, rep=False, size=(120, 40), block_rows=40, late=False,
-                 speed=None):
+                 speed=None, prompts=False):
         m.COLS, m.ROWS = size
         self.out = out
         self.used = set()
         self.burst_wait = 4.0 if late else 0.15
         self.lines_file = os.path.join(out, "lines")
         self.set_answer(6)
-        env = m.clean_env(
+        self.prompts = prompts
+        extra, resume, self.codex_home = {}, [], None
+        if prompts:
+            # A saved chat of `blocks` turns, each a prompt and an answer.
+            home, sid = chat_session.codex_home(out, blocks, block_rows, long_prompt=(2,))
+            extra, resume, self.codex_home = {"CODEX_HOME": home}, ["resume", sid], home
+        env = m.clean_env(**extra,
             TERM="xterm-256color", PEEKME_FAKE_EXPLAINER="1",
             PEEKME_FAKE_LINES="@" + self.lines_file,
             PEEKME_EVENT_LOG=os.path.join(out, "events.jsonl"),
@@ -91,16 +125,18 @@ class Session:
         setting = ["-c", f"tui.mouse_scroll_speed={speed}"] if speed else []
         self.model = Wheel(speed or 1.0)
         self.t = m.Term([m.PEEKME] + relay + [ra.real_binary("codex"), "-c",
-                         "check_for_update_on_startup=false"] + setting, env,
+                         "check_for_update_on_startup=false"] + setting + resume, env,
                         os.path.join(out, "terminal.bin"))
         self.ready()
-        for b in range(blocks):
+        for b in range(0 if prompts else blocks):
             fill = "same row of a repeated output" if rep and b == 1 else None
             self.run_block(b, fill, block_rows)
         self.R = self.chat_rows()
         self.T = self.read_chat()
         if len(self.T) < blocks * block_rows:
             raise RuntimeError(f"read only {len(self.T)} rows of the chat")
+        self.find_prompts()
+        self.pos = self.end_pos
 
     def set_answer(self, lines, delay=0):
         with open(self.lines_file, "w") as f:
@@ -113,6 +149,9 @@ class Session:
         end = time.time() + 60
         while time.time() < end:
             txt = "\n".join(self.screen())
+            if self.prompts and LABEL.search(txt):
+                time.sleep(3)
+                return
             for prompt, keys in ra.AGENTS["codex"][4]:
                 if prompt in txt:
                     self.t.send(keys)
@@ -152,6 +191,38 @@ class Session:
         with self.t.lock:
             return len(self.t.data)
 
+    def find_prompts(self):
+        """Codex's prompts in T, for where it shows its prompt header: a
+        prompt's rows are the two blank rows before it, its own rows and a
+        blank row after (Codex 0.162.1, seen on its screen)."""
+        self.cells = set()
+        first = None
+        if self.prompts:
+            for p, row in enumerate(self.T):
+                if row.startswith("› q"):
+                    e = p + 1
+                    while e < len(self.T) and self.T[e].strip():
+                        e += 1
+                    self.cells |= set(range(p - 2, e + 1))
+                    first = p - 2 if first is None else first
+        self.first_prompt = first
+        # Where Codex rests at the end of its chat: the last rows under the
+        # header, or a full screen of chat when a prompt is at the top.
+        n = len(self.T)
+        self.end_pos = n - (self.R - 1) if self.header_at(n - (self.R - 1)) else n - self.R
+
+    def header_at(self, s):
+        """Codex shows its prompt header with chat row `s` at the top of the chat."""
+        return (self.first_prompt is not None and s > self.first_prompt
+                and s not in self.cells)
+
+    def moved(self, rows):
+        """Codex's place after turns of `rows`: (place, the rows it took)."""
+        pos = max(0, min(self.end_pos, self.pos + rows))
+        took = pos - self.pos
+        self.pos = pos
+        return took
+
     def wheel(self, up, n=1, gap=0.0, batch=1, side=None, at=None):
         """Turn the wheel; returns the rows each turn moves Codex's chat."""
         # Codex scrolls for the wheel over its chat only.
@@ -168,6 +239,9 @@ class Session:
                 b += b"".join(wheel_bytes(s == "<", x, y, side=True) for s in side)
             self.t.send(b)
             rows += [self.model.turn(-1 if up else 1) for _ in range(batch)]
+            if at in (None, "auto"):
+                for r in rows[-batch:]:
+                    self.moved(r)
             if gap:
                 time.sleep(gap)
         return rows
@@ -190,20 +264,27 @@ class Session:
     def to_end(self):
         self.t.send(b"\x1b[1;5F")  # Ctrl+End
         self.settle()
+        self.pos = getattr(self, "end_pos", 0)
 
     def read_chat(self):
         self.t.send(b"\x1b[1;5H")  # Ctrl+Home
         self.settle()
         cur = self.chat()
         T = list(cur)
+        # Under a prompt header only the rows below the top one are chat.
+        h = 1 if self.prompts else 0
         while True:
-            self.t.send(b"\x1b[6~")  # PageDown
+            # PageDown; with a prompt header a page can leave no chat row in
+            # common, so eight wheel turns there.
+            self.t.send(wheel_bytes(False, m.COLS // 2, self.R // 2) * 8 if h else b"\x1b[6~")
             time.sleep(0.3)
+            m.wait(lambda: self.chat()[h:] != cur[h:], 1.5, 0.05)
+            time.sleep(0.1)
             nxt = self.chat()
-            if nxt == cur:
+            if nxt[h:] == cur[h:]:
                 break
-            s = next((s for s in [self.R - 1] + list(range(1, self.R))
-                      if nxt[:self.R - s] == cur[s:]), None)
+            s = next((s for s in [self.R - 1 - h] + list(range(1, self.R - h))
+                      if nxt[h:self.R - s] == cur[s + h:]), None)
             if s is None:
                 raise RuntimeError("reading the chat: screens do not overlap")
             T += nxt[self.R - s:]
@@ -214,6 +295,8 @@ class Session:
 
     def close(self):
         self.t.close()
+        if self.codex_home:
+            chat_session.forget_sign_in(self.codex_home)
 
 
 class Case:
@@ -269,9 +352,10 @@ def box_run(chat):
     return idx[0], idx[-1] + 1, idx == list(range(idx[0], idx[-1] + 1))
 
 
-def offsets(chat, T, I, H, ref):
+def offsets(chat, T, I, H, ref, prompts=False):
     """Where `chat` sits in V (a set: repeated rows can fit more than one
     place), or an error string. `ref` is the whole box once its text is done."""
+    chat = headed(chat, prompts)
     R = len(chat)
     run = box_run(chat)
     if run:
@@ -375,7 +459,7 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
         chat = rows[:R]
         settled = done_at is not None and o >= done_at
         got = offsets(chat, T, I, H if settled else None,
-                      ref if settled and not capped else None)
+                      ref if settled and not capped else None, s.prompts)
         if isinstance(got, str):
             case.err(f"frame at byte {o}: {got}")
         elif settled:
@@ -391,22 +475,34 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
     # for the next turn that way (peekme waits until the end shows); never
     # more than the turns asked for.
     maxoff = len(T) + H - R
+    # Codex's place in its chat before each mark's turns (chats with prompts).
+    pos, pos_at = case.s0, []
+    for _, _, move in case.marks:
+        pos_at.append(pos)
+        for d in move or []:
+            pos = max(0, min(s.end_pos, pos + d))
     off = last = None
-    for name, o, move in case.marks:
+    for i, (name, o, move) in enumerate(case.marks):
         if o < done_at:
             continue
         rows = at.get(o) or next((r for x, r in reversed(fr) if x <= o), None)
         if rows is None:
             continue
-        got = offsets(rows[:R], T, I, H, ref)
+        got = offsets(rows[:R], T, I, H, ref, s.prompts)
         if isinstance(got, str) or not got:
             if os.environ.get("SCROLL_DEBUG"):
                 print(f"    {name:28} {got!r}")
             continue
         if off is not None and move is not None:
-            want = off
+            want, p = off, pos_at[i]
             for d in move:
-                want = max(0, min(maxoff, want + d))
+                # The rows Codex moves, one less or more where its prompt
+                # header comes or goes; the rest of the turn past either end
+                # of its chat is peekme's to show.
+                q = max(0, min(s.end_pos, p + d))
+                shift = d - (s.header_at(q) - s.header_at(p))
+                want = max(0, min(maxoff, want + shift))
+                p = q
             # The way of the turns (a slow wheel's turns may move no row).
             last_way = next((d for d in reversed(move) if d), 0)
             sign = (last_way > 0) - (last_way < 0)
@@ -500,6 +596,7 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
         s.wheel(True, pre_up, 0.01)
         s.settle()
     r1, r2, sel = select(s, sel_row, two_rows)
+    case.s0 = s.pos
     open_at = s.mark()
     case.label = LABEL.search(sel[0])[0]
     s.t.send(b"\x1bp")
@@ -551,6 +648,8 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
             for i in range(n):
                 s.t.send(b"\x1b[5~" if up else b"\x1b[6~")
                 rows = [s.model.turn(-1 if up else 1) for _ in range(turns)]
+                for r in rows:
+                    s.moved(r)
                 time.sleep(max(0.4, s.burst_wait))
                 case.marks.append((f"page {'up' if up else 'down'} {i + 1}/{n}", s.mark(), rows))
         elif kind == "seq":
@@ -603,14 +702,18 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
         if not any(b[k:] == a[:R - k] for k in range(0, 7)):
             case.err("after closing Codex's next scroll does not match the screen")
     else:
+        chat = headed(chat, s.prompts)
         ks = [k for k in range(len(s.T) - s.R + 1) if s.T[k:k + s.R] == chat]
         if not ks:
             case.err("after closing the screen is not Codex's chat")
         else:
             back = -s.wheel(True)[0]
             time.sleep(0.3)
-            after = s.chat()
-            if not any(s.T[max(0, k - back):max(0, k - back) + s.R] == after for k in ks):
+            after = headed(s.chat(), s.prompts)
+            # A prompt header coming or going moves the rows one less or more.
+            near = (-1, 0, 1) if s.prompts else (0,)
+            if not any(s.T[max(0, k - back + e):max(0, k - back + e) + s.R] == after
+                       for k in ks for e in near):
                 case.err("after closing Codex's next scroll does not match the screen")
     return case
 
@@ -731,6 +834,24 @@ def cases_speed(s):
                  ("page", False, 4), ("slow", True, 3)])
 
 
+def cases_prompts(s):
+    # Four turns of 40 rows: the prompts sit about 45 rows apart, the third
+    # one is long (four rows, cut short in the header).
+    yield "box low, slow across a prompt both ways", lambda: run_case(
+        s, "prompt-low", s.R - 6 if s else 0, actions=[("slow", True, 20), ("slow", False, 26)])
+    yield "box high, slow across a prompt both ways", lambda: run_case(
+        s, "prompt-high", 6, pre_up=8, actions=[("slow", True, 12), ("slow", False, 16),
+                                                ("slow", True, 4)])
+    yield "bursts over several prompts", lambda: run_case(
+        s, "prompt-bursts", 12, actions=[("burst", True, 70), ("burst", False, 80),
+                                         ("burst", True, 6), ("burst", False, 10)])
+    yield "pages over prompts", lambda: run_case(
+        s, "prompt-pages", 10, actions=[("page", True, 3), ("page", False, 4)])
+    yield "long prompt at the top", lambda: run_case(
+        s, "prompt-long", 14, pre_up=54, actions=[("slow", True, 9), ("slow", False, 12),
+                                                  ("burst", True, 5), ("burst", False, 5)])
+
+
 def cases_rep(s):
     yield "repeated rows", lambda: run_case(
         s, "repeated", 6, pre_up=12, actions=[("slow", True, 6), ("slow", False, 10),
@@ -745,7 +866,9 @@ SESSIONS = [("long", dict(blocks=4), cases_long), ("more", dict(blocks=3), cases
             ("late", dict(blocks=3, late=True), cases_late),
             ("speed 0.5", dict(blocks=3, speed=0.5), cases_speed),
             ("speed 2.5", dict(blocks=3, speed=2.5), cases_speed),
-            ("speed 3", dict(blocks=3, speed=3), cases_speed)]
+            ("speed 3", dict(blocks=3, speed=3), cases_speed),
+            ("prompts", dict(blocks=4, prompts=True), cases_prompts),
+            ("prompts speed 3", dict(blocks=4, prompts=True, speed=3), cases_prompts)]
 
 
 def main():
@@ -763,7 +886,8 @@ def main():
         out = os.path.join(root, sname)
         os.makedirs(out, exist_ok=True)
         s = Session(out, kw["blocks"], kw.get("rep", False), kw.get("size", (120, 40)),
-                    kw.get("block_rows", 40), kw.get("late", False), kw.get("speed"))
+                    kw.get("block_rows", 40), kw.get("late", False), kw.get("speed"),
+                    kw.get("prompts", False))
         try:
             for _ in range(repeat):
                 for name, fn in cases(s):

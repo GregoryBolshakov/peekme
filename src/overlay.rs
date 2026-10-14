@@ -523,16 +523,24 @@ pub fn compose(
     lay: &Layout,
     levels: &[Level],
     extra: &dyn Fn(isize) -> Option<String>,
+    header: bool,
 ) -> (Vec<String>, Vec<Vec<Part>>) {
     let rows = box_rows(levels, 0, snap.cols);
     let (top, bottom) = lay.region;
+    // The region's top row of the snapshot is the child's header, not chat
+    // (Codex's prompt header): it stays on its row over the chat, unless the
+    // box is there, and the chat row behind it comes from `extra`.
+    let first = top + usize::from(header);
     let shown = (top..bottom)
         .map(|r| match (lay.box_row(r), lay.src_row(r)) {
             (Some(i), _) => rows
                 .get(i)
                 .map_or_else(|| "\x1b[0m\x1b[2K".to_string(), |r| r.text.clone()),
+            (None, _) if header && r == top && top < snap.rows.len() => {
+                render::row_text(&snap.rows[top])
+            }
             (None, Some(s))
-                if (top as isize..bottom as isize).contains(&s)
+                if (first as isize..bottom as isize).contains(&s)
                     && (s as usize) < snap.rows.len() =>
             {
                 render::row_text(&snap.rows[s as usize])

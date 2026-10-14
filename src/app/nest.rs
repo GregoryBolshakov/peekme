@@ -144,7 +144,7 @@ impl App {
             });
         }
         let extra = |s: isize| open.mem.get(&(s + open.scrolled)).cloned();
-        let (rows, parts) = overlay::compose(&open.snap, &open.lay, &levels, &extra);
+        let (rows, parts) = overlay::compose(&open.snap, &open.lay, &levels, &extra, open.header);
         let mut frame = String::from(SYNC_BEGIN);
         frame.push_str("\x1b[?25l");
         let top = open.lay.region.0;

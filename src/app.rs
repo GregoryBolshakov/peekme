@@ -133,6 +133,12 @@ struct Open {
     /// The chat is at its end (1) or its start (-1): turns that way get the
     /// box's rows at once, until the chat moves again.
     end: Option<isize>,
+    /// The box is over full-screen Codex's chat from its top row, where
+    /// Codex can show its prompt header; whether it shows it now. The chat
+    /// rows then start under it: where the header comes or goes, the rows
+    /// move one less or more than Codex's place in the chat.
+    heads: bool,
+    header: bool,
 }
 
 /// What an update from the child does, while wheel turns wait for answers.
@@ -1022,28 +1028,44 @@ impl App {
             .filter(|&rows| rows > 0)
             .map(|rows| way * rows)
             .collect();
-        let moved = overlay::scroll_delta_near(&open.snap, &now, lo..both, &expect).or_else(|| {
-            let f = found.as_ref()?;
-            let home = if open.lay.below {
-                f[f.len() - 1].0 as isize + 1
-            } else {
-                f[0].0 as isize
+        // Codex's top row may be its prompt header: only the rows under it
+        // are surely chat.
+        let first = lo + usize::from(open.heads);
+        let moved =
+            overlay::scroll_delta_near(&open.snap, &now, first..both, &expect).or_else(|| {
+                let f = found.as_ref()?;
+                let home = if open.lay.below {
+                    f[f.len() - 1].0 as isize + 1
+                } else {
+                    f[0].0 as isize
+                };
+                Some(open.lay.home - home)
+            });
+        let k = moved.unwrap_or(0);
+        // Codex's place in the chat moved one row more than its rows where
+        // its prompt header came (it covers a chat row), one less where it went.
+        let header = open.heads
+            && match moved {
+                Some(k) => codex_header(open, &now, k, &expect),
+                None => codex::screen::may_be_header(&now, lo),
             };
-            Some(open.lay.home - home)
-        });
-        if let Some(k) = moved.filter(|&k| k != 0) {
+        let place = k + isize::from(header) - isize::from(open.header);
+        open.header = header;
+        if k != 0 {
             open.scrolled += k;
             open.lay = overlay::scroll_by(&open.lay, k);
+        }
+        if place != 0 || k != 0 {
             open.end = None;
-            if k.signum() == open.run_way {
-                open.moved += k.abs();
-            }
+        }
+        if place.signum() == open.run_way {
+            open.moved += place.abs();
         }
         open.settle_run();
         if open.run.len() == 1 && open.done() && open.revealed == 0 && open.moved > 0 {
             self.wheel.learn(open.run_way * open.moved);
         }
-        for r in lo..hi {
+        for r in lo + usize::from(open.header)..hi {
             // A row of the chat keeps its text while it scrolls: a blank one
             // over a remembered one is something that stays put, not chat.
             let key = r as isize + open.scrolled;
@@ -1053,7 +1075,7 @@ impl App {
         }
         crate::event(
             "follow",
-            serde_json::json!({"moved": moved, "box_top": open.lay.box_top}),
+            serde_json::json!({"moved": moved, "header": open.header, "box_top": open.lay.box_top}),
         );
         open.history = history;
         open.snap = now;
@@ -1115,7 +1137,13 @@ impl App {
         let (lo, hi) = open.lay.region;
         let page = (hi - lo).saturating_sub(1) as f64;
         let turns = ((page / self.wheel.speed()).round() as isize).max(1);
-        let report = format!("\x1b[<{};1;{}M", if down { 65 } else { 64 }, lo + 1);
+        // Over the middle of the chat: Codex scrolls for the wheel over its
+        // chat rows only, and its top row may be its prompt header.
+        let report = format!(
+            "\x1b[<{};1;{}M",
+            if down { 65 } else { 64 },
+            (lo + hi) / 2 + 1
+        );
         let bytes = report.repeat(turns as usize).into_bytes();
         Some((bytes, if down { turns } else { -turns }))
     }
@@ -2187,6 +2215,7 @@ impl App {
         let mut mark = None;
         let mut saved = None;
         let mut replace = None;
+        let sel_first = located.as_ref().map(|l| l.first_row);
         let (mut peek, lay) = match (&selection, located) {
             (Some(sel), Some(loc)) => {
                 // Keep the child's live area (input line, status) out of the box's
@@ -2324,6 +2353,16 @@ impl App {
         // The box starts as small as its text and grows with it (see `fit_top`).
         let lay = overlay::resize(&lay, peek.fitted_height(snap.cols).max(3));
         let strip_shown = strip.map_or_else(Vec::new, |top| snap.rows[top..].to_vec());
+        // Full-screen Codex's top row may be its prompt header, not chat (a
+        // guess until the chat moves; never with the selection on it).
+        let codex = !matches!(
+            self.agent,
+            Some(Agent::Claude | Agent::Copilot | Agent::Kiro)
+        );
+        let lo = lay.region.0;
+        let heads = codex && self.shadow.alt_screen() && strip.is_some() && lo == 0;
+        let header =
+            heads && codex::screen::may_be_header(&snap, lo) && sel_first.is_some_and(|r| r > lo);
         // Selecting text in the box needs the mouse reports.
         let own_mouse = !self.shadow.mouse_mode();
         self.accessibility_offer_open = forced == Some(ACCESSIBILITY_OFFER);
@@ -2345,7 +2384,7 @@ impl App {
             own_mouse,
             base: snap.clone(),
             shown: vec![None; lay.region.1 - lay.region.0],
-            mem: (lay.region.0..lay.region.1.min(snap.rows.len()))
+            mem: (lo + usize::from(header)..lay.region.1.min(snap.rows.len()))
                 .map(|r| (r as isize, render::row_text(&snap.rows[r])))
                 .collect(),
             scrolled: 0,
@@ -2362,6 +2401,8 @@ impl App {
             answering: false,
             partial: Vec::new(),
             end: None,
+            heads,
+            header,
             snap,
             lay,
             peek,
@@ -2917,6 +2958,41 @@ fn withheld_mouse_message(agent: Option<Agent>) -> String {
 }
 
 /// Typed text with Greek letters other than `π`.
+/// Whether full-screen Codex's top chat row is its prompt header on `now`,
+/// the chat rows having moved `k` (down is plus) since the box's screen.
+/// The header and a prompt's own first row look the same; the chat row that
+/// would be on top tells them apart: the one under it before (scrolling
+/// down), or one seen before (up). Rows never seen, scrolling up: the header
+/// stays the header, and a new one comes when the chat moved a row more than
+/// Codex's turns say (`expect`, as in `follow_feed`) but not when it moved
+/// just as far (the prompt's own row).
+fn codex_header(open: &Open, now: &Snapshot, k: isize, expect: &[isize]) -> bool {
+    let lo = open.lay.region.0;
+    if !codex::screen::may_be_header(now, lo) {
+        return false;
+    }
+    let old = &open.snap;
+    let text = |s: &Snapshot, r: usize| render::row_text(&s.rows[r]);
+    let top = text(now, lo);
+    if k == 0 {
+        return (top == text(old, lo)) == open.header;
+    }
+    let hi = open.lay.region.1.min(old.rows.len());
+    let below = usize::try_from(k)
+        .ok()
+        .map(|k| lo + k)
+        .filter(|&r| r < hi)
+        .map(|r| text(old, r));
+    match below.or_else(|| open.mem.get(&(lo as isize + open.scrolled + k)).cloned()) {
+        Some(chat) => chat != top,
+        None => {
+            open.header
+                || top == text(old, lo)
+                || !(expect.contains(&k) && !expect.contains(&(k + 1)))
+        }
+    }
+}
+
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
@@ -4072,6 +4148,44 @@ mod tests {
         }
     }
 
+    /// Codex 0.162 pins the prompt of the answer on the chat's top row: a
+    /// turn that brings the header moves no chat row (the header covers the
+    /// row that would have come), one that takes it away moves two. Neither
+    /// is the end of the chat: the box moves just as the rows do, and the
+    /// header is never taken for a chat row.
+    #[test]
+    fn codex_prompt_header_coming_and_going_is_not_the_end() {
+        let (mut app, home, top, end) = box_over_codex_chat();
+        app.wheel = codex::scroll::Wheel::new(Some(1.0));
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let nothing = b"\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[?2026l";
+        let header = "\x1b[?2026h\x1b[1;1H\x1b[0m\x1b[2K› q1 the prompt\x1b[?2026l".to_string();
+        let under = format!("\x1b[?2026h\x1b[2;{end}r\x1b[1S\x1b[r\x1b[?2026l");
+        let gone = format!(
+            "\x1b[?2026h\x1b[1;{end}r\x1b[2S\x1b[r\x1b[1;1H\x1b[0m\x1b[2K  chat line 3\x1b[?2026l"
+        );
+        let mut turn = |answer: &str| {
+            app.on_input(b"\x1b[<65;60;5M", &mut out, &mut child)
+                .unwrap();
+            app.on_output(nothing, &mut out, &mut child).unwrap();
+            app.on_output(answer.as_bytes(), &mut out, &mut child)
+                .unwrap();
+            std::thread::sleep(WHEEL_QUIET + Duration::from_millis(30));
+            app.tick(&mut out).unwrap();
+            let open = app.open.as_ref().unwrap();
+            (open.lay.home, open.lay.box_top, open.header)
+        };
+        assert_eq!(turn(&header), (home, top, true), "the header came");
+        assert_eq!(turn(&under), (home - 1, top - 1, true), "a row under it");
+        assert_eq!(turn(&gone), (home - 3, top - 3, false), "the header went");
+        let open = app.open.as_ref().unwrap();
+        assert!(
+            !open.mem.values().any(|r| r.contains("q1 the prompt")),
+            "the header is not a chat row"
+        );
+        assert_eq!(open.revealed, 0, "no box rows for an end");
+    }
+
     /// Codex 0.162 moves its chat `tui.mouse_scroll_speed` rows a turn,
     /// counting fractions: at 0.5 every other turn moves nothing, and Codex
     /// answers that turn as it does at the end of the chat. peekme keeps the
@@ -4380,13 +4494,17 @@ mod tests {
         app.shadow.flush_sync();
         app.open_peek(&mut out).unwrap();
         let open = app.open.as_ref().unwrap();
-        let rows = open.lay.region.1 - open.lay.region.0;
+        let (lo, hi) = open.lay.region;
         child.clear();
         app.on_input(b"\x1b[6~", &mut out, &mut child).unwrap();
-        let turns = (rows - 1 + 1) / 3;
+        let turns = (hi - lo - 1 + 1) / 3;
+        // Over the middle of the chat, not its top row (Codex's prompt
+        // header, which does not scroll for the wheel).
         assert_eq!(
             child,
-            b"\x1b[<65;1;1M".repeat(turns),
+            format!("\x1b[<65;1;{}M", (lo + hi) / 2 + 1)
+                .repeat(turns)
+                .into_bytes(),
             "a page of wheel turns"
         );
         let open = app.open.as_ref().expect("still open");
