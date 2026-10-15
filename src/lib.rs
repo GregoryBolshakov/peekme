@@ -28,12 +28,18 @@ pub mod select;
 pub mod shadow;
 pub mod tmux;
 
-pub fn log_path() -> std::path::PathBuf {
+/// peekme's own folder for what it keeps between runs: its log and the
+/// saved answers.
+pub fn state_dir() -> std::path::PathBuf {
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".local/state")))
         .unwrap_or_else(std::env::temp_dir);
-    base.join("peekme").join("peekme.log")
+    base.join("peekme")
+}
+
+pub fn log_path() -> std::path::PathBuf {
+    state_dir().join("peekme.log")
 }
 
 /// Append a line to the log file. Never fails loudly: this runs inside a panic hook.

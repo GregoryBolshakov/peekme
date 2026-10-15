@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Fixed: saved answers were lost when you quit the agent. Open the chat again (`claude
+  --resume`, `codex resume`, `copilot --resume`, `kiro-cli chat --resume`) and the dotted
+  underlines are back, and a click on one opens its answer and the boxes inside it with no new
+  request. peekme keeps them in `~/.local/state/peekme/answers/`, for each agent and directory.
+  An underline comes back only where the words stand amid the same text as before, so the same
+  words in another chat don't open an old answer.
+
 - Fixed: on Kiro CLI's inline screen, and Claude Code's classic one, a peek inside a box failed
   after you had turned the mouse wheel. The wheel hands the mouse back to the terminal so it can
   scroll its history, so selecting words in the box made a terminal selection, and Alt+P showed

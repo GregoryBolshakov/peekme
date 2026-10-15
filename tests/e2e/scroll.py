@@ -219,7 +219,8 @@ class Session:
     """One Codex (or Claude Code) under peekme, with a chat made of labelled rows."""
 
     def __init__(self, out, blocks, rep=False, size=(120, 40), block_rows=40, late=False,
-                 speed=None, prompts=False, colors=True, agent="codex", sidebar=False):
+                 speed=None, prompts=False, colors=True, agent="codex", sidebar=False,
+                 answers=None):
         m.COLS, m.ROWS = size
         self.out = out
         self.used = set()
@@ -276,6 +277,9 @@ class Session:
         # This test may run inside Claude Code, whose child marker would turn
         # off saving and add a footer row.
         env.pop("CLAUDE_CODE_CHILD_SESSION", None)
+        # With the canned answers peekme keeps none between runs, unless told where.
+        if answers:
+            env["PEEKME_ANSWERS_DIR"] = answers
         # `late`: Codex behind a relay that delays its scroll after its first,
         # empty answer to each wheel turn (a slower machine).
         relay = [sys.executable, os.path.join(HERE, "late_pty.py")] if late else []
@@ -296,6 +300,7 @@ class Session:
             self.model = Wheel(speed or 1.0)
             argv = [m.PEEKME] + relay + [ra.real_binary("codex"), "-c",
                                           "check_for_update_on_startup=false"] + setting + resume
+        self.argv, self.env, self.colors = argv, env, colors
         self.t = m.Term(argv, env, os.path.join(out, "terminal.bin"), colors=colors)
         self.ready()
         if sidebar:
@@ -581,6 +586,14 @@ class Session:
             T += nxt[self.R - s:]
             cur = nxt
         return T
+
+    def reopen(self, log):
+        """Quit (peekme and the agent killed, as with a closed window) and
+        open the same chat again under a new peekme, writing to `log`."""
+        self.t.close()
+        time.sleep(1.5)
+        self.t = m.Term(self.argv, self.env, log, colors=self.colors)
+        self.ready()
 
     def close(self):
         self.t.close()

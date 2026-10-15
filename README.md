@@ -26,7 +26,8 @@ Website and docs: **[peekme.dev](https://peekme.dev)**
 - **Boxes inside boxes.** In an open box, select words and press Alt+P or Alt+Q again. A
   new box opens inside, under that line. You can go several levels deep.
 - **Saved answers.** Text you asked about gets a dotted underline. Click it and the answer opens
-  again, with no new request.
+  again, with no new request. Quit the agent and open the chat again later, and the underlines
+  and answers are still there.
 
 ## One peekme for all your agents
 

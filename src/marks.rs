@@ -5,9 +5,14 @@
 //! so after the child's output settles peekme draws it again where needed.
 //!
 //! Saved answers are a tree: a peek opened on words inside an answer is that
-//! answer's child. The marks on screen point to the top answers.
+//! answer's child. The marks on screen point to the top answers. They are
+//! kept on disk too (see `store`), so a chat opened again has them.
 
-use std::collections::BTreeMap;
+mod store;
+
+pub use store::Store;
+
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write;
 use std::ops::Range;
 
@@ -53,6 +58,10 @@ pub struct Answer {
     pub parent: Option<AnswerId>,
     /// Answers to words of this one, oldest first.
     pub children: Vec<Child>,
+    /// Names the answer on disk, where ids of other runs are.
+    key: u64,
+    /// When it was asked, in seconds since 1970.
+    saved: u64,
 }
 
 /// A nested answer and the places in its parent's text it was asked about.
@@ -85,6 +94,9 @@ pub struct Place {
     /// Its rows as they were drawn: the whole row text and the mark's columns
     /// in it. When only some of them are on screen, those still get the line.
     rows: Vec<Row>,
+    /// Read back from disk and not on screen since: where it was is not
+    /// known, so only a copy amid the same text as before is the mark.
+    restored: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,6 +121,13 @@ pub struct Marks {
     list: Vec<Mark>,
     answers: BTreeMap<AnswerId, Answer>,
     next: AnswerId,
+    /// Top answers read back from disk whose marks have not shown yet: the
+    /// words alone do not open them, they may mean something else here.
+    asleep: HashSet<AnswerId>,
+    /// Keys of the top answers this run has or had.
+    known: HashSet<u64>,
+    /// Changed since `take_dirty`.
+    dirty: bool,
 }
 
 impl Place {
@@ -129,6 +148,7 @@ impl Place {
             before: copy.before,
             after: copy.after,
             rows: rows_of(snap, &copy.cells),
+            restored: false,
         };
         Some((place, copy.cells))
     }
@@ -228,6 +248,11 @@ impl Marks {
         self.list.is_empty()
     }
 
+    /// Whether anything to keep changed since the last call.
+    pub fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
+    }
+
     /// Save an answer to `text`, words on the screen when `parent` is none,
     /// else words of that answer. Returns its id.
     pub fn save(
@@ -238,7 +263,12 @@ impl Marks {
         model: &str,
     ) -> AnswerId {
         self.next += 1;
+        self.dirty = true;
         let id = self.next;
+        let key = store::new_key();
+        if parent.is_none() {
+            self.known.insert(key);
+        }
         self.answers.insert(
             id,
             Answer {
@@ -248,6 +278,8 @@ impl Marks {
                 model: model.into(),
                 parent,
                 children: Vec::new(),
+                key,
+                saved: store::now(),
             },
         );
         if let Some(p) = parent.and_then(|p| self.answers.get_mut(&p)) {
@@ -275,6 +307,7 @@ impl Marks {
         let Some(a) = self.answers.remove(&id) else {
             return;
         };
+        self.asleep.remove(&id);
         if let Some(p) = a.parent.and_then(|p| self.answers.get_mut(&p)) {
             p.children.retain(|c| c.id != id);
         }
@@ -290,6 +323,7 @@ impl Marks {
         let Some(a) = self.answers.get_mut(&id) else {
             return;
         };
+        self.dirty = true;
         a.answer = answer.into();
         a.question = None;
         a.model = model.into();
@@ -301,6 +335,7 @@ impl Marks {
     /// The typed question answer `id` answers.
     pub fn set_question(&mut self, id: AnswerId, question: Option<String>) {
         if let Some(a) = self.answers.get_mut(&id) {
+            self.dirty |= a.question != question;
             a.question = question;
         }
     }
@@ -311,6 +346,7 @@ impl Marks {
 
     /// Mark the words of answer `id` at `place` on the screen.
     pub fn add(&mut self, id: AnswerId, place: Place) {
+        self.dirty = true;
         self.list
             .retain(|m| (m.place.alt, m.place.anchor) != (place.alt, place.anchor));
         self.list.push(Mark {
@@ -335,6 +371,7 @@ impl Marks {
             && !c.ranges.contains(&range)
         {
             c.ranges.push(range);
+            self.dirty = true;
         }
     }
 
@@ -392,7 +429,11 @@ impl Marks {
         self.answers
             .iter()
             .rev()
-            .find(|(_, a)| a.parent == parent && flat(&a.text) == key)
+            .find(|(id, a)| {
+                a.parent == parent
+                    && flat(&a.text) == key
+                    && (parent.is_some() || !self.asleep.contains(id))
+            })
             .map(|(&id, _)| id)
     }
 
@@ -417,6 +458,8 @@ impl Marks {
             let Some(cells) = m.place.find(snap, &screen, text, history) else {
                 continue;
             };
+            // Read back from disk and on screen again: as good as new.
+            self.asleep.remove(&m.answer);
             found.push(Visible {
                 index,
                 text: text.clone(),
@@ -448,11 +491,14 @@ impl Place {
         let at = |c: &[(usize, usize)]| c.first().map(|&(r, c)| (history + r, c));
         let copies = screen.copies(snap, text, AROUND);
         let only = copies.len() == 1;
+        let restored = self.restored;
         let best = copies
             .into_iter()
             .map(|c| (self.agree(&c), c))
             .filter(|(agree, c)| {
-                if alt {
+                if restored {
+                    *agree >= REFLOW_AGREE
+                } else if alt {
                     only || *agree >= MIN_AGREE
                 } else {
                     at(&c.cells) == Some(self.anchor) || *agree >= REFLOW_AGREE
@@ -473,9 +519,10 @@ impl Place {
                 self.rows = rows_of(snap, &copy.cells);
                 self.before = copy.before;
                 self.after = copy.after;
+                self.restored = false;
                 Some(copy.cells)
             }
-            None if alt => self.partly(snap),
+            None if alt && !restored => self.partly(snap),
             None => None,
         }
     }

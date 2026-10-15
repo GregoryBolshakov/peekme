@@ -30,7 +30,10 @@ peekme shows the size first and sends it only after one more Alt+P. A typed ques
   app-server.
 - The sessions peekme uses for explanations are not saved or are deleted afterwards, so they
   don't appear in your agent's session list.
-- Saved answers (the dotted underlines) live in memory and are gone when the agent exits.
+- Saved answers (the dotted underlines) are kept in `~/.local/state/peekme/answers/`, one file
+  for each agent and directory that only your user can read. They come back when you open the
+  chat again. peekme keeps the newest 300 answers for each directory, and you can delete the
+  folder to remove them all.
 - peekme writes errors (not text from your screen) to `~/.local/state/peekme/peekme.log`. For
   Kiro it keeps its no-tools agent file in a temporary directory.
 - peekme has no telemetry and makes no network requests of its own. Only the npm package

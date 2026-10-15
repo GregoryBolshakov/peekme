@@ -482,7 +482,19 @@ pub fn run(
         .flatten();
     let claude_wheel = matches!(agent, Some(Agent::Claude))
         .then(|| claude::scroll::Wheel::new(claude::scroll::setting(args)));
-    event_loop(setup, agent, scroll_speed, claude_wheel).map_err(Failure::Runtime)
+    // Saved answers are kept for each agent (or command) and folder.
+    let name = agent.map_or_else(
+        || {
+            std::path::Path::new(program)
+                .file_name()
+                .map_or_else(|| program.to_string(), |n| n.to_string_lossy().into_owned())
+        },
+        |a| a.command().to_string(),
+    );
+    let store = std::env::current_dir()
+        .ok()
+        .and_then(|d| marks::Store::for_session(&name, &d.to_string_lossy()));
+    event_loop(setup, agent, scroll_speed, claude_wheel, store).map_err(Failure::Runtime)
 }
 
 struct Setup {
@@ -659,6 +671,7 @@ fn event_loop(
     agent: Option<Agent>,
     scroll_speed: Option<f64>,
     claude_wheel: Option<claude::scroll::Wheel>,
+    store: Option<marks::Store>,
 ) -> Result<i32> {
     let Setup {
         mut child,
@@ -719,7 +732,10 @@ fn event_loop(
         viewport_top: None,
         degraded: false,
         size: (cols, rows),
-        marks: Marks::default(),
+        marks: store
+            .as_ref()
+            .map_or_else(Marks::default, marks::Store::load),
+        store,
         orphans: Default::default(),
         own_mouse_off: None,
         marks_stale: false,
@@ -754,6 +770,7 @@ fn event_loop(
                     guarded(&mut app, &mut stdout, |app, out| {
                         app.on_idle(out, &mut *writer)
                     })?;
+                    app.keep_marks();
                     continue;
                 }
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -811,6 +828,7 @@ fn event_loop(
             }
             Msg::ChildGone => break,
         }
+        app.keep_marks();
     }
 
     if app.open.is_some() && !app.degraded {
@@ -908,6 +926,8 @@ struct App {
     size: (u16, u16),
     /// Selections that got an answer, drawn with a dotted underline.
     marks: Marks,
+    /// Where the answers are kept between runs (None in tests).
+    store: Option<marks::Store>,
     /// Nested answers whose box closed before they were complete.
     orphans: std::collections::HashMap<u64, nest::Orphan>,
     /// When peekme last turned off the mouse reports it turned on for a box.
@@ -1796,6 +1816,19 @@ impl App {
     }
 
     /// Draw the underline again under marks whose rows the child wrote over.
+    /// Write the saved answers down when they changed: peekme may be
+    /// killed with its window, so not only at the end.
+    fn keep_marks(&mut self) {
+        if !self.marks.take_dirty() {
+            return;
+        }
+        if let Some(store) = &self.store
+            && let Err(e) = store.save(&self.marks)
+        {
+            crate::log(&format!("could not keep the saved answers: {e}"));
+        }
+    }
+
     fn draw_marks(&mut self, out: &mut dyn Write) -> Result<()> {
         let s = self.marks_bytes(out)?;
         if s.is_empty() {
@@ -4577,6 +4610,7 @@ mod tests {
             degraded: false,
             size: (cols, rows),
             marks: Marks::default(),
+            store: None,
             orphans: Default::default(),
             own_mouse_off: None,
             marks_stale: false,

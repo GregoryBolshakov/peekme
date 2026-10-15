@@ -13,6 +13,7 @@ python3 tests/e2e/real_agents.py      # real claude, codex, copilot, kiro-cli, 4
 python3 tests/e2e/upgrade.py          # an older setup gets the new agents, links to an older copy move
 python3 tests/e2e/inline_start.py     # an agent started under shell output, box in the right rows, box inside it
 python3 tests/e2e/copy_mode.py        # Option+P while tmux stays in copy mode after a drag
+python3 tests/e2e/reopen.py           # saved answers are back after quitting and resuming the chat
 ```
 
 Layers: direct, tmux, ssh, ssh+tmux, tmux+ssh+tmux. tmux runs with
