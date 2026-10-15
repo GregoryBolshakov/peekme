@@ -38,8 +38,9 @@ Shift+drag.
 
 ## Known limits
 
-- Only text that is on screen now. Text that scrolled up into the terminal history can't be
-  selected yet.
+- Text you select up in the terminal's history works only while the agent draws inline (Kiro
+  CLI, Claude Code's classic screen), for the last 2000 lines. Its box opens at the top of the
+  screen, without an underline. In full screen, scroll the agent's chat to bring the text back.
 - Outside full screen mode peekme needs the terminal's selection (or tmux's), which it reads on
   Linux with X11 only. On Wayland it works through XWayland, and on macOS it reads the clipboard
   or, in Terminal, asks macOS Accessibility.

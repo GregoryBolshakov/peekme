@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: in Kiro CLI's inline screen, and Claude Code's classic one, text selected up in the
+  terminal's history opened "The selected text isn't on screen". A long answer scrolls off the
+  top, and pressing Alt+P scrolls the terminal back down, so peekme looked for the text on a
+  screen that no longer showed it. Now it also looks in the last 2000 lines it saw, and the box
+  opens at the top of the screen.
+
 ## 0.4.6-beta.17 (2026-10-14)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.17`.

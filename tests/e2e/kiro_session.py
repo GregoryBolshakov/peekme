@@ -14,15 +14,17 @@ import time
 import uuid
 
 
-def kiro_home(root, turns, rows=40, cwd=None, long_prompt=(), repeated=(), wheel_rows=None):
+def kiro_home(root, turns, rows=40, cwd=None, long_prompt=(), repeated=(), wheel_rows=None,
+              fullscreen=True):
     """A KIRO_HOME under `root` holding one saved chat; returns (folder,
-    session id). Settings: start full screen, and `wheel_rows` rows a turn
-    of the wheel when given (Kiro's default is 2)."""
+    session id). Settings: start full screen (inline with `fullscreen`
+    false), and `wheel_rows` rows a turn of the wheel when given (Kiro's
+    default is 2)."""
     home = os.path.join(root, "kiro-home")
     sessions = os.path.join(home, "sessions", "cli")
     os.makedirs(sessions, exist_ok=True)
     os.makedirs(os.path.join(home, "settings"), exist_ok=True)
-    settings = {"chat.startFullscreen": True}
+    settings = {"chat.startFullscreen": True} if fullscreen else {}
     if wheel_rows:
         settings["chat.fullscreenWheelRows"] = wheel_rows
     with open(os.path.join(home, "settings", "cli.json"), "w") as f:

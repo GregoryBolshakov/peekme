@@ -272,8 +272,9 @@ To use peekme with another program, run `peekme -- COMMAND`.
 
 ## Limits
 
-- Only text that is on screen now. Text that scrolled up into the terminal history can't be
-  selected yet.
+- Text you select up in the terminal's history works only while the agent draws inline (Kiro
+  CLI, Claude Code's classic screen), for the last 2000 lines. Its box opens at the top of the
+  screen, without an underline. In full screen, scroll the agent's chat to bring the text back.
 - In full screen mode selection works anywhere, also over SSH, because peekme reads the
   selection from the agent. Otherwise peekme needs the terminal's selection (or tmux's, see
   [Inside tmux and over SSH](#inside-tmux-and-over-ssh)), which it reads on Linux with X11 only.

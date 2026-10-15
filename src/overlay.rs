@@ -98,6 +98,22 @@ pub fn layout_within(top: usize, rows: usize, sel_first: usize, sel_last: usize)
     resize(&lay, want.min(if below { rows - home } else { home - top }))
 }
 
+/// The placement for a selection above the region (scrolled off the top
+/// of the screen): the box at the region's top, in front of its first row,
+/// as tall as `layout_within` makes one.
+pub fn layout_at_top(top: usize, rows: usize) -> Layout {
+    let want = ((rows - top.min(rows)) * 2 / 5).clamp(5, 14);
+    let top = top.min(rows.saturating_sub(1));
+    let lay = Layout {
+        box_top: top as isize,
+        box_height: 0,
+        region: (top, rows),
+        below: true,
+        home: top as isize,
+    };
+    resize(&lay, want.min(rows - top))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Style {
     Plain,

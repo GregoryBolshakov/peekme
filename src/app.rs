@@ -390,6 +390,10 @@ const SYNC_BEGIN_BYTES: &[u8] = b"\x1b[?2026h";
 const SYNC_END_BYTES: &[u8] = b"\x1b[?2026l";
 const CODEX_EMPTY_UPDATE: &[u8] = b"\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[?2026l";
 
+/// Rows of history above the screen searched for a selection made up in
+/// the terminal's scrollback.
+const HISTORY_SEARCH: usize = 2000;
+
 /// How long after a wheel event the child's output is shown under the box.
 const FOLLOW: Duration = Duration::from_millis(1500);
 
@@ -2630,6 +2634,23 @@ impl App {
         (s, l)
     }
 
+    /// Inline, `sel` in the history above the screen (the rows peekme kept
+    /// as they scrolled off): the text around it, with its place, for the
+    /// explainer. None on the full screen, which has no history, or when it
+    /// is not there.
+    fn locate_above(&self, sel: &str) -> Option<crate::context::ScreenSel> {
+        if self.shadow.alt_screen() {
+            return None;
+        }
+        let lines = self.shadow.history_size().min(HISTORY_SEARCH);
+        if lines == 0 {
+            return None;
+        }
+        let ext = self.shadow.snapshot_with_history(lines);
+        let loc = select::locate(&ext, sel, None)?;
+        (loc.last_row < lines).then_some(loc.screen)
+    }
+
     /// The agent inside tmux leaves the mouse to the terminal, and tmux does
     /// too (its `mouse` option is off, the default). Codex does that on
     /// purpose. A drag is then the terminal's own selection: over SSH it lives
@@ -2696,6 +2717,23 @@ impl App {
             }
             None => self.current_selection(&snap),
         };
+        // Inline, text selected higher up in the terminal's scrollback is not
+        // on the screen (a key press scrolls the terminal back down): found in
+        // the history peekme keeps, its box opens at the top of the screen,
+        // right under where the text is.
+        let mut above = false;
+        let located = match (&selection, located) {
+            (Some(sel), None) => self.locate_above(sel).map(|screen| {
+                above = true;
+                let top = self.known_top();
+                Located {
+                    first_row: top,
+                    last_row: top,
+                    screen,
+                }
+            }),
+            (_, l) => l,
+        };
         let hidden = selection.is_none() && self.selection_hidden();
         let withheld = selection.is_none() && !hidden && self.mouse_withheld();
         let mut remembered = None;
@@ -2743,21 +2781,29 @@ impl App {
                         k
                     }
                 });
-                let lay = overlay::layout_within(
-                    chat.as_ref().map_or(self.known_top(), |c| c.start),
-                    strip.unwrap_or(rows),
-                    loc.first_row,
-                    loc.last_row,
-                );
+                let lay = if above {
+                    overlay::layout_at_top(self.known_top(), strip.unwrap_or(rows))
+                } else {
+                    overlay::layout_within(
+                        chat.as_ref().map_or(self.known_top(), |c| c.start),
+                        strip.unwrap_or(rows),
+                        loc.first_row,
+                        loc.last_row,
+                    )
+                };
                 let mut peek = PeekBox::new(sel);
-                let first = tsnap.text_with_positions().1[loc.screen.start];
-                mark = Place::new(
-                    &tsnap,
-                    sel,
-                    first,
-                    self.shadow.history_size(),
-                    self.shadow.alt_screen(),
-                );
+                // Text up in the scrollback gets no underline: it is not on
+                // the screen to draw one on.
+                if !above {
+                    let first = tsnap.text_with_positions().1[loc.screen.start];
+                    mark = Place::new(
+                        &tsnap,
+                        sel,
+                        first,
+                        self.shadow.history_size(),
+                        self.shadow.alt_screen(),
+                    );
+                }
                 if ask {
                     // Nothing is sent before the question is typed. A saved
                     // answer for these words gets the new one.
@@ -6420,6 +6466,51 @@ mod tests {
             "right above row 27"
         );
         assert!(child.is_empty(), "Alt+P does not reach Kiro");
+
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+        assert!(same_screen(&real.snapshot(), &app.shadow.snapshot()));
+    }
+
+    /// Kiro inline, text selected up in the terminal's scrollback (a long
+    /// answer scrolled off the top; Alt+P scrolls the terminal back down):
+    /// explained from the history peekme keeps, the box at the top of the
+    /// screen, no underline. Closing puts the screen back.
+    #[test]
+    fn kiro_inline_explains_a_selection_in_the_scrollback() {
+        let mut app = test_app_for(Agent::Kiro, 120, 40);
+        app.selection = SelectionSource::fixed("fact 5 honey never spoils");
+        let mut real = Shadow::new(120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let mut answer = String::new();
+        for i in 1..=60 {
+            answer.push_str(&format!(
+                "  {i}. fact {i} honey never spoils, it keeps for years\r\n"
+            ));
+        }
+        app.on_output(answer.as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.on_output(KIRO[0], &mut out, &mut child).unwrap();
+        app.shadow.flush_sync();
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+        assert!(
+            !app.shadow.rows_text(0, 40).contains("fact 5 "),
+            "scrolled off the screen"
+        );
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let open = app.open.as_ref().expect("box open");
+        assert_eq!(open.peek.title, "fact 5 honey never spoils");
+        assert!(
+            !open.peek.text.contains("isn't on screen"),
+            "an explanation, not the message"
+        );
+        assert_eq!(open.lay.box_top as usize, app.known_top(), "at the top");
+        assert!(open.mark.is_none(), "no underline off the screen");
+        let sel = &open.selection.as_ref().unwrap().1;
+        assert_eq!(sel.selected(), "fact 5 honey never spoils");
 
         app.on_input(b"\x1b", &mut out, &mut child).unwrap();
         real.advance(&std::mem::take(&mut out));

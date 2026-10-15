@@ -181,6 +181,28 @@ impl Shadow {
         s
     }
 
+    /// The screen with up to `lines` rows of history above it (oldest
+    /// first): text that scrolled off the top of an inline child's screen,
+    /// to find a selection made up there in the terminal's scrollback.
+    pub fn snapshot_with_history(&self, lines: usize) -> Snapshot {
+        let grid = self.term.grid();
+        let n = lines.min(self.history_size()) as i32;
+        let rows = (-n..self.rows() as i32)
+            .map(|r| {
+                let row = &grid[Line(r)];
+                (0..self.cols()).map(|c| row[Column(c)].clone()).collect()
+            })
+            .collect();
+        let cursor = grid.cursor.point;
+        Snapshot {
+            rows,
+            cols: self.cols(),
+            cursor: ((cursor.line.0.max(0) + n) as usize, cursor.column.0),
+            cursor_visible: self.term.mode().contains(TermMode::SHOW_CURSOR),
+            template: grid.cursor.template.clone(),
+        }
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let grid = self.term.grid();
         let rows = (0..self.rows())
