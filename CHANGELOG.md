@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.6-beta.15 (2026-10-14)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.15`.
+
+- Scrolling Claude Code's full screen with a peek box open now works like in Codex: the chat and
+  the box move together, as far as Claude scrolls without peekme.
+- Fixed: the chat jumped and moved too fast with a box open. Claude speeds up the wheel when you
+  turn it quickly and does not move on the first turn the other way. peekme expected a fixed
+  step and filled the difference with rows from the box. Now the box moves exactly as far as
+  Claude's chat moved, and the box's own rows show only at the top or the bottom of the chat.
+- Fixed: Claude's "Jump to bottom" hint, the prompt it keeps at the top and its "thinking" line
+  could show up as lines of the chat next to the box.
+- Fixed: the box could cover Claude's notice line above its input box.
+- PgUp and PgDn with a box open over Claude page the chat as Claude does, half a screen.
+- While Claude scrolls fast it leaves some lines blank for a moment. With a box open, peekme
+  shows the text it has already seen there.
+- A very fast scroll can move Claude's chat more than a screen at once. If peekme can't tell where
+  the box went, it shows Claude's screen as it is until the box's lines come back into view.
+
 ## 0.4.6-beta.14 (2026-10-13)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.14`.
