@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- The boxes now take each agent's own colour: orange in Claude Code, cyan in Codex, and purple
+  in Copilot CLI and Kiro CLI. Before, they were cyan everywhere. Set `PEEKME_COLOR` to choose
+  one for all agents, or `PEEKME_CLAUDE_COLOR`, `PEEKME_CODEX_COLOR`, `PEEKME_COPILOT_COLOR` or
+  `PEEKME_KIRO_COLOR` for one. A value is a hex colour (`#d77757`), a terminal colour name
+  (`cyan`, `bright-magenta`) or a 256-colour number (`173`).
+- New README GIFs for all four agents: a peek, a question in a box inside it, a turn of the
+  wheel with both boxes open, and a click on the underline that opens the saved answer.
+- The crate no longer carries the README GIFs and the website.
+
 ## 0.4.6-beta.19 (2026-10-15)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.19`.

@@ -7,7 +7,7 @@ explanation opens right next to that text, inside the terminal. The other lines 
 room, like Peek in VS Code. Or press **Alt+Q** and type your own question first. Esc
 closes the box and the screen is exactly as before.
 
-![peekme in Claude Code: select "HOT updates" and press Alt+P for a short explanation. In the box select "fillfactor", press Alt+Shift+P and ask "What value should I set it to?". Esc closes both boxes, and a click on the underlined words opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-claude.gif)
+![peekme in Claude Code: select "Rows Removed by Filter" and press Alt+P for a short explanation. In the box select "ORDER BY with LIMIT", press Alt+Q and ask "How do I fix that?". The mouse wheel scrolls the chat with both boxes open, Esc closes them, and a click on the underlined words opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-claude.gif)
 
 Status: 0.4.5. Tested with Claude Code 2.1.292, Codex 0.161, Copilot CLI 1.0.93 and Kiro CLI 2.28 on Linux, also
 inside tmux and over SSH. On macOS it is tested in Terminal and iTerm2 with a stand-in agent, and
@@ -36,15 +36,15 @@ GitHub Copilot CLI and Kiro CLI. More agents are planned.
 
 Codex CLI:
 
-![peekme in Codex CLI: select "fixup" and press Alt+P. In the box select "fixup commit", press Alt+Shift+P and ask "Can I do this without opening an editor?". Esc closes both boxes, a click on the underline opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo.gif)
+![peekme in Codex CLI: select "--force-with-lease" and press Alt+P. In the box select "plain --force", press Alt+Q and ask "When is plain --force fine?". The wheel scrolls the chat with both boxes open, Esc closes them, a click on the underline opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo.gif)
 
 GitHub Copilot CLI:
 
-![peekme in GitHub Copilot CLI: select "Dominator trees" and press Alt+P. In the box select "retaining object", press Alt+Shift+P and ask "How do I spot it in the snapshot?". Esc closes both boxes, a click on the underline opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-copilot.gif)
+![peekme in GitHub Copilot CLI: select "retaining paths" and press Alt+P. In the box select "listener", press Alt+Q and ask "How does a listener leak memory?". The wheel scrolls the chat with both boxes open, Esc closes them, a click on the underline opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-copilot.gif)
 
 Kiro CLI:
 
-![peekme in Kiro CLI: select "VM filesystem translation layer" and press Alt+P. In the box select "Docker Desktop", press Alt+Shift+P and ask "Is it the same with WSL 2?". Esc closes both boxes, a click on the underline opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-kiro.gif)
+![peekme in Kiro CLI: select "filesystem virtualization" and press Alt+P. In the box select "Linux VM", press Alt+Q and ask "Is it the same with WSL 2?". The wheel scrolls the chat with both boxes open, Esc closes them, a click on the underline opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-kiro.gif)
 
 ## Install
 
@@ -231,7 +231,13 @@ more.
 | `PEEKME_CODEX_ASK_MODEL` | model for typed questions in Codex. Default is the thread's model |
 | `PEEKME_COPILOT_ASK_MODEL` | model for typed questions in Copilot CLI. Default is the chat's model |
 | `PEEKME_KIRO_ASK_MODEL` | model for typed questions in Kiro CLI. Default is the chat's model |
+| `PEEKME_COLOR` | colour of the boxes in every agent: a hex colour such as `#d77757`, a terminal colour name such as `cyan` or `bright-magenta`, or a 256-colour number such as `173`. Default is the agent's own colour |
+| `PEEKME_CLAUDE_COLOR`, `PEEKME_CODEX_COLOR`, `PEEKME_COPILOT_COLOR`, `PEEKME_KIRO_COLOR` | colour of the boxes in one agent, used instead of `PEEKME_COLOR` |
 | `PEEKME_SELECTION` | use this text instead of the mouse selection, for testing |
+
+The boxes take the agent's own colour: orange `#d77757` in Claude Code, the terminal's cyan in
+Codex, purple `#ab7df8` in Copilot CLI and `#c19aff` in Kiro CLI. A terminal that doesn't say it
+shows 24-bit colour (`COLORTERM=truecolor`) gets the nearest of its 256 colours instead.
 
 ### How `claude`, `codex`, `copilot` and `kiro-cli` get peekme
 

@@ -1,6 +1,6 @@
 +++
 title = "Settings"
-description = "Environment variables for models and agent binaries."
+description = "Environment variables for models, agent binaries and the colour of the boxes."
 weight = 3
 [extra]
 nav = "Settings"
@@ -22,7 +22,13 @@ lead = "peekme has no config file. Set these environment variables in your shell
 | `PEEKME_CODEX_ASK_MODEL` | model for typed questions in Codex. Default is the thread's model |
 | `PEEKME_COPILOT_ASK_MODEL` | model for typed questions in Copilot CLI. Default is the chat's model |
 | `PEEKME_KIRO_ASK_MODEL` | model for typed questions in Kiro CLI. Default is the chat's model |
+| `PEEKME_COLOR` | colour of the boxes in every agent: a hex colour such as `#d77757`, a terminal colour name such as `cyan` or `bright-magenta`, or a 256-colour number such as `173`. Default is the agent's own colour |
+| `PEEKME_CLAUDE_COLOR`, `PEEKME_CODEX_COLOR`, `PEEKME_COPILOT_COLOR`, `PEEKME_KIRO_COLOR` | colour of the boxes in one agent, used instead of `PEEKME_COLOR` |
 | `PEEKME_SELECTION` | use this text instead of the mouse selection, for testing |
+
+The boxes take the agent's own colour: orange `#d77757` in Claude Code, the terminal's cyan in
+Codex, purple `#ab7df8` in Copilot CLI and `#c19aff` in Kiro CLI. A terminal that doesn't say it
+shows 24-bit colour (`COLORTERM=truecolor`) gets the nearest of its 256 colours instead.
 
 Example:
 
