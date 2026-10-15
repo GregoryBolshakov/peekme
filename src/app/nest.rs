@@ -1,6 +1,8 @@
 //! Peeks inside peeks: a selection in a box opens a box inside that box.
-//! Each box scrolls on its own; nested answers are saved under their parent
-//! answer and underlined in it like marks on the screen.
+//! Over a full-screen chat every box is as tall as its text and the chat
+//! scrolls them all; elsewhere the boxes fit the screen and each scrolls on
+//! its own. Nested answers are saved under their parent answer and underlined
+//! in it like marks on the screen.
 
 use std::ops::Range;
 
@@ -597,7 +599,7 @@ impl App {
         let width = overlay::text_width(cols, level + 1);
         let max_h = self.caps().get(level + 1).copied().unwrap_or(0);
         let open = self.open.as_mut().unwrap();
-        if width < MIN_WIDTH || max_h < MIN_ROWS {
+        if width < MIN_WIDTH || (max_h < MIN_ROWS && !open.lay.free) {
             crate::event("nested_no_room", serde_json::json!({"level": level + 1}));
             if let Some(p) = Self::level_peek_mut(open, level) {
                 p.note = Some("no room for another box here");
@@ -607,7 +609,10 @@ impl App {
         let mut peek = PeekBox::new(&words);
         peek.child_name = open.peek.child_name;
         let mut id = 0;
-        let height = max_h;
+        // Printed in the chat, the box takes no rows until `fit` sizes it to
+        // its text; elsewhere it may fill the most rows it can take.
+        let free = open.lay.free;
+        let height = if free { 0 } else { max_h };
         match saved.and_then(|a| self.marks.answer(a)) {
             _ if ask => peek.input = Some(String::new()),
             Some(a) => {
@@ -631,7 +636,7 @@ impl App {
                             self.start_explain(
                                 id,
                                 screen,
-                                height.saturating_sub(2).max(3),
+                                max_h.saturating_sub(2).max(3),
                                 false,
                                 false,
                                 Some(nested),
@@ -661,6 +666,9 @@ impl App {
             height,
         });
         self.fit();
+        if free {
+            return self.draw_box(out);
+        }
         // Scroll the parent so the line and the new box under it show.
         let open = self.open.as_mut().unwrap();
         let height = open.nested[level].height;
@@ -679,7 +687,8 @@ impl App {
     /// The most rows each level may take, outermost first, one more than
     /// there are levels: the outermost box up to about two thirds of the screen
     /// (never less than it had), each inner one 3 rows less than its parent
-    /// (its borders and the line it explains).
+    /// (its borders and the line it explains). Printed in a full-screen chat,
+    /// the boxes have no cap: these only say how long an answer to ask for.
     fn caps(&self) -> Vec<usize> {
         let Some(open) = &self.open else {
             return Vec::new();
@@ -694,7 +703,8 @@ impl App {
         caps
     }
 
-    /// Size every box to its text and the box inside it, within the caps: a
+    /// Size every box to its text and the box inside it, within the caps
+    /// unless printed in a full-screen chat: a
     /// box starts as small as its text (a question waiting to be typed, or
     /// "thinking…") and grows as its answer comes in, like the outer box. With
     /// no boxes inside, the outer box goes back to its height.
@@ -703,31 +713,88 @@ impl App {
         let Some(open) = &mut self.open else {
             return;
         };
+        let free = open.lay.free;
         if open.nested.is_empty() {
-            if open.base_height > 0 {
+            // Printed in the chat, the box goes back to its text's height
+            // (`fit_top`) wherever the chat scrolled it.
+            if open.base_height > 0 && !free {
                 open.lay = overlay::resize(&open.lay, open.base_height);
-                open.base_height = 0;
             }
+            open.base_height = 0;
             return;
         }
         let cols = open.snap.cols;
+        let was = Self::focus(open);
+        let (top0, h_was) = (open.lay.box_top, open.lay.box_height);
         let mut inner = 0;
         for k in (1..=open.nested.len()).rev() {
             let n = &mut open.nested[k - 1];
             let want = n.peek.line_count(overlay::text_width(cols, k)) + 2 + inner;
-            n.height = want.min(caps[k]).max(MIN_ROWS);
+            n.height = if free { want } else { want.min(caps[k]) }.max(MIN_ROWS);
             inner = n.height;
         }
         let own = open.peek.line_count(overlay::text_width(cols, 0));
-        let h0 = (own + 2 + inner).min(caps[0]).max(MIN_ROWS);
-        // Only the height changes, wherever the chat scrolled the box.
-        if h0 != open.lay.box_height {
-            open.lay = overlay::grow(&open.lay, h0);
+        let h0 = if free {
+            own + 2 + inner
+        } else {
+            (own + 2 + inner).min(caps[0])
+        }
+        .max(MIN_ROWS);
+        if !free {
+            // Only the height changes, wherever the chat scrolled the box.
+            if h0 != open.lay.box_height {
+                open.lay = overlay::grow(&open.lay, h0);
+            }
+            return;
+        }
+        // Rows come and go where the boxes inside are: the rows above them
+        // stay put and the rest of the chat moves down (or up).
+        open.lay = overlay::stretch(&open.lay, h0);
+        // Nothing scrolls inside the boxes: all their text is there.
+        open.peek.scroll = 0;
+        for n in &mut open.nested {
+            n.peek.scroll = 0;
+        }
+        // The innermost box, growing at the bottom of the screen, pushes the
+        // chat up as the outer box does while it fits, as far as the line it
+        // explains stays on the screen. Once the chat scrolled it away, it
+        // grows out of sight.
+        let (Some((_, end_was)), Some((line, end))) = (was, Self::focus(open)) else {
+            return;
+        };
+        let (lo, hi) = (open.lay.region.0 as isize, open.lay.region.1 as isize);
+        let (top, end) = (open.lay.box_top, open.lay.box_top + end as isize);
+        if h0 <= h_was || top0 + end_was as isize > hi || end <= hi {
+            return;
+        }
+        let push = (end - hi).min(top + line as isize - lo);
+        if push > 0 {
+            open.lay = overlay::reveal(&open.lay, push);
         }
     }
 
+    /// Where the innermost box is in the outermost one, in rows from its top
+    /// border: the line of its parent it explains, and the row after its
+    /// bottom border. None without boxes inside.
+    fn focus(open: &Open) -> Option<(usize, usize)> {
+        let depth = open.nested.len();
+        if depth == 0 {
+            return None;
+        }
+        let cols = open.snap.cols;
+        let mut top = 0;
+        for k in 0..depth {
+            let lines =
+                Self::level_peek(open, k).map_or(0, |p| p.line_count(overlay::text_width(cols, k)));
+            // The parent's top border, its lines down to the anchor, the anchor.
+            top += 1 + open.nested[k].anchor.min(lines.saturating_sub(1)) + 1;
+        }
+        Some((top - 1, top + open.nested[depth - 1].height))
+    }
+
     /// With no boxes inside, the outer box is as tall as its text, from 3
-    /// rows while it thinks up to all of its region.
+    /// rows while it thinks up to all of its region (past it, printed in a
+    /// full-screen chat).
     fn fit_top(&mut self) {
         let Some(open) = &mut self.open else {
             return;
@@ -826,6 +893,9 @@ impl App {
         let Some(open) = &self.open else {
             return false;
         };
+        if open.lay.free {
+            return false;
+        }
         let at = Self::level_peek(open, level).map_or(0, |p| p.scroll);
         if down {
             at < Self::scroll_max(open, level)

@@ -153,6 +153,8 @@ BOX = ("╭", "│", "╰")
 # Claude Code's hint on the last chat row while scrolled up.
 CLAUDE_HINT = "Jump to bottom (ctrl+End) ↓"
 LABEL = re.compile(r"\bb\d+r\d\d\b")
+# A box's bottom border saying how far its text scrolled ("12/30").
+SCROLLED = re.compile(r"╰[^╯]*\s\d+/\d+\s[^╯]*╯")
 
 
 class AnyRow(str):
@@ -686,6 +688,10 @@ def offsets(chat, T, I, H, ref, s=None, holes=False):
         if b1 < R and not bottom:
             return "box bottom border missing"
         if ref is not None:
+            if not top and not bottom:
+                # A box taller than the chat, cut at both ends: a window of it.
+                js = {j + H - len(ref) for j in range(len(ref) - n + 1) if ref[j:j + n] == rows}
+                return {I + j for j in js} or "box cut at both ends is not a part of it"
             if top and bottom and rows != ref:
                 return f"box is {n} rows, not its {H}" if n != H else "box text differs"
             if not top and rows != ref[H - n:]:
@@ -694,7 +700,7 @@ def offsets(chat, T, I, H, ref, s=None, holes=False):
                 return "box cut at the bottom is not its top part"
         if top:
             return {I - b0}
-        if H is None:
+        if H is None or not bottom:
             return set()
         return {I + H - n}
     ks = [k for k in range(len(T) - R + 1) if T[k:k + R] == chat]
@@ -741,16 +747,19 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
                 H = len(ref)
                 break
         if ref is None:
-            ref = box_from_parts(fr, done_at, R, 2 * case.lines + 2 + len(sel_rows))
+            ref = box_from_parts(fr, done_at, R, 2 * case.lines + 2 + len(sel_rows)
+                                 + (2 * case.lines + 3 if case.nested else 0))
             H = len(ref) if ref else None
         if ref is None:
             case.err("never saw the whole box once its text was done")
             return
-        # Borders, the header (a row a selected row), a gap, lines and gaps.
-        want_h = 2 * case.lines + 2 + len(sel_rows)
-        if not case.capped and not case.nested and len(sel_rows) == 1 and H != want_h:
+        # Borders, the header (a row a selected row), a gap, lines and gaps;
+        # a box inside has the same, its header one row. A box never scrolls
+        # its own text: it is as tall as all of it, taller than the chat too.
+        want_h = 2 * case.lines + 2 + len(sel_rows) + (2 * case.lines + 3 if case.nested else 0)
+        if not case.capped and len(sel_rows) == 1 and H != want_h:
             case.err(f"box is {H} rows, not {want_h} for {case.lines} lines")
-        if not case.scrolled_early:
+        if not case.scrolled_early and H <= R:
             rows = at.get(done_at) or next(r for o, r in reversed(fr) if o <= done_at)
             run = box_run(rows[:R])
             if not run or rows[run[0]:run[1]] != ref:
@@ -778,6 +787,8 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
             where[o] = got
         if o in s.above:
             case.err(f"frame at byte {o}: box drawn above the chat")
+        if any(r[:1] in BOX and SCROLLED.search(r) for r in chat):
+            case.err(f"frame at byte {o}: a box scrolls its own text")
         for r in rows[R:]:
             if r[:1] in BOX:
                 case.err(f"frame at byte {o}: box drawn over Codex's input area")
@@ -1149,12 +1160,17 @@ def cases_long(s):
 
 def cases_more(s):
     yield "answer taller than the chat", lambda: run_case(
-        s, "capped", 10, lines=24, capped=True,
+        s, "tall", 10, lines=24,
         actions=[("slow", False, 4), ("slow", True, 4), ("burst", False, 30), ("burst", True, 30)])
     yield "box in the box, then scroll", lambda: run_case(
         s, "nested", 6, lines=2, nested=True,
         actions=[("nested",), ("slow", True, 3, "auto"), ("slow", False, 8, "auto"),
                  ("slow", True, 12, "auto")])
+    # The wheel over the boxes: the chat scrolls, never a box's own text.
+    yield "long box in a long box, wheel over them", lambda: run_case(
+        s, "nested-long", 6, lines=12, nested=True,
+        actions=[("nested",), ("slow", False, 20), ("slow", True, 30), ("burst", False, 40),
+                 ("burst", True, 40), ("page", False, 2), ("page", True, 2)])
 
 
 def cases_small(s):

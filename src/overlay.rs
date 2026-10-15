@@ -26,6 +26,10 @@ pub struct Layout {
     /// side pushes the selection away to make room. Off the screen when the
     /// chat scrolled the selection away.
     pub home: isize,
+    /// The box is printed in a chat that scrolls past it (a full-screen
+    /// agent's): it may be taller than the region, all of its text, and never
+    /// scrolls on its own. Otherwise it fits the region.
+    pub free: bool,
 }
 
 impl Layout {
@@ -94,6 +98,7 @@ pub fn layout_within(top: usize, rows: usize, sel_first: usize, sel_last: usize)
         region: (top, rows),
         below,
         home: home as isize,
+        free: false,
     };
     resize(&lay, want.min(if below { rows - home } else { home - top }))
 }
@@ -110,6 +115,7 @@ pub fn layout_at_top(top: usize, rows: usize) -> Layout {
         region: (top, rows),
         below: true,
         home: top as isize,
+        free: false,
     };
     resize(&lay, want.min(rows - top))
 }
@@ -902,13 +908,16 @@ pub fn box_frame(snap: &Snapshot, lay: &Layout, peek: &PeekBox) -> String {
 }
 
 /// The same placement with a box of `height` rows, as far as the region has
-/// room: next to the selection while that side has room, then pushing the
-/// selection away. The region is unchanged, so one full frame redraws all of it.
+/// room (a `free` box may run past it): next to the selection while that side
+/// has room, then pushing the selection away. The region is unchanged, so one
+/// full frame redraws all of it.
 pub fn resize(lay: &Layout, height: usize) -> Layout {
-    let height = height.min(lay.region.1 - lay.region.0);
+    let height = fit_region(lay, height);
     let h = height as isize;
     let box_top = if lay.below {
-        lay.home.min(lay.region.1 as isize - h)
+        lay.home
+            .min(lay.region.1 as isize - h)
+            .max(lay.region.0 as isize)
     } else {
         (lay.home - h).max(lay.region.0 as isize)
     };
@@ -916,6 +925,15 @@ pub fn resize(lay: &Layout, height: usize) -> Layout {
         box_top,
         box_height: height,
         ..*lay
+    }
+}
+
+/// A box height as the region allows: any for a box printed in the chat.
+fn fit_region(lay: &Layout, height: usize) -> usize {
+    if lay.free {
+        height
+    } else {
+        height.min(lay.region.1 - lay.region.0)
     }
 }
 
@@ -938,7 +956,7 @@ pub fn scroll_by(lay: &Layout, k: isize) -> Layout {
 /// on the screen and would run past the region's edge stays inside instead,
 /// pushing its selection, as when it opened.
 pub fn grow(lay: &Layout, height: usize) -> Layout {
-    let height = height.min(lay.region.1 - lay.region.0);
+    let height = fit_region(lay, height);
     let (old, h) = (lay.box_height as isize, height as isize);
     let (lo, hi) = (lay.region.0 as isize, lay.region.1 as isize);
     let whole = lay.box_top >= lo && lay.box_top + old <= hi;
@@ -953,9 +971,24 @@ pub fn grow(lay: &Layout, height: usize) -> Layout {
         let top = lay.box_top - (h - old);
         if whole && top < lo { lo } else { top }
     };
+    // A box shrunk below the rows it pushed away pushes no more than its
+    // height: the chat on the other side of it stays where it was.
+    let box_top = box_top.clamp(lay.home - h, lay.home);
     Layout {
         box_top,
         box_height: height,
+        ..*lay
+    }
+}
+
+/// The placement with the box `height` rows tall from the same top row: what
+/// comes after it moves down (up when it shrinks). A box shrunk below the
+/// rows it pushed away pushes no more than its height.
+pub fn stretch(lay: &Layout, height: usize) -> Layout {
+    let h = fit_region(lay, height) as isize;
+    Layout {
+        box_top: lay.box_top.clamp(lay.home - h, lay.home),
+        box_height: h as usize,
         ..*lay
     }
 }
@@ -1456,6 +1489,7 @@ mod tests {
             region: (0, 10),
             below: true,
             home: 0,
+            free: false,
         };
         let draw = |outer: &PeekBox, inner: &PeekBox| {
             let levels = [

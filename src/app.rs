@@ -2972,6 +2972,13 @@ impl App {
             }),
         );
         let lines = lay.box_height.saturating_sub(2);
+        // Over a full-screen chat that scrolls with the wheel, the box is
+        // printed in the chat: as tall as its text, past the screen too, and
+        // the wheel scrolls the chat with it, never the box's own text.
+        let mut lay = lay;
+        lay.free = self.shadow.alt_screen()
+            && self.shadow.mouse_mode()
+            && strip.is_some_and(|k| k == lay.region.1);
         // The box starts as small as its text and grows with it (see `fit_top`).
         let lay = overlay::resize(&lay, peek.fitted_height(snap.cols).max(3));
         let strip_shown = strip.map_or_else(Vec::new, |top| snap.rows[top..].to_vec());
@@ -3766,6 +3773,7 @@ fn message_layout(snap: &Snapshot, known_top: usize, peek: &PeekBox) -> Layout {
         region: (top, top + h),
         below: true,
         home: top as isize,
+        free: false,
     }
 }
 
@@ -4804,6 +4812,66 @@ mod tests {
                 "row {r}"
             );
         }
+    }
+
+    /// Over full-screen Codex a long answer with a long answer inside it
+    /// never scrolls inside a box: each box is as tall as all of its text,
+    /// past the screen, and the wheel over them scrolls Codex's chat.
+    #[test]
+    fn boxes_over_a_full_screen_chat_never_scroll_their_own_text() {
+        let mut app = test_app(120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        app.on_output(CODEX_0161_FULLSCREEN, &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        app.open_peek(&mut out).unwrap();
+        let open = app.open.as_ref().unwrap();
+        let (id, top) = (open.id, open.lay.box_top as usize);
+        assert!(open.lay.free);
+        let lines = |n: usize, w: &str| (1..=n).map(|i| format!("{w} {i}\n")).collect::<String>();
+        app.on_progress(id, Progress::Delta(lines(45, "outer line")), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        let open = app.open.as_ref().unwrap();
+        let region = open.lay.region.1 - open.lay.region.0;
+        assert_eq!(open.lay.box_height, 2 + 45, "all of its text");
+        assert!(open.lay.box_height > region);
+        // A box inside, under "outer line 1".
+        let drag = [
+            mouse(0, (top + 1, 2), true),
+            mouse(32, (top + 1, 7), true),
+            mouse(0, (top + 1, 7), false),
+        ]
+        .concat();
+        app.on_input(&drag, &mut out, &mut child).unwrap();
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        let id = app.open.as_ref().unwrap().nested[0].id;
+        app.on_progress(id, Progress::Delta(lines(25, "inner")), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.nested[0].height, 2 + 25);
+        assert_eq!(open.lay.box_height, 2 + 45 + 2 + 25);
+        // The wheel over either box goes to Codex; no text scrolls.
+        assert!(child.is_empty());
+        let row = (open.lay.box_rows().start + open.lay.box_rows().end) / 2;
+        for cell in [(row, 1), (row, 60)] {
+            for b in [65, 64] {
+                child.clear();
+                app.on_input(&mouse(b, cell, true), &mut out, &mut child)
+                    .unwrap();
+                assert_eq!(child, mouse(b, cell, true), "the wheel reaches Codex");
+            }
+        }
+        app.on_input(b"\x1b[6~", &mut out, &mut child).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!((open.peek.scroll, open.nested[0].peek.scroll), (0, 0));
+        // Esc: the outer box goes back to its own text's height.
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        app.on_idle(&mut out, &mut child).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert!(open.nested.is_empty());
+        assert_eq!(open.lay.box_height, 2 + 45);
     }
 
     /// At the end of the chat Codex does not move for the wheel: peekme
