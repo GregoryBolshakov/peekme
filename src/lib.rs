@@ -54,6 +54,21 @@ pub fn log(msg: &str) {
     }
 }
 
+/// Append the child's output to `PEEKME_CHILD_LOG`, if it is set: the screen
+/// the agent drew under peekme, to replay for a bug report or a test.
+pub fn child_output(bytes: &[u8]) {
+    let Some(path) = std::env::var_os("PEEKME_CHILD_LOG") else {
+        return;
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = std::io::Write::write_all(&mut f, bytes);
+    }
+}
+
 /// Append one event to `PEEKME_EVENT_LOG` as a JSON line, if it is set: what
 /// peekme decided (a box opened, with which selection; a key was typed or
 /// taken as the shortcut). For the end-to-end tests and for bug reports.

@@ -5,4 +5,5 @@
 pub mod cli;
 pub mod explain;
 pub mod screen;
+pub mod scroll;
 pub mod transcript;

@@ -524,26 +524,59 @@ pub fn compose(
     levels: &[Level],
     extra: &dyn Fn(isize) -> Option<String>,
     header: bool,
+    hint: Option<Range<usize>>,
+    fill: Option<&dyn Fn(isize) -> Option<String>>,
 ) -> (Vec<String>, Vec<Vec<Part>>) {
     let rows = box_rows(levels, 0, snap.cols);
     let (top, bottom) = lay.region;
     // The region's top row of the snapshot is the child's header, not chat
     // (Codex's prompt header): it stays on its row over the chat, unless the
-    // box is there, and the chat row behind it comes from `extra`.
+    // box is there, and the chat row behind it comes from `extra`. With a
+    // `hint` over the last row (Claude's), that row comes from `extra` too.
     let first = top + usize::from(header);
+    let last = bottom - usize::from(hint.is_some() && bottom > first);
     let shown = (top..bottom)
         .map(|r| match (lay.box_row(r), lay.src_row(r)) {
             (Some(i), _) => rows
                 .get(i)
                 .map_or_else(|| "\x1b[0m\x1b[2K".to_string(), |r| r.text.clone()),
+            // A header row the child left blank for now shows the chat under it.
+            (None, s)
+                if header
+                    && r == top
+                    && top < snap.rows.len()
+                    && snap.rows_text(top, top + 1).trim().is_empty() =>
+            {
+                s.and_then(extra)
+                    .unwrap_or_else(|| render::row_text(&snap.rows[top]))
+            }
             (None, _) if header && r == top && top < snap.rows.len() => {
                 render::row_text(&snap.rows[top])
             }
             (None, Some(s))
-                if (first as isize..bottom as isize).contains(&s)
+                if (first as isize..last as isize).contains(&s)
                     && (s as usize) < snap.rows.len() =>
             {
-                render::row_text(&snap.rows[s as usize])
+                // A row the child left blank for now (Claude while it scrolls
+                // fast) shows the text known to be there, given `fill`.
+                let u = s as usize;
+                fill.filter(|_| snap.rows_text(u, u + 1).trim().is_empty())
+                    .and_then(|f| f(s))
+                    .unwrap_or_else(|| render::row_text(&snap.rows[u]))
+            }
+            // The row under a hint, not remembered: the child's own with
+            // the hint's columns blank (the hint is drawn on its own row).
+            (None, Some(s)) if s == last as isize && last < bottom && last < snap.rows.len() => {
+                extra(s).unwrap_or_else(|| {
+                    let mut cells = snap.rows[last].clone();
+                    if let Some(span) = &hint {
+                        let end = span.end.min(cells.len());
+                        for c in &mut cells[span.start.min(end)..end] {
+                            *c = alacritty_terminal::term::cell::Cell::default();
+                        }
+                    }
+                    render::row_text(&cells)
+                })
             }
             (None, s) => s
                 .and_then(extra)
@@ -714,7 +747,7 @@ fn shift_rows(out: &mut String, snap: &Snapshot, lay: &Layout) {
 /// minus): the shift under which the rows agree best (see
 /// `scroll_delta_near`). None when too few rows match to tell.
 pub fn scroll_delta(old: &Snapshot, new: &Snapshot, rows: Range<usize>) -> Option<isize> {
-    scroll_delta_near(old, new, rows, &[])
+    scroll_delta_near(old, new, rows, &[], false)
 }
 
 /// `scroll_delta`, where rows that repeat let more than one shift fit: among
@@ -726,6 +759,7 @@ pub fn scroll_delta_near(
     new: &Snapshot,
     rows: Range<usize>,
     expect: &[isize],
+    blank_unknown: bool,
 ) -> Option<isize> {
     let text = |s: &Snapshot| -> Vec<String> {
         rows.clone()
@@ -747,7 +781,9 @@ pub fn scroll_delta_near(
                 let (a, b) = (&new[i as usize], &old[j as usize]);
                 if a == b {
                     same += usize::from(!a.trim().is_empty());
-                } else {
+                } else if !(blank_unknown && a.trim().is_empty()) {
+                    // A row the child left blank for now (`blank_unknown`)
+                    // tells nothing.
                     diff += 1;
                 }
             }
@@ -1223,8 +1259,8 @@ mod tests {
         assert_eq!(scroll_delta(&old, &up3, 0..7), Some(3));
         let same = snap(&["s", "s", "s", "s", "s", "s", "s"]);
         let all = snap(&["s", "s", "s", "s", "s", "s", "s"]);
-        assert_eq!(scroll_delta_near(&same, &all, 0..7, &[3]), Some(3));
-        assert_eq!(scroll_delta_near(&same, &all, 0..7, &[]), Some(0));
+        assert_eq!(scroll_delta_near(&same, &all, 0..7, &[3], false), Some(3));
+        assert_eq!(scroll_delta_near(&same, &all, 0..7, &[], false), Some(0));
     }
 
     /// A box taller than its side of the selection takes rows from the other

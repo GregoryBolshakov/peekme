@@ -148,7 +148,51 @@ impl App {
             });
         }
         let extra = |s: isize| open.mem.get(&(s + open.scrolled)).cloned();
-        let (rows, parts) = overlay::compose(&open.snap, &open.lay, &levels, &extra, open.header);
+        // Claude's hint over its last chat row stays there, over whatever
+        // row is shown in that place, unless the box is.
+        let (lo, hi) = open.lay.region;
+        let hint = (open.claude && hi > lo)
+            .then(|| claude::screen::bottom_hint(&open.snap, hi - 1))
+            .flatten();
+        // Claude leaves rows blank for a frame or two while it scrolls fast:
+        // the text remembered there stands in.
+        let known = |s: isize| {
+            open.mem
+                .get(&(s + open.scrolled))
+                .filter(|r| !strip_sgr(r).trim().is_empty())
+                .cloned()
+        };
+        let fill: Option<&dyn Fn(isize) -> Option<String>> = open.claude.then_some(&known);
+        // Unsure where Claude's chat is after a jump: its screen as it is,
+        // without the box, until the chat is placed again.
+        let raw = open.unsure.then(|| {
+            (lo..hi.min(open.snap.rows.len()))
+                .map(|r| render::row_text(&open.snap.rows[r]))
+                .collect::<Vec<_>>()
+        });
+        let (mut rows, parts) = overlay::compose(
+            &open.snap,
+            &open.lay,
+            &levels,
+            &extra,
+            open.header,
+            hint.clone(),
+            fill,
+        );
+        let parts = if let Some(raw) = raw {
+            rows = raw;
+            Vec::new()
+        } else {
+            parts
+        };
+        if let Some(span) = hint
+            && open.lay.box_row(hi - 1).is_none()
+            && !open.unsure
+            && let Some(row) = rows.last_mut()
+        {
+            row.push_str(&format!("\x1b[{};{}H", hi, span.start + 1));
+            render::cells(row, &open.snap.rows[hi - 1][span]);
+        }
         let mut frame = String::from(SYNC_BEGIN);
         frame.push_str("\x1b[?25l");
         let top = open.lay.region.0;

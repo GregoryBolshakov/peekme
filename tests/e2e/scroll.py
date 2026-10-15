@@ -26,7 +26,7 @@ The terminal answers Codex's colour queries as GNOME Terminal does (Codex
 then tints its input area, a row taller above the prompt line), except in
 the sessions marked `colors=False`, like a terminal that does not answer.
 
-    python3 tests/e2e/scroll.py [--only NAME] [--repeat N]
+    python3 tests/e2e/scroll.py [--session NAME] [--only NAME] [--repeat N]
 """
 import json
 import math
@@ -40,6 +40,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import chat_session  # noqa: E402
+import claude_session  # noqa: E402
 import matrix as m  # noqa: E402
 import real_agents as ra  # noqa: E402
 
@@ -60,7 +61,7 @@ class Wheel:
     def __init__(self, speed):
         self.speed, self.pending = speed, 0.0
 
-    def turn(self, way):
+    def turn(self, way, now=None):
         d = -1.0 if way < 0 else 1.0
         if math.copysign(1.0, self.pending) != d:
             self.pending = 0.0
@@ -71,7 +72,64 @@ class Wheel:
         rows = math.trunc(self.pending)
         self.pending -= rows
         return rows
+
+
+class ClaudeWheel:
+    """Claude Code's rows for a turn of the wheel, as it counts them (2.1.299,
+    the "window (native)" mode of Linux and macOS terminals): `base` rows
+    (1, or CLAUDE_CODE_SCROLL_SPEED), more as turns come within 40 ms of each
+    other, none for the first turn the other way, and a decaying "wheel
+    mode" after a quick reversal. `now` is in milliseconds."""
+
+    def __init__(self, base=1.0, accel=True):
+        self.base, self.accel, self.speed = base, accel, base
+        self.time, self.mult, self.dir = -1e9, base, 0
+        self.pending_flip = self.wheel_mode = False
+        self.burst = 0
+
+    def turn(self, way, now=None):
+        """Rows the turn moves the chat, down is plus."""
+        d = -1 if way < 0 else 1
+        return d * self.rows(d, time.monotonic() * 1000 if now is None else now)
+
+    def rows(self, d, now):
+        if self.wheel_mode and now - self.time > 1500:
+            self.wheel_mode, self.burst, self.mult = False, 0, self.base
+        if self.pending_flip:
+            self.pending_flip = False
+            if d != self.dir or now - self.time > 200:
+                self.dir, self.time, self.mult = d, now, self.base
+                return max(1, math.floor(self.mult))
+            self.wheel_mode = True
+        gap = now - self.time
+        if d != self.dir and self.dir != 0:
+            self.pending_flip, self.time = True, now
+            return 0
+        self.dir, self.time = d, now
+        if self.wheel_mode:
+            if gap < 5:
+                self.burst += 1
+                if self.burst >= 5:
+                    self.wheel_mode, self.burst, self.mult = False, 0, self.base
+                else:
+                    return 1
+            else:
+                self.burst = 0
+        if self.wheel_mode and self.accel:
+            decay = 0.5 ** (gap / 150)
+            cap = max(15 * min(self.base, 1), self.base * 2)
+            self.mult = min(cap, 1 + (self.mult - 1) * decay + 15 * decay, self.mult + 3)
+            return max(1, math.floor(self.mult))
+        if gap > 40 or not self.accel:
+            self.mult = self.base
+        else:
+            self.mult = min(max(6 * min(self.base, 1), self.base * 2), self.mult + 0.3)
+        return max(1, math.floor(self.mult))
+
+
 BOX = ("╭", "│", "╰")
+# Claude Code's hint on the last chat row while scrolled up.
+CLAUDE_HINT = "Jump to bottom (ctrl+End) ↓"
 LABEL = re.compile(r"\bb\d+r\d\d\b")
 
 
@@ -88,10 +146,45 @@ class AnyRow(str):
     __hash__ = str.__hash__
 
 
-def headed(chat, prompts):
-    """`chat` with a prompt header on its top row matching any row."""
-    if prompts and chat and chat[0].startswith("› q"):
-        return [AnyRow(chat[0])] + list(chat[1:])
+class HintRow(str):
+    """Claude's last chat row with its hint over it: it matches a chat row
+    that reads the same outside the hint's columns (a column of room each
+    side)."""
+
+    def __new__(cls, row):
+        obj = super().__new__(cls, row)
+        obj.start = row.index(CLAUDE_HINT)
+        obj.end = obj.start + len(CLAUDE_HINT)
+        return obj
+
+    def __eq__(self, other):
+        n = max(len(self), len(other), self.end + 1)
+        a, b = str(self).ljust(n), str(other).ljust(n)
+        lo, hi = max(0, self.start - 1), self.end + 1
+        return a[:lo] == b[:lo] and a[hi:] == b[hi:]
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    __hash__ = str.__hash__
+
+
+def view(chat, s, holes=False):
+    """`chat` as it is compared with the chat: a prompt header on its top row
+    matches any row, and Claude's hint on its last row is not chat. With
+    `holes`, a blank row matches any row too: Claude leaves rows blank for a
+    frame or two while it scrolls fast, as it does without peekme (a row with
+    text must still be the right one)."""
+    if s is None:
+        return chat
+    chat = list(chat)
+    if holes and s.agent == "claude":
+        chat = [AnyRow(r) if not r.strip() else r for r in chat]
+    if s.header and chat and chat[0].startswith(s.header):
+        chat[0] = AnyRow(chat[0])
+    if s.agent == "claude" and chat and CLAUDE_HINT in chat[-1]:
+        bare = chat[-1].replace(CLAUDE_HINT, "").strip()
+        chat[-1] = AnyRow(chat[-1]) if holes and not bare else HintRow(chat[-1])
     return chat
 
 
@@ -101,19 +194,33 @@ def wheel_bytes(up, x, y, side=False):
 
 
 class Session:
-    """One Codex under peekme, with a chat made of labelled rows."""
+    """One Codex (or Claude Code) under peekme, with a chat made of labelled rows."""
 
     def __init__(self, out, blocks, rep=False, size=(120, 40), block_rows=40, late=False,
-                 speed=None, prompts=False, colors=True):
+                 speed=None, prompts=False, colors=True, agent="codex"):
         m.COLS, m.ROWS = size
         self.out = out
         self.used = set()
         self.burst_wait = 4.0 if late else 0.15
         self.lines_file = os.path.join(out, "lines")
         self.set_answer(6)
+        self.agent = agent
+        # Claude takes turns of the wheel 40 ms apart or more as one row each,
+        # and closer ones faster: bursts stay well inside that.
+        self.burst_gap = 0.012 if agent == "claude" else 0.008
+        self.child_log = os.path.join(out, "child.bin")
+        self.child_at = {}
+        prompts = prompts or agent == "claude"
         self.prompts = prompts
-        extra, resume, self.codex_home = {}, [], None
-        if prompts:
+        self.header = ("❯ q" if agent == "claude" else "› q") if prompts else None
+        extra, resume, self.codex_home, self.claude_home = {}, [], None, None
+        if agent == "claude":
+            # A saved chat in a config folder of its own, full screen.
+            home, sid = claude_session.config_dir(out, blocks, block_rows, long_prompt=(2,),
+                                                  repeated=(1,) if rep else ())
+            extra, self.claude_home = {"CLAUDE_CONFIG_DIR": home}, home
+            resume = ["--settings", '{"tui":"fullscreen"}', "--resume", sid]
+        elif prompts:
             # A saved chat of `blocks` turns, each a prompt and an answer.
             home, sid = chat_session.codex_home(out, blocks, block_rows, long_prompt=(2,))
             extra, resume, self.codex_home = {"CODEX_HOME": home}, ["resume", sid], home
@@ -121,16 +228,26 @@ class Session:
             TERM="xterm-256color", PEEKME_FAKE_EXPLAINER="1",
             PEEKME_FAKE_LINES="@" + self.lines_file,
             PEEKME_EVENT_LOG=os.path.join(out, "events.jsonl"),
+            PEEKME_CHILD_LOG=self.child_log,
             DISPLAY="", WAYLAND_DISPLAY="")
+        # This test may run inside Claude Code, whose child marker would turn
+        # off saving and add a footer row.
+        env.pop("CLAUDE_CODE_CHILD_SESSION", None)
         # `late`: Codex behind a relay that delays its scroll after its first,
         # empty answer to each wheel turn (a slower machine).
         relay = [sys.executable, os.path.join(HERE, "late_pty.py")] if late else []
         # Codex's wheel speed: its default 1.0, or set on its command line.
         setting = ["-c", f"tui.mouse_scroll_speed={speed}"] if speed else []
-        self.model = Wheel(speed or 1.0)
-        self.t = m.Term([m.PEEKME] + relay + [ra.real_binary("codex"), "-c",
-                         "check_for_update_on_startup=false"] + setting + resume, env,
-                        os.path.join(out, "terminal.bin"), colors=colors)
+        if agent == "claude":
+            self.model = ClaudeWheel(speed or 1.0)
+            if speed:
+                env["CLAUDE_CODE_SCROLL_SPEED"] = str(speed)
+            argv = [m.PEEKME, ra.real_binary("claude")] + resume
+        else:
+            self.model = Wheel(speed or 1.0)
+            argv = [m.PEEKME] + relay + [ra.real_binary("codex"), "-c",
+                                          "check_for_update_on_startup=false"] + setting + resume
+        self.t = m.Term(argv, env, os.path.join(out, "terminal.bin"), colors=colors)
         self.ready()
         for b in range(0 if prompts else blocks):
             fill = "same row of a repeated output" if rep and b == 1 else None
@@ -141,6 +258,8 @@ class Session:
             raise RuntimeError(f"read only {len(self.T)} rows of the chat")
         self.find_prompts()
         self.pos = self.end_pos
+        with open(os.path.join(out, "T.json"), "w") as f:
+            json.dump({"T": self.T, "R": self.R}, f)
 
     def set_answer(self, lines, delay=0):
         with open(self.lines_file, "w") as f:
@@ -187,13 +306,43 @@ class Session:
         time.sleep(1.5)
 
     def chat_rows(self):
+        """Chat rows: all above the status (Codex) or notice (Claude) row,
+        two above the prompt line."""
         s = self.screen()
-        composer = max(i for i, r in enumerate(s) if r.startswith("›"))
+        if self.agent == "claude":
+            composer = max(i for i, r in enumerate(s) if r.startswith("❯") and i > 0
+                           and s[i - 1].strip() and set(s[i - 1].strip()) == {"─"})
+        else:
+            composer = max(i for i, r in enumerate(s) if r.startswith("›"))
         return composer - 2
 
     def mark(self):
         with self.t.lock:
-            return len(self.t.data)
+            at = len(self.t.data)
+        # Claude's own screen at this moment, to see where its chat really is.
+        if self.agent == "claude" and os.path.exists(self.child_log):
+            self.child_at[at] = os.path.getsize(self.child_log)
+        return at
+
+    def claude_places(self, marks):
+        """Where Claude's own chat was (its top chat row in T) at each of
+        `marks`, from its output under peekme; None where it does not fit
+        one place."""
+        sizes = [self.child_at.get(o) for o in marks]
+        stops = sorted({x for x in sizes if x})
+        if not stops:
+            return [None] * len(marks)
+        out = subprocess.run([VTFRAMES, self.child_log, str(m.COLS), str(m.ROWS), "0", "0"]
+                             + [str(x) for x in stops], capture_output=True, text=True).stdout
+        screens = {json.loads(l)["off"]: [r.rstrip() for r in json.loads(l)["rows"]]
+                   for l in out.splitlines()}
+        R, T = self.R, self.T
+        places = {}
+        for at, rows in screens.items():
+            chat = view(rows[:R], self, holes=True)
+            ks = [k for k in range(len(T) - R + 1) if T[k:k + R] == chat]
+            places[at] = ks[0] if len(ks) == 1 else None
+        return [places.get(x) if x else None for x in sizes]
 
     def find_prompts(self):
         """Codex's prompts in T, for where it shows its prompt header: a
@@ -213,6 +362,9 @@ class Session:
         # Where Codex rests at the end of its chat: the last rows under the
         # header, or a full screen of chat when a prompt is at the top.
         n = len(self.T)
+        if self.agent == "claude":
+            # Claude's header covers the top row and moves nothing.
+            self.first_prompt = None
         self.end_pos = n - (self.R - 1) if self.header_at(n - (self.R - 1)) else n - self.R
 
     def header_at(self, s):
@@ -227,8 +379,8 @@ class Session:
         self.pos = pos
         return took
 
-    def wheel(self, up, n=1, gap=0.0, batch=1, side=None, at=None):
-        """Turn the wheel; returns the rows each turn moves Codex's chat."""
+    def wheel(self, up, n=1, gap=0.0, batch=1, side=None, at=None, track=True):
+        """Turn the wheel; returns the rows each turn moves the agent's chat."""
         # Codex scrolls for the wheel over its chat only.
         x, y = (m.COLS // 2, self.R // 2) if at in (None, "auto") else at
         rows = []
@@ -242,8 +394,9 @@ class Session:
             if side:
                 b += b"".join(wheel_bytes(s == "<", x, y, side=True) for s in side)
             self.t.send(b)
-            rows += [self.model.turn(-1 if up else 1) for _ in range(batch)]
-            if at in (None, "auto"):
+            now = time.monotonic() * 1000
+            rows += [self.model.turn(-1 if up else 1, now) for _ in range(batch)]
+            if track and at in (None, "auto"):
                 for r in rows[-batch:]:
                     self.moved(r)
             if gap:
@@ -270,7 +423,37 @@ class Session:
         self.settle()
         self.pos = getattr(self, "end_pos", 0)
 
+    def read_chat_claude(self):
+        """Claude's chat, from the top, ten turns of the wheel at a time (60 ms
+        apart: a row each). Its header covers the top row and its hint the
+        last one while scrolled; neither shows at the bottom."""
+        self.t.send(b"\x1b[1;5H")  # Ctrl+Home
+        self.settle()
+        R = self.R
+        cur = self.chat()
+        T = cur[:R - 1]
+        while True:
+            self.wheel(False, 10, 0.06, track=False)
+            self.settle()
+            nxt = self.chat()
+            if nxt == cur:
+                break
+            k = next((k for k in range(1, R - 2) if nxt[1:R - 1 - k] == cur[1 + k:R - 1]), None)
+            if k is None:
+                raise RuntimeError("reading the chat: screens do not overlap")
+            T += nxt[R - 1 - k:R - 1]
+            cur = nxt
+        if CLAUDE_HINT in cur[R - 1] or T[-1] != cur[R - 2]:
+            raise RuntimeError("reading the chat: not at its end")
+        T.append(cur[R - 1])
+        return T
+
     def read_chat(self):
+        if self.agent == "claude":
+            T = self.read_chat_claude()
+            if len(set(r for r in T if LABEL.search(r))) != len([r for r in T if LABEL.search(r)]):
+                raise RuntimeError("labelled rows are not unique")
+            return T
         self.t.send(b"\x1b[1;5H")  # Ctrl+Home
         self.settle()
         cur = self.chat()
@@ -301,6 +484,8 @@ class Session:
         self.t.close()
         if self.codex_home:
             chat_session.forget_sign_in(self.codex_home)
+        if self.claude_home:
+            claude_session.forget_sign_in(self.claude_home)
 
 
 class Case:
@@ -356,10 +541,10 @@ def box_run(chat):
     return idx[0], idx[-1] + 1, idx == list(range(idx[0], idx[-1] + 1))
 
 
-def offsets(chat, T, I, H, ref, prompts=False):
+def offsets(chat, T, I, H, ref, s=None, holes=False):
     """Where `chat` sits in V (a set: repeated rows can fit more than one
     place), or an error string. `ref` is the whole box once its text is done."""
-    chat = headed(chat, prompts)
+    chat = view(chat, s, holes)
     R = len(chat)
     run = box_run(chat)
     if run:
@@ -463,7 +648,7 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
         chat = rows[:R]
         settled = done_at is not None and o >= done_at
         got = offsets(chat, T, I, H if settled else None,
-                      ref if settled and not capped else None, s.prompts)
+                      ref if settled and not capped else None, s, holes=True)
         if isinstance(got, str):
             case.err(f"frame at byte {o}: {got}")
         elif settled:
@@ -485,6 +670,10 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
         pos_at.append(pos)
         for d in move or []:
             pos = max(0, min(s.end_pos, pos + d))
+    # Claude's count of a fast run can be a few rows off what it moves
+    # (f122): its own screen says where its chat really went.
+    places = s.claude_places([o for _, o, _ in case.marks]) if s.agent == "claude" else None
+    place = None
     off = last = None
     for i, (name, o, move) in enumerate(case.marks):
         if o < done_at:
@@ -492,12 +681,22 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
         rows = at.get(o) or next((r for x, r in reversed(fr) if x <= o), None)
         if rows is None:
             continue
-        got = offsets(rows[:R], T, I, H, ref, s.prompts)
+        got = offsets(rows[:R], T, I, H, ref, s)
         if isinstance(got, str) or not got:
             if os.environ.get("SCROLL_DEBUG"):
                 print(f"    {name:28} {got!r}")
             continue
-        if off is not None and move is not None:
+        now_place = places[i] if places else None
+        if places is not None and os.environ.get("SCROLL_DEBUG"):
+            print(f"    {name:28} Claude's chat at {now_place} (end {s.end_pos})")
+        if off is not None and move is not None and place is not None and now_place is not None:
+            # Claude: the box moves just as Claude's chat did; at either end
+            # the rest of the turns' rows are peekme's to show.
+            moved = now_place - place
+            rest = sum(move) - moved
+            at_end = now_place in (0, s.end_pos) and rest * sum(move) > 0
+            want = max(0, min(maxoff, off + moved + (rest if at_end else 0)))
+        elif off is not None and move is not None:
             want, p = off, pos_at[i]
             for d in move:
                 # The rows Codex moves, one less or more where its prompt
@@ -507,6 +706,7 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
                 shift = d - (s.header_at(q) - s.header_at(p))
                 want = max(0, min(maxoff, want + shift))
                 p = q
+        if off is not None and move is not None:
             # The way of the turns (a slow wheel's turns may move no row).
             last_way = next((d for d in reversed(move) if d), 0)
             sign = (last_way > 0) - (last_way < 0)
@@ -518,7 +718,10 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
             if not fits:
                 case.err(f"{name}: moved to {sorted(got)}, want {want} (from {off})")
             # Every frame on the way: never past the turns sent, never back.
-            if sign and last is not None and len({d > 0 for d in move if d}) == 1:
+            # (Claude itself can step a few rows back and forth on the way;
+            # its frames are each checked, its place at the marks too.)
+            if sign and last is not None and len({d > 0 for d in move if d}) == 1 \
+                    and s.agent != "claude":
                 way = [min(where[x], key=lambda g: abs(g - want)) for x in sorted(where)
                        if prev_o < x <= o]
                 for a, b in zip([last] + way, way):
@@ -531,6 +734,7 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
             last = fits[0] if fits else min(got)
         else:
             off = last = min(got)
+        place = now_place
         prev_o = o
         if os.environ.get("SCROLL_DEBUG"):
             print(f"    {name:28} off {sorted(got)} of {maxoff}  (I={I} H={H} len(T)={len(T)})")
@@ -637,7 +841,8 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
         elif kind == "burst":
             _, up, n = a[:3]
             opts = a[3] if len(a) > 3 else {}
-            rows = s.wheel(up, n, opts.get("gap", 0.008), opts.get("batch", 1), opts.get("side"))
+            rows = s.wheel(up, n, opts.get("gap", s.burst_gap), opts.get("batch", 1),
+                           opts.get("side"))
             # A late Codex (the relay) takes a while to answer a burst.
             wait = s.burst_wait
             time.sleep(wait)
@@ -647,11 +852,16 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
             case.marks.append((label + " +1s", s.mark(), []))
         elif kind == "page":
             # PageUp / PageDown: peekme sends Codex a page of wheel turns.
+            # Claude takes the keys itself: half its viewport (the chat rows
+            # under its header) a press.
             _, up, n = a
             turns = max(1, int(rust_round((s.R - 1) / s.model.speed)))
             for i in range(n):
                 s.t.send(b"\x1b[5~" if up else b"\x1b[6~")
-                rows = [s.model.turn(-1 if up else 1) for _ in range(turns)]
+                if s.agent == "claude":
+                    rows = [(-1 if up else 1) * ((s.R - 1) // 2)]
+                else:
+                    rows = [s.model.turn(-1 if up else 1) for _ in range(turns)]
                 for r in rows:
                     s.moved(r)
                 time.sleep(max(0.4, s.burst_wait))
@@ -660,7 +870,7 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
             # Several directions in one quick run: [(up, n), ...]
             moves = []
             for up, n in a[1]:
-                moves += s.wheel(up, n, 0.008)
+                moves += s.wheel(up, n, s.burst_gap)
             time.sleep(s.burst_wait)
             case.marks.append(("reversing burst +50ms", s.mark(), moves))
             time.sleep(1.0)
@@ -691,6 +901,9 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
     else:
         s.t.send(f"\x1b[<0;{m.COLS - 2};{s.R + 2}M\x1b[<0;{m.COLS - 2};{s.R + 2}m".encode())
     time.sleep(0.6)
+    # Claude may still be drawing (a blank row, its header) after the box went.
+    if s.agent == "claude":
+        s.settle()
     chat = s.chat()
     if box_run(chat):
         case.err("box still there after closing")
@@ -704,21 +917,23 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
         R = min(chat_end(before), chat_end(after))
         a, b = before[:R], after[:R]
         if not any(b[k:] == a[:R - k] for k in range(0, 7)):
-            case.err("after closing Codex's next scroll does not match the screen")
+            case.err("after closing the agent's next scroll does not match the screen")
     else:
-        chat = headed(chat, s.prompts)
+        chat = view(chat, s)
         ks = [k for k in range(len(s.T) - s.R + 1) if s.T[k:k + s.R] == chat]
         if not ks:
-            case.err("after closing the screen is not Codex's chat")
+            case.err("after closing the screen is not the agent's chat")
+            if os.environ.get("SCROLL_DEBUG"):
+                print("\n".join(f"      {i:2} {r[:90]}" for i, r in enumerate(s.chat())))
         else:
             back = -s.wheel(True)[0]
             time.sleep(0.3)
-            after = headed(s.chat(), s.prompts)
+            after = view(s.chat(), s)
             # A prompt header coming or going moves the rows one less or more.
             near = (-1, 0, 1) if s.prompts else (0,)
             if not any(s.T[max(0, k - back + e):max(0, k - back + e) + s.R] == after
                        for k in ks for e in near):
-                case.err("after closing Codex's next scroll does not match the screen")
+                case.err("after closing the agent's next scroll does not match the screen")
     return case
 
 
@@ -856,6 +1071,14 @@ def cases_prompts(s):
                                                   ("burst", True, 5), ("burst", False, 5)])
 
 
+def cases_claude(s):
+    """Claude Code full screen: every Codex case that does not need Codex
+    itself (its speed setting, its late relay, its writing)."""
+    yield from cases_prompts(s)
+    yield from cases_long(s)
+    yield from cases_more(s)
+
+
 def cases_rep(s):
     yield "repeated rows", lambda: run_case(
         s, "repeated", 6, pre_up=12, actions=[("slow", True, 6), ("slow", False, 10),
@@ -872,26 +1095,32 @@ SESSIONS = [("long", dict(blocks=4), cases_long), ("more", dict(blocks=3, colors
             ("speed 2.5", dict(blocks=3, speed=2.5), cases_speed),
             ("speed 3", dict(blocks=3, speed=3), cases_speed),
             ("prompts", dict(blocks=4, prompts=True), cases_prompts),
-            ("prompts speed 3", dict(blocks=4, prompts=True, speed=3), cases_prompts)]
+            ("prompts speed 3", dict(blocks=4, prompts=True, speed=3), cases_prompts),
+            ("claude", dict(blocks=4, agent="claude"), cases_claude),
+            ("claude repeated", dict(blocks=3, agent="claude", rep=True), cases_rep),
+            ("claude small", dict(blocks=3, agent="claude", size=(80, 24)), cases_small)]
 
 
 def main():
     only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else None
     repeat = int(sys.argv[sys.argv.index("--repeat") + 1]) if "--repeat" in sys.argv else 1
+    session = sys.argv[sys.argv.index("--session") + 1] if "--session" in sys.argv else None
     root = tempfile.mkdtemp(prefix="peekme-scroll-")
     total = passed = 0
     for sname, kw, cases in SESSIONS:
+        if session is not None and sname != session:
+            continue
         todo = None
         if only:
             probe = list(cases(None))
-            todo = [n for n, _ in probe if only in n or only in sname]
+            todo = [n for n, _ in probe if any(o in n or o in sname for o in only.split("|"))]
             if not todo:
                 continue
         out = os.path.join(root, sname)
         os.makedirs(out, exist_ok=True)
         s = Session(out, kw["blocks"], kw.get("rep", False), kw.get("size", (120, 40)),
                     kw.get("block_rows", 40), kw.get("late", False), kw.get("speed"),
-                    kw.get("prompts", False), kw.get("colors", True))
+                    kw.get("prompts", False), kw.get("colors", True), kw.get("agent", "codex"))
         try:
             for _ in range(repeat):
                 for name, fn in cases(s):

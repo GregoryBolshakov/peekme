@@ -139,6 +139,15 @@ struct Open {
     /// move one less or more than Codex's place in the chat.
     heads: bool,
     header: bool,
+    /// The box is over full-screen Claude's chat: its wheel speeds up, its
+    /// header covers the top row without moving the chat, a hint covers its
+    /// last row while scrolled up, and its ends show on the screen.
+    claude: bool,
+    /// When the child last wrote while the box was open.
+    wrote_at: Instant,
+    /// Where the chat is was last taken from Claude's count, not seen:
+    /// nothing is remembered until its rows or the selection place it.
+    unsure: bool,
 }
 
 /// What an update from the child does, while wheel turns wait for answers.
@@ -203,6 +212,60 @@ impl Open {
         self.end = Some(self.run_way);
     }
 
+    /// Full-screen Claude: the box's rows come only once Claude's screen shows
+    /// the end of its chat the run's way (no hint over its last row at the
+    /// bottom, its banner at the top), for the rows the turns had left.
+    /// Claude never answers a turn that moves nothing, and its count depends
+    /// on timing peekme can only follow closely: no end is guessed.
+    fn claude_settle(&mut self, at_end: bool, away: bool) {
+        // The box's rows came for an end Claude then showed it was not at.
+        if away && self.end == Some(self.run_way) && self.revealed > 0 {
+            let back = self.revealed;
+            self.reveal_rows(-back);
+            self.end = None;
+            return;
+        }
+        let all: isize = self.run.iter().map(|r| r.abs()).sum();
+        let over = (self.moved + self.revealed - all).min(self.revealed);
+        if over > 0 {
+            self.reveal_rows(-over);
+            return;
+        }
+        let short = all - self.moved - self.revealed;
+        if short > 0 && at_end {
+            self.reveal_rows(short);
+            self.end = Some(self.run_way);
+        }
+    }
+
+    /// Claude's screen `snap` shows the end of its chat the run's way, and
+    /// Claude has stopped drawing: a frame drawn halfway through a fast
+    /// scroll can lack the hint too.
+    fn claude_at_end(&self, snap: &Snapshot) -> bool {
+        if self.wrote_at.elapsed() < CLAUDE_QUIET {
+            return false;
+        }
+        let (lo, hi) = self.lay.region;
+        match self.run_way {
+            // Mid-scroll Claude can draw frames without its hint, but with
+            // its header: at the bottom neither shows.
+            1 => claude::screen::bottom_hint(snap, hi - 1).is_none() && !self.header,
+            -1 => claude::screen::at_top(snap, lo),
+            _ => false,
+        }
+    }
+
+    /// Claude's screen `snap` shows its chat away from the end the run went
+    /// to: scrolled up (its hint shows), or down from the start (no banner).
+    fn claude_away(&self, snap: &Snapshot) -> bool {
+        let (lo, hi) = self.lay.region;
+        match self.run_way {
+            1 => claude::screen::bottom_hint(snap, hi - 1).is_some(),
+            -1 => !claude::screen::at_top(snap, lo),
+            _ => false,
+        }
+    }
+
     /// Show `rows` more of the box's rows the run's way (fewer: minus).
     fn reveal_rows(&mut self, rows: isize) {
         self.lay = overlay::reveal(&self.lay, self.run_way * rows);
@@ -226,6 +289,10 @@ const STRAY_MOUSE: Duration = Duration::from_secs(1);
 /// A wheel turn the child's chat has not moved for in this long, with no
 /// answer at all from the child, found its end.
 const WHEEL_UNMOVED: Duration = Duration::from_millis(150);
+/// Claude drew nothing for this long: its last frame is where it stopped.
+const CLAUDE_QUIET: Duration = Duration::from_millis(80);
+/// Claude's turns this far apart start a new run (see `wheel_rows`).
+const CLAUDE_RUN_GAP: Duration = Duration::from_millis(400);
 /// Codex took several turns in one read and answered them with fewer
 /// updates than two a turn: this long after its last answer it is done.
 const WHEEL_QUIET: Duration = Duration::from_millis(100);
@@ -321,7 +388,9 @@ pub fn run(
     let scroll_speed = matches!(agent, Some(Agent::Codex))
         .then(|| codex::scroll::speed_setting(args))
         .flatten();
-    event_loop(setup, agent, scroll_speed).map_err(Failure::Runtime)
+    let claude_wheel = matches!(agent, Some(Agent::Claude))
+        .then(|| claude::scroll::Wheel::new(claude::scroll::setting(args)));
+    event_loop(setup, agent, scroll_speed, claude_wheel).map_err(Failure::Runtime)
 }
 
 struct Setup {
@@ -493,7 +562,12 @@ fn setup(program: &str, args: &[String]) -> Result<Setup> {
     })
 }
 
-fn event_loop(setup: Setup, agent: Option<Agent>, scroll_speed: Option<f64>) -> Result<i32> {
+fn event_loop(
+    setup: Setup,
+    agent: Option<Agent>,
+    scroll_speed: Option<f64>,
+    claude_wheel: Option<claude::scroll::Wheel>,
+) -> Result<i32> {
     let Setup {
         mut child,
         helper_pid,
@@ -568,6 +642,7 @@ fn event_loop(setup: Setup, agent: Option<Agent>, scroll_speed: Option<f64>) -> 
         pointer_on: false,
         child_pointer: None,
         wheel: codex::scroll::Wheel::new(scroll_speed),
+        claude_wheel,
     };
     let mut stdout = std::io::stdout().lock();
     if app.in_tmux {
@@ -763,6 +838,8 @@ struct App {
     child_pointer: Option<Vec<u8>>,
     /// Codex's count of wheel rows, kept in step with Codex's own.
     wheel: codex::scroll::Wheel,
+    /// Claude's count, which speeds up with the wheel (full-screen Claude).
+    claude_wheel: Option<claude::scroll::Wheel>,
 }
 
 impl App {
@@ -772,6 +849,7 @@ impl App {
         out: &mut dyn Write,
         child: &mut dyn Write,
     ) -> Result<()> {
+        crate::child_output(bytes);
         if self.degraded {
             out.write_all(bytes)?;
             return Ok(out.flush()?);
@@ -806,6 +884,7 @@ impl App {
             Some(open) => {
                 open.held.extend_from_slice(bytes);
                 open.fresh = true;
+                open.wrote_at = Instant::now();
                 // The real terminal won't see these bytes yet, so the shadow answers.
                 let replies = self.shadow.take_replies();
                 if !replies.is_empty() {
@@ -954,17 +1033,22 @@ impl App {
     fn codex_chat_end(&self, snap: &Snapshot) -> Option<usize> {
         let open = self.open.as_ref()?;
         let k = self.codex_input_top()?;
-        Some(codex::screen::chat_end(snap, k)).filter(|&end| end > open.lay.region.0)
+        let end = if open.claude {
+            claude::screen::chat_end(snap, k)
+        } else {
+            codex::screen::chat_end(snap, k)
+        };
+        Some(end).filter(|&end| end > open.lay.region.0)
     }
 
     /// Full-screen Codex's input area under the open box, whose chat ends
     /// where the region does.
     fn codex_input_top(&self) -> Option<usize> {
+        let open = self.open.as_ref()?;
         let codex = !matches!(
             self.agent,
             Some(Agent::Claude | Agent::Copilot | Agent::Kiro)
-        );
-        let open = self.open.as_ref()?;
+        ) || open.claude;
         (codex && self.shadow.alt_screen() && open.strip_top == Some(open.lay.region.1))
             .then_some(open.composer)
             .flatten()
@@ -1031,25 +1115,68 @@ impl App {
         // Codex's top row may be its prompt header: only the rows under it
         // are surely chat.
         let first = lo + usize::from(open.heads);
-        let moved =
-            overlay::scroll_delta_near(&open.snap, &now, first..both, &expect).or_else(|| {
-                let f = found.as_ref()?;
-                let home = if open.lay.below {
-                    f[f.len() - 1].0 as isize + 1
-                } else {
-                    f[0].0 as isize
-                };
-                Some(open.lay.home - home)
-            });
+        let found_k = found.as_ref().map(|f| {
+            let home = if open.lay.below {
+                f[f.len() - 1].0 as isize + 1
+            } else {
+                f[0].0 as isize
+            };
+            open.lay.home - home
+        });
+        let moved = overlay::scroll_delta_near(&open.snap, &now, first..both, &expect, open.claude)
+            .or(found_k);
+        // Claude can jump further than a screen in one frame (its wheel
+        // speeds up): the rows it shows are then found among the ones seen
+        // before, or it moved as far as its count says.
+        let changed = now.rows_text(first, both) != open.snap.rows_text(first, both);
+        let guessed = moved.is_none() && open.claude && changed;
+        // Unsure where the chat is, every frame is also tried against the
+        // rows remembered from before (filed where the chat really was).
+        let seen = (guessed || (open.unsure && changed))
+            .then(|| remembered_shift(open, &now, first, hi))
+            .flatten();
+        let moved = if guessed {
+            seen.or_else(|| expect.last().copied())
+        } else {
+            seen.or(moved)
+        };
+        // The selection on Claude's screen says where the box goes: it wins
+        // over rows matched or counted (Claude's count can run a few rows
+        // ahead of it), and what was remembered meanwhile is dropped.
+        let anchored = open.claude && found_k.is_some();
+        let moved = if anchored && moved != found_k {
+            crate::event(
+                "anchor",
+                serde_json::json!({"moved": moved, "selection": found_k}),
+            );
+            // Rows remembered after a move misread are filed wrong; while
+            // unsure none were.
+            if !open.unsure {
+                open.mem.clear();
+            }
+            found_k
+        } else {
+            moved
+        };
+        if anchored || seen.is_some() {
+            open.unsure = false;
+        } else if guessed {
+            open.unsure = true;
+        }
         let k = moved.unwrap_or(0);
         // Codex's place in the chat moved one row more than its rows where
         // its prompt header came (it covers a chat row), one less where it went.
         let header = open.heads
             && match moved {
                 Some(k) => codex_header(open, &now, k, &expect),
-                None => codex::screen::may_be_header(&now, lo),
+                None => may_be_header(open.claude, &now, lo),
             };
-        let place = k + isize::from(header) - isize::from(open.header);
+        // Claude's header covers its row and moves nothing.
+        let place = if open.claude {
+            k
+        } else {
+            k + isize::from(header) - isize::from(open.header)
+        };
         open.header = header;
         if k != 0 {
             open.scrolled += k;
@@ -1061,17 +1188,28 @@ impl App {
         if place.signum() == open.run_way {
             open.moved += place.abs();
         }
-        open.settle_run();
-        if open.run.len() == 1 && open.done() && open.revealed == 0 && open.moved > 0 {
-            self.wheel.learn(open.run_way * open.moved);
+        if open.claude {
+            let (at_end, away) = (open.claude_at_end(&now), open.claude_away(&now));
+            open.claude_settle(at_end, away);
+        } else {
+            open.settle_run();
+            if open.run.len() == 1 && open.done() && open.revealed == 0 && open.moved > 0 {
+                self.wheel.learn(open.run_way * open.moved);
+            }
         }
-        for r in lo + usize::from(open.header)..hi {
+        // A frame that could not be placed for sure is not remembered, nor
+        // any after it until the chat is placed again.
+        let unplaced = (moved.is_none() && changed) || open.unsure;
+        for r in (lo + usize::from(open.header)..hi).filter(|_| !unplaced) {
             // A row of the chat keeps its text while it scrolls: a blank one
             // over a remembered one is something that stays put, not chat.
+            // Nor is Claude's hint: a row it covers keeps what was seen of it.
             let key = r as isize + open.scrolled;
-            if !now.rows_text(r, r + 1).trim().is_empty() || !open.mem.contains_key(&key) {
-                open.mem.insert(key, render::row_text(&now.rows[r]));
+            let hint = open.claude && r + 1 == hi && claude::screen::bottom_hint(&now, r).is_some();
+            if open.mem.contains_key(&key) && (hint || now.rows_text(r, r + 1).trim().is_empty()) {
+                continue;
             }
+            open.mem.insert(key, chat_row(open.claude, &now, r, hi));
         }
         crate::event(
             "follow",
@@ -1102,7 +1240,14 @@ impl App {
             return Ok(());
         }
         let before = open.lay;
-        if open.answering {
+        if open.claude {
+            // A turn at the end of Claude's chat draws nothing: its last
+            // screen, once followed, tells (see `Open::claude_settle`).
+            if !open.fresh {
+                let (at_end, away) = (open.claude_at_end(&open.snap), open.claude_away(&open.snap));
+                open.claude_settle(at_end, away);
+            }
+        } else if open.answering {
             // Codex answered and may have gone quiet: see `Open::settle_run`.
             open.settle_run();
         } else if open.sent.elapsed() >= WHEEL_UNMOVED && !open.done() {
@@ -1122,6 +1267,14 @@ impl App {
         out.write_all(frame.as_bytes())?;
         out.flush()?;
         Ok(())
+    }
+
+    /// PageUp or PageDown over full-screen Claude's chat: Claude takes the
+    /// keys and moves half its viewport, the chat rows under its header.
+    fn claude_page(&self) -> Option<isize> {
+        let open = self.open.as_ref().filter(|o| o.claude)?;
+        let (lo, hi) = open.lay.region;
+        Some(((hi - lo).saturating_sub(1) / 2).max(1) as isize)
     }
 
     /// PageUp or PageDown for a child that scrolls its chat with the wheel
@@ -1153,15 +1306,34 @@ impl App {
     /// would move the chat; otherwise they wait for it to move, or to show
     /// its end.
     fn wheel_turns(&mut self, turns: isize, out: &mut dyn Write) -> Result<()> {
-        let can_draw = self.can_draw();
         let way = turns.signum();
-        let rows: Vec<isize> = (0..turns.abs()).map(|_| self.wheel.turn(way)).collect();
+        let now = Instant::now();
+        let rows: Vec<isize> = (0..turns.abs())
+            .map(|_| match &mut self.claude_wheel {
+                Some(w) => w.turn(way, now),
+                None => self.wheel.turn(way),
+            })
+            .collect();
+        self.wheel_rows(way, rows, out)
+    }
+
+    /// Rows the chat should move for input on its way to the child, the
+    /// run's way `way` (see `wheel_turns`).
+    fn wheel_rows(&mut self, way: isize, rows: Vec<isize>, out: &mut dyn Write) -> Result<()> {
+        let can_draw = self.can_draw();
         crate::event("wheel", serde_json::json!({"rows": rows}));
         let Some(open) = &mut self.open else {
             return Ok(());
         };
         open.follow = Some(Instant::now());
-        if open.run_way != way || open.done() {
+        // Claude never says it is done with a run: one ends when the wheel
+        // rests (its count slows down there anyway) or turns the other way.
+        let ended = if open.claude {
+            open.sent.elapsed() >= CLAUDE_RUN_GAP
+        } else {
+            open.done()
+        };
+        if open.run_way != way || ended {
             // A new run. What the child still owes the turns before does not
             // answer these.
             let owed = (2 * open.run.len() as isize - open.answers).max(0);
@@ -1619,17 +1791,25 @@ impl App {
                     let down = t.kind == Kind::PageDown;
                     let depth = self.open.as_ref().map_or(0, |o| o.nested.len());
                     // A box with more text than rows scrolls; otherwise the chat.
-                    let wheel = if self.can_scroll(depth, down) {
+                    let claude_page = self.claude_page();
+                    let wheel = if self.can_scroll(depth, down) || claude_page.is_some() {
                         None
                     } else {
                         self.page_as_wheel(down)
                     };
-                    match wheel {
-                        Some((wheel, turns)) => {
+                    match (wheel, claude_page) {
+                        _ if self.can_scroll(depth, down) => self.scroll(down, out)?,
+                        (_, Some(rows)) => {
+                            // Claude pages its chat itself, half its rows.
+                            let way = if down { 1 } else { -1 };
+                            self.wheel_rows(way, vec![way * rows], out)?;
+                            forward.extend_from_slice(&t.bytes);
+                        }
+                        (Some((wheel, turns)), None) => {
                             self.wheel_turns(turns, out)?;
                             forward.extend_from_slice(&wheel);
                         }
-                        None => self.scroll(down, out)?,
+                        (None, None) => self.scroll(down, out)?,
                     }
                 }
                 (Kind::ChatJump, true) => {
@@ -1669,9 +1849,17 @@ impl App {
                 },
                 (Kind::Mouse(m), false) => {
                     self.note_mouse(m, &t.bytes);
-                    // Codex counts these too.
+                    // Codex and Claude count these too.
                     if matches!(m, Mouse::WheelUp | Mouse::WheelDown) && self.shadow.mouse_mode() {
-                        self.wheel.turn(if m == Mouse::WheelDown { 1 } else { -1 });
+                        let way = if m == Mouse::WheelDown { 1 } else { -1 };
+                        match &mut self.claude_wheel {
+                            Some(w) => {
+                                w.turn(way, Instant::now());
+                            }
+                            None => {
+                                self.wheel.turn(way);
+                            }
+                        }
                     }
                     forward.extend_from_slice(&t.bytes);
                 }
@@ -2231,9 +2419,13 @@ impl App {
                     self.agent,
                     Some(Agent::Claude | Agent::Copilot | Agent::Kiro)
                 );
+                // Full-screen Claude keeps a row of notices above its input box.
+                let claude = self.agent == Some(Agent::Claude);
                 strip = composer.map(|k| {
                     if codex && self.shadow.alt_screen() {
                         codex::screen::chat_end(&snap, k).max(loc.last_row + 1)
+                    } else if claude && self.shadow.alt_screen() {
+                        claude::screen::chat_end(&snap, k).max(loc.last_row + 1)
                     } else {
                         k
                     }
@@ -2360,9 +2552,13 @@ impl App {
             Some(Agent::Claude | Agent::Copilot | Agent::Kiro)
         );
         let lo = lay.region.0;
-        let heads = codex && self.shadow.alt_screen() && strip.is_some() && lo == 0;
+        let over_claude = self.agent == Some(Agent::Claude)
+            && self.shadow.alt_screen()
+            && strip.is_some_and(|k| k == lay.region.1);
+        let heads =
+            (codex || over_claude) && self.shadow.alt_screen() && strip.is_some() && lo == 0;
         let header =
-            heads && codex::screen::may_be_header(&snap, lo) && sel_first.is_some_and(|r| r > lo);
+            heads && may_be_header(over_claude, &snap, lo) && sel_first.is_some_and(|r| r > lo);
         // Selecting text in the box needs the mouse reports.
         let own_mouse = !self.shadow.mouse_mode();
         self.accessibility_offer_open = forced == Some(ACCESSIBILITY_OFFER);
@@ -2385,7 +2581,7 @@ impl App {
             base: snap.clone(),
             shown: vec![None; lay.region.1 - lay.region.0],
             mem: (lo + usize::from(header)..lay.region.1.min(snap.rows.len()))
-                .map(|r| (r as isize, render::row_text(&snap.rows[r])))
+                .map(|r| (r as isize, chat_row(over_claude, &snap, r, lay.region.1)))
                 .collect(),
             scrolled: 0,
             fresh: false,
@@ -2403,6 +2599,9 @@ impl App {
             end: None,
             heads,
             header,
+            claude: over_claude,
+            wrote_at: Instant::now(),
+            unsure: false,
             snap,
             lay,
             peek,
@@ -2958,6 +3157,73 @@ fn withheld_mouse_message(agent: Option<Agent>) -> String {
 }
 
 /// Typed text with Greek letters other than `π`.
+/// How far the chat moved since the box's last screen, found by matching
+/// the rows of `now` (from `first` to the one above `end`) with the chat rows
+/// remembered while the box was open: the shift most of them agree on, if
+/// no other comes close.
+fn remembered_shift(open: &Open, now: &Snapshot, first: usize, end: usize) -> Option<isize> {
+    let rows: Vec<(isize, String)> = (first..end.min(now.rows.len()))
+        .filter(|&r| !now.rows_text(r, r + 1).trim().is_empty())
+        .map(|r| (r as isize, chat_row(open.claude, now, r, end)))
+        .collect();
+    let span = 4 * (end - first) as isize;
+    let mut scores: Vec<(usize, isize)> = (-span..=span)
+        .map(|k| {
+            let same = rows
+                .iter()
+                .filter(|(r, text)| open.mem.get(&(r + open.scrolled + k)) == Some(text))
+                .count();
+            (same, k)
+        })
+        .collect();
+    scores.sort_unstable_by_key(|s| std::cmp::Reverse(s.0));
+    let (best, k) = scores[0];
+    let second = scores.get(1).map_or(0, |s| s.0);
+    (best >= 3 && best >= rows.len() / 2 && second * 2 < best).then_some(k)
+}
+
+/// The text of a rendered row, without its colours.
+fn strip_sgr(row: &str) -> String {
+    let mut out = String::new();
+    let mut esc = false;
+    for c in row.chars() {
+        match c {
+            '\x1b' => esc = true,
+            c if esc && c.is_ascii_alphabetic() => esc = false,
+            _ if esc => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Codex's (`›`) or Claude's (`❯`) prompt header could be on `row`.
+fn may_be_header(claude: bool, snap: &Snapshot, row: usize) -> bool {
+    if claude {
+        claude::screen::may_be_header(snap, row)
+    } else {
+        codex::screen::may_be_header(snap, row)
+    }
+}
+
+/// Chat row `r` as peekme remembers it: Claude's hint over the last chat row
+/// (`end` is the row under it) is not chat, so blanks stand in for it.
+fn chat_row(claude: bool, snap: &Snapshot, r: usize, end: usize) -> String {
+    match claude
+        .then(|| claude::screen::bottom_hint(snap, r))
+        .flatten()
+    {
+        Some(span) if r + 1 == end => {
+            let mut cells = snap.rows[r].clone();
+            for c in &mut cells[span] {
+                *c = Cell::default();
+            }
+            render::row_text(&cells)
+        }
+        _ => render::row_text(&snap.rows[r]),
+    }
+}
+
 /// Whether full-screen Codex's top chat row is its prompt header on `now`,
 /// the chat rows having moved `k` (down is plus) since the box's screen.
 /// The header and a prompt's own first row look the same; the chat row that
@@ -2968,14 +3234,29 @@ fn withheld_mouse_message(agent: Option<Agent>) -> String {
 /// just as far (the prompt's own row).
 fn codex_header(open: &Open, now: &Snapshot, k: isize, expect: &[isize]) -> bool {
     let lo = open.lay.region.0;
-    if !codex::screen::may_be_header(now, lo) {
+    // Claude clears the row for its header a frame before it draws it: a
+    // blank row over a chat row known to have text is that.
+    let key = lo as isize + open.scrolled + k;
+    if open.claude
+        && now.rows_text(lo, lo + 1).trim().is_empty()
+        && open
+            .mem
+            .get(&key)
+            .is_some_and(|r| !strip_sgr(r).trim().is_empty())
+    {
+        return true;
+    }
+    if !may_be_header(open.claude, now, lo) {
         return false;
     }
     let old = &open.snap;
     let text = |s: &Snapshot, r: usize| render::row_text(&s.rows[r]);
     let top = text(now, lo);
+    // The chat did not move: the same row is what it was, and a new one is
+    // a header coming, or one changing its prompt (Claude does that a frame
+    // after the chat moved).
     if k == 0 {
-        return (top == text(old, lo)) == open.header;
+        return top == text(old, lo) && open.header || top != text(old, lo);
     }
     let hi = open.lay.region.1.min(old.rows.len());
     let below = usize::try_from(k)
@@ -3864,6 +4145,14 @@ mod tests {
             child_pointer: None,
             // The fixtures are Codex 0.161: 3 rows a turn of the wheel.
             wheel: codex::scroll::Wheel::new(Some(3.0)),
+            claude_wheel: matches!(agent, Agent::Claude).then(|| {
+                claude::scroll::Wheel::new(claude::scroll::Setting {
+                    base: 1.0,
+                    accel: true,
+                    decay: false,
+                    flood: false,
+                })
+            }),
         }
     }
 
@@ -4841,6 +5130,143 @@ mod tests {
         );
     }
 
+    /// Full-screen Claude Code's screen, its chat from row `first` (labels
+    /// `b1rNN`): its prompt header over the top row and its hint over the
+    /// last chat row (33) while scrolled up, its notice row (34), its input
+    /// box between two rules (35-37) and its footer.
+    fn claude_screen(first: usize, scrolled: bool) -> String {
+        let mut s = String::from("\x1b[?2026h");
+        for r in 0..34 {
+            let mut row = format!("  - b1r{:02} words of row {}", first + r, first + r);
+            if scrolled && r == 0 {
+                row = "\u{276f} q1 the prompt".into();
+            }
+            if scrolled && r == 33 {
+                row = format!("{row:<47}Jump to bottom (ctrl+End) \u{2193}");
+            }
+            s.push_str(&format!("\x1b[{};1H\x1b[2K{row}", r + 1));
+        }
+        let rule = "\u{2500}".repeat(120);
+        s.push_str(&format!(
+            "\x1b[35;1H\x1b[2K\x1b[36;1H{rule}\x1b[37;1H\u{276f} \x1b[38;1H{rule}\x1b[39;1H  footer"
+        ));
+        s.push_str("\x1b[?2026l");
+        s
+    }
+
+    /// Full-screen Claude: its wheel speeds up and a turn can move nothing,
+    /// so the box moves only as far as Claude's chat does, never shows its
+    /// own rows mid-chat, and at the bottom (no hint any more) shows them
+    /// for the turns that went past. Claude's header, hint and notice row
+    /// are not chat. PgDn goes to Claude as the key.
+    #[test]
+    fn claude_scrolls_under_the_box_as_far_as_its_chat() {
+        let mut app = test_app_for(Agent::Claude, 120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let start = format!(
+            "\x1b[?1049h\x1b[?1002h\x1b[?1006h{}",
+            claude_screen(10, true)
+        );
+        app.on_output(start.as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        // Drag over "b1r21 w" on row 12 (1-based); Claude copies it.
+        app.on_input(
+            b"\x1b[<0;5;12M\x1b[<32;12;12M\x1b[<0;12;12m",
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        app.on_output(b"\x1b]52;c;YjFyMjEgdw==\x07", &mut out, &mut child)
+            .unwrap();
+        app.open_peek(&mut out).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.peek.title, "b1r21 w");
+        assert!(open.claude && open.header, "Claude's header on the top row");
+        assert_eq!(open.lay.region, (0, 34), "the notice row is not chat");
+        let lay = |app: &App| {
+            let o = app.open.as_ref().unwrap();
+            (o.lay.home, o.lay.box_top)
+        };
+        let (home, top) = lay(&app);
+        let mut turn = |app: &mut App, answer: Option<String>| {
+            app.on_input(b"\x1b[<65;60;5M", &mut out, &mut child)
+                .unwrap();
+            if let Some(a) = answer {
+                app.on_output(a.as_bytes(), &mut out, &mut child).unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(120));
+            app.tick(&mut out).unwrap();
+        };
+        turn(&mut app, Some(claude_screen(11, true)));
+        assert_eq!(lay(&app), (home - 1, top - 1), "a row as Claude moved it");
+        // A turn Claude draws nothing for (its count went another way):
+        // mid-chat, no box rows, and once the wheel rests it is forgotten.
+        turn(&mut app, None);
+        assert_eq!(
+            lay(&app),
+            (home - 1, top - 1),
+            "nothing moved, nothing shown"
+        );
+        std::thread::sleep(CLAUDE_RUN_GAP);
+        turn(&mut app, Some(claude_screen(12, true)));
+        // Claude at its end: no hint, no header; the next turn shows a box row.
+        turn(&mut app, Some(claude_screen(13, false)));
+        let (h, t) = lay(&app);
+        assert_eq!((h, h - t), (home - 3, 0), "the chat as it moved");
+        turn(&mut app, None);
+        let o = app.open.as_ref().unwrap();
+        assert_eq!(o.lay.home - o.lay.box_top, 1, "a row of the box at the end");
+        assert_eq!(o.end, Some(1));
+        assert!(
+            !o.mem
+                .values()
+                .any(|r| r.contains("Jump to bottom") || r.contains("q1 the prompt")),
+            "Claude's header and hint are not chat"
+        );
+        child.clear();
+        app.on_input(b"\x1b[6~", &mut out, &mut child).unwrap();
+        assert_eq!(child, b"\x1b[6~", "Claude pages its chat itself");
+    }
+
+    /// Claude starts working with the box open: its spinner line over the
+    /// last chat rows (a blank row above it) is not chat, the chat ends above
+    /// it, and the spinner is never remembered as a chat row.
+    #[test]
+    fn claude_working_ends_the_chat_above_its_spinner() {
+        let mut app = test_app_for(Agent::Claude, 120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let start = format!(
+            "\x1b[?1049h\x1b[?1002h\x1b[?1006h{}",
+            claude_screen(10, true)
+        );
+        app.on_output(start.as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        app.on_input(
+            b"\x1b[<0;5;12M\x1b[<32;12;12M\x1b[<0;12;12m",
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        app.on_output(b"\x1b]52;c;YjFyMjEgdw==\x07", &mut out, &mut child)
+            .unwrap();
+        app.open_peek(&mut out).unwrap();
+        assert_eq!(app.open.as_ref().unwrap().lay.region.1, 34);
+        let spinner = "\x1b[?2026h\x1b[33;1H\x1b[2K\x1b[34;1H\x1b[2K\u{273d} Canoodling\u{2026} (9s \u{b7} thinking)\x1b[?2026l";
+        app.on_input(b"\x1b[<65;60;5M", &mut out, &mut child)
+            .unwrap();
+        app.on_output(spinner.as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.tick(&mut out).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.lay.region.1, 32, "the chat ends above the spinner");
+        assert!(
+            !open.mem.values().any(|r| r.contains("Canoodling")),
+            "the spinner is not chat"
+        );
+    }
+
     /// Claude Code full screen: a mouse drag goes to Claude, which answers the
     /// release with OSC 52; Alt+P explains that text, located at the drag's row.
     #[test]
@@ -4880,13 +5306,15 @@ mod tests {
             "box right under the selected row"
         );
         assert_eq!(open.peek.child_name, "Claude");
+        // Its input box (from row 35) stays live, and so does the row of
+        // notices above it, which does not scroll.
         let top = open.strip_top.expect("Claude's input box stays live");
-        assert_eq!(top, 35);
+        assert_eq!((top, open.composer), (34, Some(35)));
 
         // Typing goes to Claude and shows in its input line under the box.
         app.on_input(b"hi", &mut out, &mut child).unwrap();
         assert!(child.ends_with(b"hi") && app.open.is_some());
-        let echo = format!("\x1b[?2026h\x1b[{};3Hhi\x1b[?2026l", top + 2);
+        let echo = format!("\x1b[?2026h\x1b[{};3Hhi\x1b[?2026l", top + 3);
         app.on_output(echo.as_bytes(), &mut out, &mut child)
             .unwrap();
         app.tick(&mut out).unwrap();
