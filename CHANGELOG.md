@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.6-beta.17 (2026-10-14)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.17`.
+
+- Scrolling Kiro CLI's full screen with a peek box open now works like in Codex, Claude Code and
+  Copilot CLI: the chat and the box move together, as far as Kiro scrolls without peekme. That is
+  2 rows a turn of the wheel, or what Kiro's Scroll speed setting says, and a screen less 2 rows
+  for PgUp and PgDn.
+- Fixed: the box closed at the first turn of the wheel over Kiro's full screen. While scrolled up,
+  Kiro writes "2 more lines (click or End)" over the line above its input area, and peekme no
+  longer recognized that line, so it thought Kiro's input area had moved.
+- Fixed: a box opened while Kiro was scrolled up could cover Kiro's input area.
+- Fixed: Kiro's "Copied" notice above its input area showed up as a line of the chat next to the
+  box.
+- End, and Home with nothing typed, make Kiro jump to the end or the start of the chat. With a box
+  open this now closes the box.
+
 ## 0.4.6-beta.16 (2026-10-14)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.16`.
