@@ -23,6 +23,15 @@ Inside tmux with its mouse on, Kiro can stay inline, also over SSH: tmux makes t
 and peekme reads it from tmux. Underlined text can be clicked in full screen, and inline inside
 tmux with its mouse on. See [tmux and SSH](@/docs/tmux-ssh.md).
 
+## Scrolling with a box open
+
+After `/fullscreen`, scroll as usual. The chat and the box move together, as far as Kiro scrolls
+on its own: 2 rows a turn of the wheel, or what you set under /settings → Display → Full Screen →
+Scroll speed. PgUp and PgDn move a screen less 2 rows. At the end of the chat the rows the box
+pushed down come into view. Kiro's input area stays where it is, with its "more lines" hint.
+End, and Home with nothing typed, jump to the end or the start of the chat, as in Kiro, and close
+the box.
+
 ## Which model explains
 
 No API key is needed. On the first explanation peekme starts Kiro's ACP server (`kiro-cli acp`,
