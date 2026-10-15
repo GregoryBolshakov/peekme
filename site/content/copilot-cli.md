@@ -18,6 +18,14 @@ Run `copilot` as always. Copilot CLI draws full screen and makes the selection i
 text, and peekme reads it, also over SSH. Then press Alt+P. A click on underlined text opens the
 saved answer.
 
+## Scrolling with a box open
+
+Scroll as usual. The chat and the box move together, as far as Copilot scrolls on its own:
+3 rows a turn of the wheel, 1 with Alt held. PgUp and PgDn move a whole screen. At the end of
+the chat the rows the box pushed down come into view. Copilot's tabs, status line, input box and
+scrollbar stay where they are. Home or End with nothing typed jumps to the start or the end of
+the chat, as in Copilot, and closes the box.
+
 ## Which model explains
 
 No API key is needed. On the first explanation peekme starts Copilot's headless server
