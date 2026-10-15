@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.6-beta.19 (2026-10-15)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.19`.
 
 - Fixed: saved answers were lost when you quit the agent. Open the chat again (`claude
   --resume`, `codex resume`, `copilot --resume`, `kiro-cli chat --resume`) and the dotted
@@ -8,7 +10,6 @@
   request. peekme keeps them in `~/.local/state/peekme/answers/`, for each agent and directory.
   An underline comes back only where the words stand amid the same text as before, so the same
   words in another chat don't open an old answer.
-
 - Fixed: on Kiro CLI's inline screen, and Claude Code's classic one, a peek inside a box failed
   after you had turned the mouse wheel. The wheel hands the mouse back to the terminal so it can
   scroll its history, so selecting words in the box made a terminal selection, and Alt+P showed
