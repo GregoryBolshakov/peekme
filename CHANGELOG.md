@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.6-beta.18 (2026-10-15)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.18`.
 
 - Fixed: in Kiro CLI's inline screen, and Claude Code's classic one, text selected up in the
   terminal's history opened "The selected text isn't on screen". A long answer scrolls off the
