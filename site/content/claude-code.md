@@ -28,6 +28,14 @@ Run `claude` as always. Select text with the mouse and press Alt+P.
 In Claude Code, Alt+P opens the model picker. With peekme it explains the selection instead.
 `/model` still opens the model picker.
 
+## Scrolling with a box open
+
+In the full screen, scroll as usual. The chat and the box move together, as far as Claude
+scrolls on its own: it speeds up when you turn the wheel quickly, as it does without peekme.
+PgUp and PgDn move half a screen. At the end of the chat the rows the box pushed down come
+into view. The prompt Claude keeps at the top, its "Jump to bottom" hint and its input box stay
+where they are.
+
 ## Which model explains
 
 No API key is needed. A peek runs `claude -p` with your own Claude login, on Haiku, without tools

@@ -24,9 +24,10 @@ lead = "Select text with the mouse as you normally do, then press Alt+P. On a Ma
 A second click on underlined text closes the saved answer. Boxes inside boxes go several levels
 deep while the window is wide enough.
 
-In Codex, scrolling with a box open works as if the box were printed in the chat. The box keeps
-its size and grows only while its answer comes in. The chat and the box move together, as many
-rows per turn of the wheel as Codex scrolls without peekme, from the start of the chat to its end.
+In Codex and in Claude Code's full screen, scrolling with a box open works as if the box were
+printed in the chat. The box keeps its size and grows only while its answer comes in. The chat
+and the box move together, as many rows per turn of the wheel as the agent scrolls without
+peekme, from the start of the chat to its end.
 
 When the agent draws full screen (Claude Code with `"tui": "fullscreen"`, Codex since 0.157,
 Copilot CLI, Kiro CLI after `/fullscreen`), it makes the selection itself, and peekme uses that
