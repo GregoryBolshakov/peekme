@@ -386,6 +386,24 @@ impl App {
         Ok(true)
     }
 
+    /// The terminal's own selection, `text`, made in one of the boxes (the
+    /// terminal has the mouse while the wheel scrolls its history): as if
+    /// dragged over in the innermost box that shows it.
+    pub(super) fn drag_from_text(&self, text: &str) -> Option<Drag> {
+        let open = self.open.as_ref()?;
+        (0..=open.nested.len()).rev().find_map(|level| {
+            let width = overlay::text_width(open.snap.cols, level);
+            let (from, to) = Self::level_peek(open, level)?.find_text(width, text)?;
+            Some(Drag {
+                level,
+                from,
+                to,
+                moved: true,
+                done: true,
+            })
+        })
+    }
+
     /// The text selected in one of the boxes, when there is one.
     pub(super) fn box_selection(&self) -> Option<Drag> {
         self.open.as_ref()?.drag.filter(|d| d.done && d.moved)

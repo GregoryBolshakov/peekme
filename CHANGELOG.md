@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: on Kiro CLI's inline screen, and Claude Code's classic one, a peek inside a box failed
+  after you had turned the mouse wheel. The wheel hands the mouse back to the terminal so it can
+  scroll its history, so selecting words in the box made a terminal selection, and Alt+P showed
+  "The selected text isn't on screen" and closed the box. Now Alt+P on words selected in a box
+  opens a box inside it, whoever made the selection.
+
 ## 0.4.6-beta.18 (2026-10-15)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.18`.

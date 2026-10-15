@@ -405,6 +405,45 @@ impl PeekBox {
         Some(((pos.0, cols[a]), (pos.0, cols[b])))
     }
 
+    /// Where `text` shows in this box's text, `width` columns wide: the first
+    /// and the last position it covers, as a drag over it would give them.
+    /// `text` is a terminal's copy of rows of the box (when the terminal has
+    /// the mouse): the box's borders in it are not its text, and runs of
+    /// white space (wrapped lines) count as one space.
+    pub fn find_text(&self, width: usize, text: &str) -> Option<(Pos, Pos)> {
+        let frame = |c: char| "│╭╮╰╯".contains(c);
+        let want: Vec<char> = text.chars().filter(|&c| !frame(c)).collect();
+        let (want, _) = crate::select::normalize(&want);
+        let mut want: Vec<char> = want.into_iter().skip_while(|c| *c == ' ').collect();
+        while want.last() == Some(&' ') {
+            want.pop();
+        }
+        if want.is_empty() {
+            return None;
+        }
+        let mut chars = Vec::new();
+        let mut at: Vec<Option<Pos>> = Vec::new();
+        for (l, line) in self.body_lines(width).iter().enumerate() {
+            if l > 0 {
+                chars.push(' ');
+                at.push(None);
+            }
+            let mut col = 0;
+            for g in line {
+                chars.push(g.c);
+                at.push(Some((l, col)));
+                col += g.c.width().unwrap_or(0);
+            }
+        }
+        let (norm, map) = crate::select::normalize(&chars);
+        let start = (0..norm.len().checked_sub(want.len())? + 1)
+            .find(|&i| norm[i..i + want.len()] == want[..])?;
+        let pos = |i: usize| at[map[i]];
+        let from = (start..start + want.len()).find_map(pos)?;
+        let to = (start..start + want.len()).rev().find_map(pos)?;
+        Some((from, to))
+    }
+
     /// The text shown from `from` to `to` (both included), wrapped lines joined
     /// by a space, and the chars of the answer it covers.
     pub fn shown(&self, width: usize, from: Pos, to: Pos) -> (String, Option<Range<usize>>) {

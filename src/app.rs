@@ -2004,7 +2004,7 @@ impl App {
                     if self.open.is_some() {
                         self.flush_forward(&mut forward, child)?;
                         // Text selected in a box: a box inside it.
-                        if self.box_selection().is_some() {
+                        if self.box_selection().is_some() || self.terminal_box_selection() {
                             self.open_nested(ask, out)?;
                             continue;
                         }
@@ -2632,6 +2632,39 @@ impl App {
         }
         let l = s.as_deref().and_then(|s| select::locate(snap, s, None));
         (s, l)
+    }
+
+    /// The terminal's own selection is text in one of the boxes: after a turn
+    /// of the wheel over an agent that leaves the mouse to the terminal,
+    /// peekme lent the terminal the mouse, so a drag in the box is the
+    /// terminal's. Not the box's own words (Alt+P again asks about the whole
+    /// chat) nor words on the screen. Takes it as a drag in that box.
+    fn terminal_box_selection(&mut self) -> bool {
+        if self.shadow.mouse_mode() || self.open.as_ref().is_none_or(|o| o.own_mouse) {
+            return false;
+        }
+        let Some(text) = self.selection.read() else {
+            return false;
+        };
+        let words = self
+            .open
+            .as_ref()
+            .and_then(|o| o.selection.as_ref())
+            .map(|s| &s.0);
+        if words == Some(&text) || select::locate(&self.shadow.snapshot(), &text, None).is_some() {
+            return false;
+        }
+        let Some(drag) = self.drag_from_text(&text) else {
+            return false;
+        };
+        crate::event(
+            "terminal_box_selection",
+            serde_json::json!({"level": drag.level}),
+        );
+        if let Some(open) = self.open.as_mut() {
+            open.drag = Some(drag);
+        }
+        true
     }
 
     /// Inline, `sel` in the history above the screen (the rows peekme kept
@@ -3967,6 +4000,35 @@ mod tests {
     fn mouse(b: u32, cell: (usize, usize), press: bool) -> Vec<u8> {
         let end = if press { 'M' } else { 'm' };
         format!("\x1b[<{b};{};{}{end}", cell.1 + 1, cell.0 + 1).into_bytes()
+    }
+
+    /// A child that leaves the mouse to the terminal: after a turn of the
+    /// wheel peekme lends the terminal the mouse, so a drag in the box is the
+    /// terminal's own selection. Alt+P on it still opens a box inside the box;
+    /// the box's own words again stay "Alt+P again", and words also on the
+    /// screen stay a new peek.
+    #[test]
+    fn a_terminal_selection_in_the_box_opens_a_box_inside_it() {
+        let answer = "A pseudo-terminal lets job control work inside tmux panes.";
+        let mut app = app_with_an_answer(answer, false);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        assert!(app.open.as_ref().unwrap().own_mouse);
+        app.on_input(b"\x1b[<65;10;20M", &mut out, &mut child)
+            .unwrap();
+        assert!(
+            !app.open.as_ref().unwrap().own_mouse,
+            "lent to the terminal"
+        );
+        // The terminal copies the drag with the box's border.
+        app.selection = SelectionSource::fixed("\u{2502} job control");
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        let open = app.open.as_ref().expect("the box stays");
+        assert_eq!(open.nested.len(), 1);
+        assert_eq!(open.nested[0].words, "job control");
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        // The box's own words: no box inside.
+        app.selection = SelectionSource::fixed("true colour");
+        assert!(!app.terminal_box_selection());
     }
 
     #[test]
