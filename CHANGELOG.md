@@ -1,15 +1,33 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-10-15)
 
-- The boxes now take each agent's own colour: orange in Claude Code, cyan in Codex, and purple
-  in Copilot CLI and Kiro CLI. Before, they were cyan everywhere. Set `PEEKME_COLOR` to choose
-  one for all agents, or `PEEKME_CLAUDE_COLOR`, `PEEKME_CODEX_COLOR`, `PEEKME_COPILOT_COLOR` or
-  `PEEKME_KIRO_COLOR` for one. A value is a hex colour (`#d77757`), a terminal colour name
-  (`cyan`, `bright-magenta`) or a 256-colour number (`173`).
-- New README GIFs for all four agents: a peek, a question in a box inside it, a turn of the
-  wheel with both boxes open, and a click on the underline that opens the saved answer.
-- The crate no longer carries the README GIFs and the website.
+Everything from the 0.4.6 betas below, now in the normal install (`npm i -g peekme`, Homebrew,
+`cargo install peekme`).
+
+- The mouse wheel scrolls the chat while a box is open, in Codex, Claude Code, Copilot CLI and
+  Kiro CLI full screen. The chat and the box move together, as far and as fast as the agent
+  scrolls without peekme, from the start of the chat to its end. PgUp and PgDn page the chat
+  as the agent does. Over Claude Code classic and Kiro inline the wheel scrolls your terminal's
+  history, and the box stays open.
+- The box starts small and grows with the answer, up to the whole screen. The chat moves away to
+  make room and comes back when the box closes. Boxes inside boxes grow the same way.
+- The ask key is now Alt+Q (Option+Q on a Mac). Alt+Shift+P switches the keyboard layout on
+  Windows and many Linux desktops. It still works.
+- Saved answers are kept when you quit the agent. Open the chat again and the dotted underlines
+  are back, and a click opens the answer with no new request. They are in
+  `~/.local/state/peekme/answers/`, for each agent and directory.
+- The boxes take each agent's own colour: orange in Claude Code, cyan in Codex, and purple in
+  Copilot CLI and Kiro CLI. `PEEKME_COLOR` sets one colour for all agents, and
+  `PEEKME_CLAUDE_COLOR`, `PEEKME_CODEX_COLOR`, `PEEKME_COPILOT_COLOR` or `PEEKME_KIRO_COLOR` one
+  for an agent. A value is a hex colour (`#d77757`), a terminal colour name (`cyan`,
+  `bright-magenta`) or a 256-colour number (`173`).
+- Copilot CLI 1.0.98's new input box and Codex 0.162's prompt row at the top are known, so
+  neither scrolls with the chat or ends up under the box.
+- Fixed on Kiro inline and Claude Code classic: text selected up in the terminal's history, and
+  words selected in a box after a turn of the wheel, opened "The selected text isn't on screen".
+- New README GIFs and website clips for all four agents, starting on a chat already on the
+  screen. The crate no longer carries the GIFs and the website.
 
 ## 0.4.6-beta.19 (2026-10-15)
 

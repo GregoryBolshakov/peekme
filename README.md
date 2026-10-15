@@ -9,7 +9,7 @@ closes the box and the screen is exactly as before.
 
 ![peekme in Claude Code: select "Rows Removed by Filter" and press Alt+P for a short explanation. In the box select "ORDER BY with LIMIT", press Alt+Q and ask "How do I fix that?". The mouse wheel scrolls the chat with both boxes open, Esc closes them, and a click on the underlined words opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-claude.gif)
 
-Status: 0.4.5. Tested with Claude Code 2.1.292, Codex 0.161, Copilot CLI 1.0.93 and Kiro CLI 2.28 on Linux, also
+Status: 0.5.0. Tested with Claude Code 2.1.301, Codex 0.162, Copilot CLI 1.0.98 and Kiro CLI 2.28 on Linux, also
 inside tmux and over SSH. On macOS it is tested in Terminal and iTerm2 with a stand-in agent, and
 in Terminal with the real Codex, also inside tmux and over SSH.
 

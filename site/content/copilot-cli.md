@@ -58,4 +58,4 @@ a box can open inside a box, and the answer stays on the screen as an underline.
 `copilot login` and anything with output going to a pipe or a file run Copilot directly.
 `command copilot` starts plain Copilot CLI once.
 
-Tested with Copilot CLI 1.0.93 on Linux, also inside tmux and over SSH.
+Tested with Copilot CLI 1.0.98 on Linux, also inside tmux and over SSH.

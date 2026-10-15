@@ -68,4 +68,4 @@ a box can open inside a box, and the answer stays on the screen as an underline.
 anything with output going to a pipe or a file run Claude directly. `command claude` starts plain
 Claude Code once.
 
-Tested with Claude Code 2.1.292 on Linux, also inside tmux and over SSH.
+Tested with Claude Code 2.1.301 on Linux, also inside tmux and over SSH.

@@ -58,4 +58,4 @@ answer stays on the screen as an underline. Use both.
 anything with output going to a pipe or a file run Codex directly. `command codex` starts plain
 Codex once.
 
-Tested with Codex 0.161 on Linux and macOS, also inside tmux and over SSH.
+Tested with Codex 0.162 on Linux and macOS, also inside tmux and over SSH.
