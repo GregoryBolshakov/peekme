@@ -42,6 +42,7 @@ sys.path.insert(0, HERE)
 import chat_session  # noqa: E402
 import claude_session  # noqa: E402
 import copilot_session  # noqa: E402
+import kiro_session  # noqa: E402
 import matrix as m  # noqa: E402
 import real_agents as ra  # noqa: E402
 
@@ -137,6 +138,17 @@ class CopilotWheel:
         return 3 if way > 0 else -3
 
 
+class KiroWheel:
+    """Kiro CLI's rows for a turn of the wheel (2.28.0): its setting
+    `chat.fullscreenWheelRows`, 1 to 3, default 2."""
+
+    def __init__(self, rows=2):
+        self.speed = float(rows)
+
+    def turn(self, way, now=None):
+        return int(self.speed) if way > 0 else -int(self.speed)
+
+
 BOX = ("╭", "│", "╰")
 # Claude Code's hint on the last chat row while scrolled up.
 CLAUDE_HINT = "Jump to bottom (ctrl+End) ↓"
@@ -220,11 +232,11 @@ class Session:
         self.burst_gap = 0.012 if agent == "claude" else 0.008
         self.child_log = os.path.join(out, "child.bin")
         self.child_at = {}
-        prompts = prompts or agent in ("claude", "copilot")
+        prompts = prompts or agent in ("claude", "copilot", "kiro")
         self.prompts = prompts
         # Codex and Claude pin the prompt of what is on screen on the top row;
         # Copilot shows no such header.
-        self.header = None if agent == "copilot" else (
+        self.header = None if agent in ("copilot", "kiro") else (
             ("❯ q" if agent == "claude" else "› q") if prompts else None)
         # Screen row of the chat's first row (Copilot: under its tab bar),
         # and frames with the box drawn above it.
@@ -232,7 +244,14 @@ class Session:
         # Columns left of Copilot's chat: its sidebar and divider, when open.
         self.left = 0
         extra, resume, self.codex_home, self.claude_home = {}, [], None, None
-        if agent == "copilot":
+        if agent == "kiro":
+            # A saved chat in a KIRO_HOME of its own, starting full screen.
+            home, sid = kiro_session.kiro_home(out, blocks, block_rows, long_prompt=(2,),
+                                               repeated=(1,) if rep else (),
+                                               wheel_rows=int(speed) if speed else None)
+            extra = {"KIRO_HOME": home}
+            resume = ["chat", "--resume-id", sid]
+        elif agent == "copilot":
             # A saved chat in a COPILOT_HOME of its own, trusting this folder.
             home, sid = copilot_session.copilot_home(out, blocks, block_rows, long_prompt=(2,),
                                                      repeated=(1,) if rep else ())
@@ -262,7 +281,10 @@ class Session:
         relay = [sys.executable, os.path.join(HERE, "late_pty.py")] if late else []
         # Codex's wheel speed: its default 1.0, or set on its command line.
         setting = ["-c", f"tui.mouse_scroll_speed={speed}"] if speed else []
-        if agent == "copilot":
+        if agent == "kiro":
+            self.model = KiroWheel(int(speed) if speed else 2)
+            argv = [m.PEEKME, ra.real_binary("kiro-cli")] + resume
+        elif agent == "copilot":
             self.model = CopilotWheel()
             argv = [m.PEEKME, ra.real_binary("copilot")] + resume
         elif agent == "claude":
@@ -343,6 +365,11 @@ class Session:
         """Chat rows: all above the status (Codex) or notice (Claude) row,
         two above the prompt line."""
         s = self.screen()
+        if self.agent == "kiro":
+            # Above the blank row over Kiro's rule, the one above its prompt.
+            prompt = max(i for i, r in enumerate(s) if r.startswith("›"))
+            rule = max(i for i in range(prompt) if s[i].startswith("─"))
+            return rule - 1 if not s[rule - 1].strip() else rule
         if self.agent == "copilot":
             # The rows of Copilot's scrollbar, in the last column.
             bar = [i for i, r in enumerate(s) if len(r) == m.COLS and r.endswith("┃")]
@@ -481,7 +508,7 @@ class Session:
             time.sleep(0.1)
 
     def to_end(self):
-        self.t.send(b"\x1b[1;5F")  # Ctrl+End
+        self.t.send(b"\x1b[F" if self.agent == "kiro" else b"\x1b[1;5F")  # (Ctrl+)End
         self.settle()
         self.pos = getattr(self, "end_pos", 0)
 
@@ -522,7 +549,7 @@ class Session:
         return T
 
     def read_chat_paged(self):
-        self.t.send(b"\x1b[1;5H")  # Ctrl+Home
+        self.t.send(b"\x1b[H" if self.agent == "kiro" else b"\x1b[1;5H")  # (Ctrl+)Home
         self.settle()
         cur = self.chat()
         T = list(cur)
@@ -534,8 +561,9 @@ class Session:
             # rows: eight turns there too.
             # Copilot moves 3 rows a turn: as many turns as leave rows in
             # common, and that shift first where rows repeat.
-            turns = max(1, min(8, (self.R - 4) // 3)) if self.agent == "copilot" else 8
-            if h or self.agent == "copilot":
+            step = int(self.model.speed) if self.agent in ("copilot", "kiro") else 1
+            turns = max(1, min(8, (self.R - 4) // step)) if step > 1 or self.agent == "kiro" else 8
+            if h or self.agent in ("copilot", "kiro"):
                 self.t.send(wheel_bytes(False, m.COLS // 2, self.top + self.R // 2) * turns)
             else:
                 self.t.send(b"\x1b[6~")
@@ -545,7 +573,7 @@ class Session:
             nxt = self.chat()
             if nxt[h:] == cur[h:]:
                 break
-            first = 3 * turns if self.agent == "copilot" else self.R - 1 - h
+            first = step * turns if self.agent in ("copilot", "kiro") else self.R - 1 - h
             s = next((s for s in [first] + list(range(1, self.R - h))
                       if nxt[h:self.R - s] == cur[s + h:]), None)
             if s is None:
@@ -973,6 +1001,9 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
                 elif s.agent == "copilot":
                     # Copilot pages its chat itself: all its rows a press.
                     rows = [(-1 if up else 1) * s.R]
+                elif s.agent == "kiro":
+                    # Kiro too: its rows less 2.
+                    rows = [(-1 if up else 1) * (s.R - 2)]
                 else:
                     rows = [s.model.turn(-1 if up else 1) for _ in range(turns)]
                 for r in rows:
@@ -1233,7 +1264,12 @@ SESSIONS = [("long", dict(blocks=4), cases_long), ("more", dict(blocks=3, colors
             ("copilot", dict(blocks=4, agent="copilot"), cases_claude),
             ("copilot repeated", dict(blocks=3, agent="copilot", rep=True), cases_rep),
             ("copilot small", dict(blocks=3, agent="copilot", size=(80, 24)), cases_small),
-            ("copilot sidebar", dict(blocks=3, agent="copilot", sidebar=True), cases_sidebar)]
+            ("copilot sidebar", dict(blocks=3, agent="copilot", sidebar=True), cases_sidebar),
+            ("kiro", dict(blocks=4, agent="kiro"), cases_claude),
+            ("kiro repeated", dict(blocks=3, agent="kiro", rep=True), cases_rep),
+            ("kiro small", dict(blocks=3, agent="kiro", size=(80, 24)), cases_small),
+            ("kiro speed 1", dict(blocks=3, agent="kiro", speed=1), cases_speed),
+            ("kiro speed 3", dict(blocks=3, agent="kiro", speed=3), cases_speed)]
 
 
 def main():

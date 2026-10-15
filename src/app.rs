@@ -148,6 +148,11 @@ struct Open {
     /// (turns that come together it draws as one jump), and a turn at either
     /// end of its chat draws nothing.
     copilot: bool,
+    /// The box is over full-screen Kiro's chat: its turns move the chat its
+    /// set rows each and go a few at a time as Copilot's do, a turn at either
+    /// end draws nothing, and its "more lines" hint on its rule says it is
+    /// scrolled up from the bottom.
+    kiro: bool,
     /// When the child last wrote while the box was open.
     wrote_at: Instant,
     /// Where the chat is was last taken from Claude's count, not seen:
@@ -277,9 +282,9 @@ impl Open {
     /// nothing for a while after the last turn went, the rows the turns had
     /// left are the box's to show, unless Copilot's scrollbar has its thumb
     /// between its ends (it is surely at neither: still drawing).
-    fn copilot_settle(&mut self, snap: &Snapshot) {
+    fn paced_settle(&mut self, snap: &Snapshot) {
         let all: isize = self.run.iter().map(|r| r.abs()).sum();
-        let extra = if self.run_way == 1 {
+        let extra = if self.run_way == 1 && self.copilot {
             copilot::scroll::snap_extra(&self.run, self.moved)
         } else {
             0
@@ -303,19 +308,43 @@ impl Open {
             lift
         };
         let owed = all + extra - self.moved - self.revealed;
-        // Away from the ends every turn moves 3 rows: a run of plain turns
+        // Away from the ends every turn moves its rows: a run of like turns
         // that moved some other number found an end, and the turns still on
         // their way move nothing.
-        let found = self.run.iter().all(|r| r.abs() == 3) && self.moved % 3 != 0;
+        let step = self.run.first().map_or(0, |r| r.abs());
+        let found = step > 1 && self.run.iter().all(|r| r.abs() == step) && self.moved % step != 0;
+        // Kiro going down without its hint on its rule is at the bottom.
+        let bottom = self.kiro
+            && self.run_way == 1
+            && self
+                .composer
+                .is_some_and(|k| !kiro::screen::jump_hint(snap, k));
         let quiet = found
+            || bottom
             || self.sent.elapsed() >= COPILOT_QUIET && self.wrote_at.elapsed() >= COPILOT_QUIET;
         let (lo, hi) = self.lay.region;
-        if owed > 0 && quiet && !copilot::screen::thumb_inside(snap, lo..hi) {
+        // Surely at neither end: Copilot's scrollbar thumb between its ends;
+        // Kiro's hint on its rule, going down (it shows above the bottom).
+        let away = if self.copilot {
+            copilot::screen::thumb_inside(snap, lo..hi)
+        } else {
+            self.run_way == 1
+                && self
+                    .composer
+                    .is_some_and(|k| kiro::screen::jump_hint(snap, k))
+        };
+        if owed > 0 && quiet && !away {
             if owed.min(room) > 0 {
                 self.reveal_rows(owed.min(room));
             }
             self.end = Some(self.run_way);
         }
+    }
+
+    /// Copilot or Kiro full screen: turns of an exact count, sent a few at a
+    /// time.
+    fn paced(&self) -> bool {
+        self.copilot || self.kiro
     }
 
     /// Show `rows` more of the box's rows the run's way (fewer: minus).
@@ -702,7 +731,8 @@ fn event_loop(
         child_pointer: None,
         wheel: codex::scroll::Wheel::new(scroll_speed),
         claude_wheel,
-        copilot_turns: VecDeque::new(),
+        paced_turns: VecDeque::new(),
+        kiro_wheel: 2,
         copilot_frame: None,
     };
     let mut stdout = std::io::stdout().lock();
@@ -903,7 +933,9 @@ struct App {
     claude_wheel: Option<claude::scroll::Wheel>,
     /// Wheel turns (and page keys) for full-screen Copilot with a box open,
     /// waiting to go to it: the report and the rows it moves the chat.
-    copilot_turns: VecDeque<(Vec<u8>, isize)>,
+    paced_turns: VecDeque<(Vec<u8>, isize)>,
+    /// Rows a turn of the wheel moves full-screen Kiro's chat (its setting).
+    kiro_wheel: isize,
     /// Copilot hid the cursor to draw a frame and has not shown it again.
     copilot_frame: Option<Instant>,
 }
@@ -985,7 +1017,7 @@ impl App {
             self.follow_feed(out)?;
         }
         self.wheel_past_end(out)?;
-        self.release_copilot_turns(out, child)?;
+        self.release_paced_turns(out, child)?;
         if self.pending.is_some() && self.can_draw() {
             self.pending = None;
             self.open_peek(out)?;
@@ -1045,7 +1077,7 @@ impl App {
     fn on_idle(&mut self, out: &mut dyn Write, child: &mut dyn Write) -> Result<()> {
         self.resolve_pending_hotkey(out, child)?;
         self.tick(out)?;
-        self.release_copilot_turns(out, child)
+        self.release_paced_turns(out, child)
     }
 
     /// Send full-screen Copilot the wheel turns waiting for it, a few at a
@@ -1054,7 +1086,7 @@ impl App {
     /// frames). The next go once it drew the rows of those before, up to most
     /// of its chat's rows on their way, or once it drew nothing for a while (a
     /// turn at an end of the chat moves nothing). Without a box, all go.
-    fn release_copilot_turns(&mut self, out: &mut dyn Write, child: &mut dyn Write) -> Result<()> {
+    fn release_paced_turns(&mut self, out: &mut dyn Write, child: &mut dyn Write) -> Result<()> {
         let mut bytes = Vec::new();
         self.release_turns_into(out, &mut bytes)?;
         if !bytes.is_empty() {
@@ -1065,8 +1097,8 @@ impl App {
     }
 
     fn release_turns_into(&mut self, out: &mut dyn Write, sink: &mut Vec<u8>) -> Result<()> {
-        while let Some(&(_, rows)) = self.copilot_turns.front() {
-            if let Some(open) = self.open.as_ref().filter(|o| o.copilot) {
+        while let Some(&(_, rows)) = self.paced_turns.front() {
+            if let Some(open) = self.open.as_ref().filter(|o| o.paced()) {
                 let way = rows.signum();
                 let same = open.run_way == way && open.sent.elapsed() < CLAUDE_RUN_GAP;
                 let owed: isize =
@@ -1080,7 +1112,11 @@ impl App {
                 let room = rows_shown.saturating_sub((rows_shown / 4).max(4)).max(3);
                 // Where rows repeat, a frame of several turns could read as
                 // one of fewer: fewer go at a time there.
-                let text = copilot::screen::chat_text(&open.snap);
+                let text = if open.copilot {
+                    std::borrow::Cow::Owned(copilot::screen::chat_text(&open.snap))
+                } else {
+                    std::borrow::Cow::Borrowed(&open.snap)
+                };
                 let room = copilot::screen::readable_move(&text, lo..hi, way, room) as isize;
                 let quiet = open.sent.elapsed() >= COPILOT_QUIET
                     && open.wrote_at.elapsed() >= COPILOT_QUIET;
@@ -1089,7 +1125,7 @@ impl App {
                     break;
                 }
             }
-            let Some((report, rows)) = self.copilot_turns.pop_front() else {
+            let Some((report, rows)) = self.paced_turns.pop_front() else {
                 break;
             };
             if self.open.is_some() {
@@ -1181,6 +1217,8 @@ impl App {
             claude::screen::chat_end(snap, k)
         } else if open.copilot {
             copilot::screen::chat_rows(snap, k).end
+        } else if open.kiro {
+            kiro::screen::chat_end(k)
         } else {
             codex::screen::chat_end(snap, k)
         };
@@ -1195,7 +1233,7 @@ impl App {
             self.agent,
             Some(Agent::Claude | Agent::Copilot | Agent::Kiro)
         ) || open.claude
-            || open.copilot;
+            || open.paced();
         (codex && self.shadow.alt_screen() && open.strip_top == Some(open.lay.region.1))
             .then_some(open.composer)
             .flatten()
@@ -1294,7 +1332,7 @@ impl App {
         // before, or it moved as far as its count says.
         let changed = text_now.rows_text(first, both) != text_old.rows_text(first, both);
         // Copilot pages a whole screen of rows at a time.
-        let guessed = moved.is_none() && (open.claude || open.copilot) && changed;
+        let guessed = moved.is_none() && (open.claude || open.paced()) && changed;
         // Unsure where the chat is, every frame is also tried against the
         // rows remembered from before (filed where the chat really was).
         let seen = (guessed || (open.unsure && changed))
@@ -1358,8 +1396,8 @@ impl App {
         if open.claude {
             let (at_end, away) = (open.claude_at_end(&now), open.claude_away(&now));
             open.claude_settle(at_end, away);
-        } else if open.copilot {
-            open.copilot_settle(&now);
+        } else if open.paced() {
+            open.paced_settle(&now);
         } else {
             open.settle_run();
             if open.run.len() == 1 && open.done() && open.revealed == 0 && open.moved > 0 {
@@ -1419,11 +1457,11 @@ impl App {
                 let (at_end, away) = (open.claude_at_end(&open.snap), open.claude_away(&open.snap));
                 open.claude_settle(at_end, away);
             }
-        } else if open.copilot {
-            // Nor does Copilot draw a turn at an end (see `Open::copilot_settle`).
+        } else if open.paced() {
+            // Nor does Copilot or Kiro draw a turn at an end (see `Open::paced_settle`).
             if !open.fresh {
                 let snap = open.snap.clone();
-                open.copilot_settle(&snap);
+                open.paced_settle(&snap);
             }
         } else if open.answering {
             // Codex answered and may have gone quiet: see `Open::settle_run`.
@@ -1457,26 +1495,40 @@ impl App {
 
     /// Home or End over full-screen Copilot with nothing typed: Copilot jumps
     /// to the start or the end of its chat (with text, they move the cursor).
-    fn copilot_jump(&self, key: &[u8]) -> bool {
-        const KEYS: [&[u8]; 6] = [
-            b"\x1b[H", b"\x1b[F", b"\x1b[1~", b"\x1b[4~", b"\x1bOH", b"\x1bOF",
-        ];
-        let Some(open) = self.open.as_ref().filter(|o| o.copilot) else {
+    /// Kiro jumps to the end with End always, to the start with Home when
+    /// nothing is typed.
+    fn paced_jump(&self, key: &[u8]) -> bool {
+        const HOME: [&[u8]; 3] = [b"\x1b[H", b"\x1b[1~", b"\x1bOH"];
+        const END: [&[u8]; 3] = [b"\x1b[F", b"\x1b[4~", b"\x1bOF"];
+        let Some(open) = self.open.as_ref().filter(|o| o.paced()) else {
             return false;
         };
-        KEYS.contains(&key)
+        let (home, end) = (HOME.contains(&key), END.contains(&key));
+        if open.kiro && end {
+            return true;
+        }
+        (home || end)
             && open.composer.is_some_and(|k| {
                 let snap = self.shadow.snapshot();
-                copilot::screen::input_empty(&snap, k)
+                if open.kiro {
+                    kiro::screen::input_empty(&snap, k)
+                } else {
+                    copilot::screen::input_empty(&snap, k)
+                }
             })
     }
 
-    /// PageUp or PageDown over full-screen Copilot's chat: Copilot takes the
-    /// keys and moves as many rows as its chat shows.
-    fn copilot_page(&self) -> Option<isize> {
-        let open = self.open.as_ref().filter(|o| o.copilot)?;
+    /// PageUp or PageDown over full-screen Copilot's or Kiro's chat: they
+    /// take the keys, Copilot moving as many rows as its chat shows, Kiro two
+    /// rows fewer.
+    fn paced_page(&self) -> Option<isize> {
+        let open = self.open.as_ref().filter(|o| o.paced())?;
         let (lo, hi) = open.lay.region;
-        Some((hi - lo).max(1) as isize)
+        Some(if open.kiro {
+            kiro::scroll::page_rows(hi - lo)
+        } else {
+            (hi - lo).max(1) as isize
+        })
     }
 
     /// PageUp or PageDown for a child that scrolls its chat with the wheel
@@ -1530,7 +1582,7 @@ impl App {
         open.follow = Some(Instant::now());
         // Claude never says it is done with a run: one ends when the wheel
         // rests (its count slows down there anyway) or turns the other way.
-        let ended = if open.claude || open.copilot {
+        let ended = if open.claude || open.paced() {
             open.sent.elapsed() >= CLAUDE_RUN_GAP
         } else {
             open.done()
@@ -1813,7 +1865,7 @@ impl App {
         let mut forward: Vec<u8> = Vec::new();
         for mut t in tokens {
             // Turns held for Copilot while a box was open go first.
-            if self.open.is_none() && !self.copilot_turns.is_empty() {
+            if self.open.is_none() && !self.paced_turns.is_empty() {
                 self.release_turns_into(out, &mut forward)?;
             }
             match t.bytes.as_slice() {
@@ -2001,10 +2053,10 @@ impl App {
                     let depth = self.open.as_ref().map_or(0, |o| o.nested.len());
                     // A box with more text than rows scrolls; otherwise the chat.
                     let claude_page = self.claude_page();
-                    let copilot_page = self.copilot_page();
+                    let paced_page = self.paced_page();
                     let wheel = if self.can_scroll(depth, down)
                         || claude_page.is_some()
-                        || copilot_page.is_some()
+                        || paced_page.is_some()
                     {
                         None
                     } else {
@@ -2012,11 +2064,11 @@ impl App {
                     };
                     match (wheel, claude_page) {
                         _ if self.can_scroll(depth, down) => self.scroll(down, out)?,
-                        _ if copilot_page.is_some() => {
-                            // Copilot pages its chat itself, all its rows, after
+                        _ if paced_page.is_some() => {
+                            // Copilot and Kiro page their chat themselves, after
                             // the turns before.
-                            let rows = copilot_page.unwrap_or(1) * if down { 1 } else { -1 };
-                            self.copilot_turns.push_back((t.bytes.clone(), rows));
+                            let rows = paced_page.unwrap_or(1) * if down { 1 } else { -1 };
+                            self.paced_turns.push_back((t.bytes.clone(), rows));
                             self.release_turns_into(out, &mut forward)?;
                         }
                         (_, Some(rows)) => {
@@ -2033,7 +2085,7 @@ impl App {
                     }
                 }
                 (Kind::ChatJump, true) | (Kind::Key, true)
-                    if t.kind == Kind::ChatJump || self.copilot_jump(&t.bytes) =>
+                    if t.kind == Kind::ChatJump || self.paced_jump(&t.bytes) =>
                 {
                     // Far from the selection: the box closes, the chat jumps.
                     self.flush_forward(&mut forward, child)?;
@@ -2061,12 +2113,16 @@ impl App {
                             // Copilot scrolls its sidebar there, not the chat.
                             forward.extend_from_slice(&t.bytes);
                         } else if self.shadow.mouse_mode()
-                            && self.open.as_ref().is_some_and(|o| o.copilot)
+                            && self.open.as_ref().is_some_and(|o| o.paced())
                         {
                             // Copilot gets its turns a few at a time.
                             let alt = input::mouse_button(&t.bytes).is_some_and(|b| b & 8 != 0);
-                            let rows = copilot::scroll::turn(way, alt);
-                            self.copilot_turns.push_back((t.bytes.clone(), rows));
+                            let rows = if self.open.as_ref().is_some_and(|o| o.kiro) {
+                                way * self.kiro_wheel
+                            } else {
+                                copilot::scroll::turn(way, alt)
+                            };
+                            self.paced_turns.push_back((t.bytes.clone(), rows));
                             self.release_turns_into(out, &mut forward)?;
                         } else if self.shadow.mouse_mode() {
                             // The child scrolls; its new screen shows under the box.
@@ -2680,6 +2736,9 @@ impl App {
                         claude::screen::chat_end(&snap, k).max(loc.last_row + 1)
                     } else if let Some(chat) = &chat {
                         chat.end.max(loc.last_row + 1)
+                    } else if self.agent == Some(Agent::Kiro) && self.shadow.alt_screen() {
+                        // Full-screen Kiro keeps a row of notices above its rule.
+                        kiro::screen::chat_end(k).max(loc.last_row + 1)
                     } else {
                         k
                     }
@@ -2812,6 +2871,13 @@ impl App {
         let over_copilot = self.agent == Some(Agent::Copilot)
             && self.shadow.alt_screen()
             && strip.is_some_and(|k| k == lay.region.1);
+        let over_kiro = self.agent == Some(Agent::Kiro)
+            && self.shadow.alt_screen()
+            && strip.is_some_and(|k| k == lay.region.1);
+        if over_kiro {
+            // Kiro's setting may have changed since the last box.
+            self.kiro_wheel = kiro::scroll::wheel_rows(std::path::Path::new(&self.cwd));
+        }
         let heads =
             (codex || over_claude) && self.shadow.alt_screen() && strip.is_some() && lo == 0;
         let header =
@@ -2861,6 +2927,7 @@ impl App {
             header,
             claude: over_claude,
             copilot: over_copilot,
+            kiro: over_kiro,
             wrote_at: Instant::now(),
             unsure: false,
             snap,
@@ -4425,7 +4492,8 @@ mod tests {
                     flood: false,
                 })
             }),
-            copilot_turns: VecDeque::new(),
+            paced_turns: VecDeque::new(),
+            kiro_wheel: 2,
             copilot_frame: None,
         }
     }
@@ -5642,6 +5710,105 @@ mod tests {
         assert_eq!(child, b"\x1b[H");
     }
 
+    /// Full-screen Kiro CLI 2.28.0's screen, its chat (rows 0-31, labels
+    /// `b1rNN`) from row `first`: its notice row (32), the rule with its "more
+    /// lines" hint while scrolled up (33), its status, the prompt (36) and the
+    /// hint line. One synchronized frame.
+    fn kiro_screen(first: usize, hidden: usize, notice: &str) -> String {
+        let mut s = String::from("\x1b[?2026h");
+        for r in 0..32 {
+            s.push_str(&format!(
+                "\x1b[{};1H\x1b[2K  - b1r{:02} words of row {}",
+                r + 1,
+                first + r,
+                first + r
+            ));
+        }
+        let rule = if hidden > 0 {
+            let hint = format!(" {hidden} more lines (click or End) \u{2193} ");
+            let side = (120 - hint.chars().count()) / 2;
+            format!(
+                "{}{hint}{}",
+                "\u{2500}".repeat(side),
+                "\u{2500}".repeat(120 - side - hint.chars().count())
+            )
+        } else {
+            "\u{2500}".repeat(120)
+        };
+        s.push_str(&format!(
+            "\x1b[33;1H\x1b[2K{notice}\x1b[34;1H{rule}\x1b[35;1Hkiro_default \u{b7} auto\x1b[37;1H\u{203a}  ask a question or describe a task \u{21b5}\x1b[38;1H  /copy to clipboard\x1b[?2026l"
+        ));
+        s
+    }
+
+    /// Full-screen Kiro: its turns move the chat its set rows (2) and go a
+    /// few at a time, the box moves as far as the chat, at the bottom (its
+    /// hint gone from the rule) the box's rows show for the turns past it.
+    /// Its notice row ("• Copied …") and its hint are not chat; End closes
+    /// the box (Kiro jumps to the bottom).
+    #[test]
+    fn kiro_scrolls_under_the_box_its_rows_a_turn() {
+        let mut app = test_app_for(Agent::Kiro, 120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let start = format!(
+            "\x1b[?1049h\x1b[?1003h\x1b[?1006h{}",
+            kiro_screen(40, 10, "")
+        );
+        app.on_output(start.as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        app.on_input(
+            b"\x1b[<0;5;13M\x1b[<32;10;13M\x1b[<0;10;13m",
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        app.on_output(b"\x1b]52;c;YjFyNTI=\x07", &mut out, &mut child)
+            .unwrap();
+        // Kiro tells it copied, on its notice row.
+        app.on_output(
+            kiro_screen(40, 10, "\u{2022} Copied \"b1r52\"").as_bytes(),
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        app.open_peek(&mut out).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.peek.title, "b1r52");
+        assert!(open.kiro);
+        assert_eq!(open.lay.region, (0, 32), "the notice row is not chat");
+        let home = open.lay.home;
+        // Twenty turns down at once: twelve go (24 rows, 8 of 32 in common).
+        child.clear();
+        app.on_input(&b"\x1b[<65;60;15M".repeat(20), &mut out, &mut child)
+            .unwrap();
+        assert_eq!(child, b"\x1b[<65;60;15M".repeat(12));
+        // Kiro drew five of them (10 rows): it is at its bottom, the hint gone.
+        child.clear();
+        app.on_output(kiro_screen(50, 0, "").as_bytes(), &mut out, &mut child)
+            .unwrap();
+        // The box's rows show at once for the turns past the bottom, and the
+        // other turns go (they move Kiro nothing).
+        let o = app.open.as_ref().unwrap();
+        assert_eq!(o.lay.home, home - 10);
+        assert!(o.revealed > 0 && o.end == Some(1), "box rows at the bottom");
+        assert_eq!(child, b"\x1b[<65;60;15M".repeat(8), "the rest go");
+        assert!(
+            !o.mem
+                .values()
+                .any(|r| r.contains("Copied") || r.contains("more lines")),
+            "Kiro's notice and hint are not chat"
+        );
+        // PageUp goes to Kiro as the key; End closes the box.
+        child.clear();
+        app.on_input(b"\x1b[5~", &mut out, &mut child).unwrap();
+        assert_eq!(child, b"\x1b[5~");
+        child.clear();
+        app.on_input(b"\x1b[F", &mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+        assert_eq!(child, b"\x1b[F");
+    }
+
     /// Claude starts working with the box open: its spinner line over the
     /// last chat rows (a blank row above it) is not chat, the chat ends above
     /// it, and the spinner is never remembered as a chat row.
@@ -6155,7 +6322,8 @@ mod tests {
         assert!(!open.lay.below);
         assert_eq!((open.lay.box_top as usize) + open.lay.box_height, 26);
         assert_eq!(open.peek.child_name, "Kiro");
-        assert_eq!(open.strip_top, Some(31), "Kiro's input area stays live");
+        // Live from Kiro's notice row ("• Entered fullscreen …") above its rule.
+        assert_eq!(open.strip_top, Some(30), "Kiro's input area stays live");
 
         app.on_input(b"\x1b", &mut out, &mut child).unwrap();
         real.advance(&std::mem::take(&mut out));
