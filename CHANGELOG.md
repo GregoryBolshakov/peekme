@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.6-beta.16 (2026-10-14)
+
+A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.16`.
+
+- Scrolling GitHub Copilot CLI with a peek box open now works like in Codex and Claude Code: the
+  chat and the box move together, as far as Copilot scrolls without peekme. That is 3 rows a turn
+  of the wheel, 1 with Alt held, and a whole screen for PgUp and PgDn.
+- Fixed: Copilot's tabs, its status line and, since Copilot CLI 1.0.98, its input box scrolled
+  along with the chat, and the box could cover them. Copilot 1.0.98 draws its input box in a new
+  way that peekme did not know.
+- Fixed: a quick turn of the wheel or a trackpad flick made the chat jump with a box open.
+  Copilot draws turns that arrive together as one jump, sometimes further than a screen, and
+  peekme lost track of the box. Now peekme hands Copilot the turns a few at a time, and one at a
+  time where many lines read the same.
+- Copilot's scrollbar stays as Copilot draws it instead of moving with the lines.
+- Fixed: a selection over two lines in Copilot opened "The selected text isn't on screen".
+  Copilot copies the text without its scrollbar, and peekme looked for it with the scrollbar.
+- Home or End with nothing typed makes Copilot jump to the start or the end of the chat. With a
+  box open this now closes the box, as Ctrl+Home and Ctrl+End do.
+
 ## 0.4.6-beta.15 (2026-10-14)
 
 A test build, only on crates.io: `cargo install peekme --version 0.4.6-beta.15`.
