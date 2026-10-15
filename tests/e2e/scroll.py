@@ -41,6 +41,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import chat_session  # noqa: E402
 import claude_session  # noqa: E402
+import copilot_session  # noqa: E402
 import matrix as m  # noqa: E402
 import real_agents as ra  # noqa: E402
 
@@ -127,6 +128,15 @@ class ClaudeWheel:
         return max(1, math.floor(self.mult))
 
 
+class CopilotWheel:
+    """GitHub Copilot CLI's rows for a turn of the wheel (1.0.98): 3."""
+
+    speed = 3.0
+
+    def turn(self, way, now=None):
+        return 3 if way > 0 else -3
+
+
 BOX = ("╭", "│", "╰")
 # Claude Code's hint on the last chat row while scrolled up.
 CLAUDE_HINT = "Jump to bottom (ctrl+End) ↓"
@@ -197,7 +207,7 @@ class Session:
     """One Codex (or Claude Code) under peekme, with a chat made of labelled rows."""
 
     def __init__(self, out, blocks, rep=False, size=(120, 40), block_rows=40, late=False,
-                 speed=None, prompts=False, colors=True, agent="codex"):
+                 speed=None, prompts=False, colors=True, agent="codex", sidebar=False):
         m.COLS, m.ROWS = size
         self.out = out
         self.used = set()
@@ -210,11 +220,25 @@ class Session:
         self.burst_gap = 0.012 if agent == "claude" else 0.008
         self.child_log = os.path.join(out, "child.bin")
         self.child_at = {}
-        prompts = prompts or agent == "claude"
+        prompts = prompts or agent in ("claude", "copilot")
         self.prompts = prompts
-        self.header = ("❯ q" if agent == "claude" else "› q") if prompts else None
+        # Codex and Claude pin the prompt of what is on screen on the top row;
+        # Copilot shows no such header.
+        self.header = None if agent == "copilot" else (
+            ("❯ q" if agent == "claude" else "› q") if prompts else None)
+        # Screen row of the chat's first row (Copilot: under its tab bar),
+        # and frames with the box drawn above it.
+        self.top, self.above = 0, []
+        # Columns left of Copilot's chat: its sidebar and divider, when open.
+        self.left = 0
         extra, resume, self.codex_home, self.claude_home = {}, [], None, None
-        if agent == "claude":
+        if agent == "copilot":
+            # A saved chat in a COPILOT_HOME of its own, trusting this folder.
+            home, sid = copilot_session.copilot_home(out, blocks, block_rows, long_prompt=(2,),
+                                                     repeated=(1,) if rep else ())
+            extra = {"COPILOT_HOME": home}
+            resume = ["--no-auto-update", "--resume", sid]
+        elif agent == "claude":
             # A saved chat in a config folder of its own, full screen.
             home, sid = claude_session.config_dir(out, blocks, block_rows, long_prompt=(2,),
                                                   repeated=(1,) if rep else ())
@@ -238,7 +262,10 @@ class Session:
         relay = [sys.executable, os.path.join(HERE, "late_pty.py")] if late else []
         # Codex's wheel speed: its default 1.0, or set on its command line.
         setting = ["-c", f"tui.mouse_scroll_speed={speed}"] if speed else []
-        if agent == "claude":
+        if agent == "copilot":
+            self.model = CopilotWheel()
+            argv = [m.PEEKME, ra.real_binary("copilot")] + resume
+        elif agent == "claude":
             self.model = ClaudeWheel(speed or 1.0)
             if speed:
                 env["CLAUDE_CODE_SCROLL_SPEED"] = str(speed)
@@ -249,6 +276,13 @@ class Session:
                                           "check_for_update_on_startup=false"] + setting + resume
         self.t = m.Term(argv, env, os.path.join(out, "terminal.bin"), colors=colors)
         self.ready()
+        if sidebar:
+            # The left arrow with nothing typed opens Copilot's sidebar.
+            self.t.send(b"\x1b[D")
+            time.sleep(1.5)
+            rows = self.t.screen()
+            self.left = 1 + next(c for c in range(8, m.COLS // 2)
+                                 if all(len(r) > c and r[c] == "│" for r in rows))
         for b in range(0 if prompts else blocks):
             fill = "same row of a repeated output" if rep and b == 1 else None
             self.run_block(b, fill, block_rows)
@@ -309,6 +343,13 @@ class Session:
         """Chat rows: all above the status (Codex) or notice (Claude) row,
         two above the prompt line."""
         s = self.screen()
+        if self.agent == "copilot":
+            # The rows of Copilot's scrollbar, in the last column.
+            bar = [i for i, r in enumerate(s) if len(r) == m.COLS and r.endswith("┃")]
+            self.top = bar[0]
+            if bar != list(range(bar[0], bar[-1] + 1)):
+                raise RuntimeError(f"Copilot's scrollbar is not one run: {bar}")
+            return len(bar)
         if self.agent == "claude":
             composer = max(i for i, r in enumerate(s) if r.startswith("❯") and i > 0
                            and s[i - 1].strip() and set(s[i - 1].strip()) == {"─"})
@@ -372,9 +413,17 @@ class Session:
         return (self.first_prompt is not None and s > self.first_prompt
                 and s not in self.cells)
 
+    def place_after(self, p, d):
+        """The agent's place after a turn of `d` rows from `p`. Copilot goes
+        on to the bottom from a row short of it (it follows new text there)."""
+        q = max(0, min(self.end_pos, p + d))
+        if self.agent == "copilot" and q >= self.end_pos - 1:
+            q = self.end_pos
+        return q
+
     def moved(self, rows):
         """Codex's place after turns of `rows`: (place, the rows it took)."""
-        pos = max(0, min(self.end_pos, self.pos + rows))
+        pos = self.place_after(self.pos, rows)
         took = pos - self.pos
         self.pos = pos
         return took
@@ -382,20 +431,29 @@ class Session:
     def wheel(self, up, n=1, gap=0.0, batch=1, side=None, at=None, track=True):
         """Turn the wheel; returns the rows each turn moves the agent's chat."""
         # Codex scrolls for the wheel over its chat only.
-        x, y = (m.COLS // 2, self.R // 2) if at in (None, "auto") else at
+        x, y = (m.COLS // 2, self.R // 2) if at in (None, "auto", "side") else at
+        y += self.top
         rows = []
         for _ in range(n):
+            if at == "side":
+                # Over Copilot's sidebar, beside a chat row: it scrolls the
+                # sidebar, not the chat.
+                chat = self.chat()
+                x = 5
+                y = self.top + 1 + min((r for r in range(self.R) if chat[r][:1] not in BOX),
+                                       key=lambda r: abs(r - self.R // 2))
             if at == "auto":
                 # A row the box does not cover (a box scrolls its own text).
                 chat = self.chat()
-                y = 1 + min((r for r in range(self.R) if chat[r][:1] not in BOX),
-                            key=lambda r: abs(r - self.R // 2))
+                y = self.top + 1 + min((r for r in range(self.R) if chat[r][:1] not in BOX),
+                                       key=lambda r: abs(r - self.R // 2))
             b = wheel_bytes(up, x, y) * batch
             if side:
                 b += b"".join(wheel_bytes(s == "<", x, y, side=True) for s in side)
             self.t.send(b)
             now = time.monotonic() * 1000
-            rows += [self.model.turn(-1 if up else 1, now) for _ in range(batch)]
+            rows += [0 if at == "side" else self.model.turn(-1 if up else 1, now)
+                     for _ in range(batch)]
             if track and at in (None, "auto"):
                 for r in rows[-batch:]:
                     self.moved(r)
@@ -403,8 +461,12 @@ class Session:
                 time.sleep(gap)
         return rows
 
+    def strip(self, rows):
+        """Rows without Copilot's sidebar, which stays put; the box covers it."""
+        return [r if r[:1] in BOX else r[self.left:] for r in rows] if self.left else rows
+
     def chat(self):
-        return self.screen()[:self.R]
+        return self.strip(self.screen()[self.top:self.top + self.R])
 
     def settle(self):
         """Wait until the screen stops changing (a late Codex takes a while)."""
@@ -449,35 +511,47 @@ class Session:
         return T
 
     def read_chat(self):
-        if self.agent == "claude":
-            T = self.read_chat_claude()
-            if len(set(r for r in T if LABEL.search(r))) != len([r for r in T if LABEL.search(r)]):
-                raise RuntimeError("labelled rows are not unique")
-            return T
+        T = self.read_chat_claude() if self.agent == "claude" else self.read_chat_paged()
+        if len(set(r for r in T if LABEL.search(r))) != len([r for r in T if LABEL.search(r)]):
+            raise RuntimeError("labelled rows are not unique")
+        # A block of repeated rows has 30 of them: read where rows repeat,
+        # screens fit more than one way.
+        same = sum(r.strip().lstrip("-•· ").strip() == "same row of a repeated output" for r in T)
+        if same not in (0, 30):
+            raise RuntimeError(f"reading the chat: {same} repeated rows, not 30")
+        return T
+
+    def read_chat_paged(self):
         self.t.send(b"\x1b[1;5H")  # Ctrl+Home
         self.settle()
         cur = self.chat()
         T = list(cur)
         # Under a prompt header only the rows below the top one are chat.
-        h = 1 if self.prompts else 0
+        h = 1 if self.header else 0
         while True:
             # PageDown; with a prompt header a page can leave no chat row in
-            # common, so eight wheel turns there.
-            self.t.send(wheel_bytes(False, m.COLS // 2, self.R // 2) * 8 if h else b"\x1b[6~")
+            # common, so eight wheel turns there. Copilot's page is all its
+            # rows: eight turns there too.
+            # Copilot moves 3 rows a turn: as many turns as leave rows in
+            # common, and that shift first where rows repeat.
+            turns = max(1, min(8, (self.R - 4) // 3)) if self.agent == "copilot" else 8
+            if h or self.agent == "copilot":
+                self.t.send(wheel_bytes(False, m.COLS // 2, self.top + self.R // 2) * turns)
+            else:
+                self.t.send(b"\x1b[6~")
             time.sleep(0.3)
             m.wait(lambda: self.chat()[h:] != cur[h:], 1.5, 0.05)
             time.sleep(0.1)
             nxt = self.chat()
             if nxt[h:] == cur[h:]:
                 break
-            s = next((s for s in [self.R - 1 - h] + list(range(1, self.R - h))
+            first = 3 * turns if self.agent == "copilot" else self.R - 1 - h
+            s = next((s for s in [first] + list(range(1, self.R - h))
                       if nxt[h:self.R - s] == cur[s + h:]), None)
             if s is None:
                 raise RuntimeError("reading the chat: screens do not overlap")
             T += nxt[self.R - s:]
             cur = nxt
-        if len(set(r for r in T if LABEL.search(r))) != len([r for r in T if LABEL.search(r)]):
-            raise RuntimeError("labelled rows are not unique")
         return T
 
     def close(self):
@@ -518,6 +592,7 @@ def select(s, row, two_rows=False):
         a, b, r2 = (m1.start() + 1, r + 1), (m2.end() + 1, r + 2), r + 1
     else:
         a, b, r2 = (m1.start() + 1, r + 1), (m1.end() + 1, r + 1), r
+    a, b = (a[0] + s.left, a[1] + s.top), (b[0] + s.left, b[1] + s.top)
     s.t.send(f"\x1b[<0;{a[0]};{a[1]}M\x1b[<32;{b[0]};{b[1]}M\x1b[<0;{b[0]};{b[1]}m".encode())
     time.sleep(0.6)
     return r, r2, chat[r:r2 + 1]
@@ -530,7 +605,11 @@ def frames(s, start, end, stops):
     res = []
     for line in out.splitlines():
         f = json.loads(line)
-        res.append((f["off"], [r.rstrip() for r in f["rows"]]))
+        rows = [r.rstrip() for r in f["rows"]]
+        # Above the chat (Copilot's tab bar) nothing of the box shows.
+        if any(r[:1] in BOX for r in rows[:s.top]):
+            s.above.append(f["off"])
+        res.append((f["off"], s.strip(rows[s.top:])))
     return res
 
 
@@ -621,6 +700,9 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
                 H = len(ref)
                 break
         if ref is None:
+            ref = box_from_parts(fr, done_at, R, 2 * case.lines + 2 + len(sel_rows))
+            H = len(ref) if ref else None
+        if ref is None:
             case.err("never saw the whole box once its text was done")
             return
         # Borders, the header (a row a selected row), a gap, lines and gaps.
@@ -653,6 +735,8 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
             case.err(f"frame at byte {o}: {got}")
         elif settled:
             where[o] = got
+        if o in s.above:
+            case.err(f"frame at byte {o}: box drawn above the chat")
         for r in rows[R:]:
             if r[:1] in BOX:
                 case.err(f"frame at byte {o}: box drawn over Codex's input area")
@@ -669,7 +753,7 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
     for _, _, move in case.marks:
         pos_at.append(pos)
         for d in move or []:
-            pos = max(0, min(s.end_pos, pos + d))
+            pos = s.place_after(pos, d)
     # Claude's count of a fast run can be a few rows off what it moves
     # (f122): its own screen says where its chat really went.
     places = s.claude_places([o for _, o, _ in case.marks]) if s.agent == "claude" else None
@@ -702,8 +786,10 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
                 # The rows Codex moves, one less or more where its prompt
                 # header comes or goes; the rest of the turn past either end
                 # of its chat is peekme's to show.
-                q = max(0, min(s.end_pos, p + d))
-                shift = d - (s.header_at(q) - s.header_at(p))
+                raw = max(0, min(s.end_pos, p + d))
+                q = s.place_after(p, d)
+                # Copilot's turn from a row short of its bottom goes a row on.
+                shift = d + (q - raw) - (s.header_at(q) - s.header_at(p))
                 want = max(0, min(maxoff, want + shift))
                 p = q
         if off is not None and move is not None:
@@ -742,6 +828,30 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
             if at[prev[1]][:R] != rows[:R]:
                 case.err(f"{name}: the screen changed after the wheel stopped")
         prev = (name, o)
+
+
+def box_from_parts(fr, done_at, R, H):
+    """The whole box of `H` rows from frames after `done_at` that show only
+    part of it: its top (cut at the bottom of the chat) and its bottom (cut
+    at the top), where they overlap and agree. A box nearly as tall as the
+    chat can pass from one to the other in one frame (Copilot's paced
+    turns move several rows a frame)."""
+    head = tail = []
+    for o, rows in fr:
+        run = box_run(rows[:R])
+        if o < done_at or not run or not run[2]:
+            continue
+        part = rows[run[0]:run[1]]
+        if part[0].startswith("╭") and run[1] == R and len(part) > len(head):
+            head = part
+        if part[-1].startswith("╰") and run[0] == 0 and len(part) > len(tail):
+            tail = part
+    if not head or not tail or len(head) + len(tail) <= H:
+        return None
+    lap = len(head) + len(tail) - H
+    if head[len(head) - lap:] != tail[:lap]:
+        return None
+    return head + tail[lap:]
 
 
 def chat_end(rows):
@@ -860,6 +970,9 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
                 s.t.send(b"\x1b[5~" if up else b"\x1b[6~")
                 if s.agent == "claude":
                     rows = [(-1 if up else 1) * ((s.R - 1) // 2)]
+                elif s.agent == "copilot":
+                    # Copilot pages its chat itself: all its rows a press.
+                    rows = [(-1 if up else 1) * s.R]
                 else:
                     rows = [s.model.turn(-1 if up else 1) for _ in range(turns)]
                 for r in rows:
@@ -880,7 +993,8 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
             chat = s.chat()
             r = next(i for i, row in enumerate(chat) if "Line 2 of" in row)
             c = chat[r].index("Line 2 of") + 1
-            s.t.send(f"\x1b[<0;{c};{r + 1}M\x1b[<32;{c + 3};{r + 1}M\x1b[<0;{c + 3};{r + 1}m".encode())
+            y = s.top + r + 1
+            s.t.send(f"\x1b[<0;{c};{y}M\x1b[<32;{c + 3};{y}M\x1b[<0;{c + 3};{y}m".encode())
             time.sleep(0.5)
             s.t.send(b"\x1bp")
             time.sleep(1.5)
@@ -899,7 +1013,8 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
             s.t.send(b"\x1b")
             time.sleep(0.2)
     else:
-        s.t.send(f"\x1b[<0;{m.COLS - 2};{s.R + 2}M\x1b[<0;{m.COLS - 2};{s.R + 2}m".encode())
+        y = s.top + s.R + (1 if s.agent == "copilot" else 2)
+        s.t.send(f"\x1b[<0;{m.COLS - 2};{y}M\x1b[<0;{m.COLS - 2};{y}m".encode())
     time.sleep(0.6)
     # Claude may still be drawing (a blank row, its header) after the box went.
     if s.agent == "claude":
@@ -919,7 +1034,9 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
         if not any(b[k:] == a[:R - k] for k in range(0, 7)):
             case.err("after closing the agent's next scroll does not match the screen")
     else:
-        chat = view(chat, s)
+        # Claude can leave rows blank a while after a fast scroll, with or
+        # without peekme (f128): a blank row stands for any.
+        chat = view(chat, s, holes=True)
         ks = [k for k in range(len(s.T) - s.R + 1) if s.T[k:k + s.R] == chat]
         if not ks:
             case.err("after closing the screen is not the agent's chat")
@@ -928,7 +1045,7 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
         else:
             back = -s.wheel(True)[0]
             time.sleep(0.3)
-            after = view(s.chat(), s)
+            after = view(s.chat(), s, holes=True)
             # A prompt header coming or going moves the rows one less or more.
             near = (-1, 0, 1) if s.prompts else (0,)
             if not any(s.T[max(0, k - back + e):max(0, k - back + e) + s.R] == after
@@ -1072,11 +1189,25 @@ def cases_prompts(s):
 
 
 def cases_claude(s):
-    """Claude Code full screen: every Codex case that does not need Codex
-    itself (its speed setting, its late relay, its writing)."""
+    """Claude Code and Copilot full screen: every Codex case that does not
+    need Codex itself (its speed setting, its late relay, its writing)."""
     yield from cases_prompts(s)
     yield from cases_long(s)
     yield from cases_more(s)
+
+
+def cases_sidebar(s):
+    """Copilot with its sidebar open, left of the chat."""
+    yield "sidebar: slow both ways past both ends", lambda: run_case(
+        s, "sidebar-slow", 8, actions=[("slow", True, 6), ("slow", False, 14),
+                                       ("burst", True, 40, {"gap": 0.003}), ("slow", False, 4)])
+    yield "sidebar: selection over two rows", lambda: run_case(
+        s, "sidebar-two", 9, two_rows=True, actions=[("slow", True, 4), ("burst", False, 10)])
+    yield "sidebar: the wheel over the sidebar", lambda: run_case(
+        s, "sidebar-wheel", 10, actions=[("slow", True, 3), ("slow", True, 3, "side"),
+                                         ("slow", False, 2, "side"), ("slow", False, 5)])
+    yield "sidebar: PageUp and PageDown", lambda: run_case(
+        s, "sidebar-pages", 12, actions=[("page", True, 2), ("page", False, 3)])
 
 
 def cases_rep(s):
@@ -1098,7 +1229,11 @@ SESSIONS = [("long", dict(blocks=4), cases_long), ("more", dict(blocks=3, colors
             ("prompts speed 3", dict(blocks=4, prompts=True, speed=3), cases_prompts),
             ("claude", dict(blocks=4, agent="claude"), cases_claude),
             ("claude repeated", dict(blocks=3, agent="claude", rep=True), cases_rep),
-            ("claude small", dict(blocks=3, agent="claude", size=(80, 24)), cases_small)]
+            ("claude small", dict(blocks=3, agent="claude", size=(80, 24)), cases_small),
+            ("copilot", dict(blocks=4, agent="copilot"), cases_claude),
+            ("copilot repeated", dict(blocks=3, agent="copilot", rep=True), cases_rep),
+            ("copilot small", dict(blocks=3, agent="copilot", size=(80, 24)), cases_small),
+            ("copilot sidebar", dict(blocks=3, agent="copilot", sidebar=True), cases_sidebar)]
 
 
 def main():
@@ -1120,7 +1255,8 @@ def main():
         os.makedirs(out, exist_ok=True)
         s = Session(out, kw["blocks"], kw.get("rep", False), kw.get("size", (120, 40)),
                     kw.get("block_rows", 40), kw.get("late", False), kw.get("speed"),
-                    kw.get("prompts", False), kw.get("colors", True), kw.get("agent", "codex"))
+                    kw.get("prompts", False), kw.get("colors", True), kw.get("agent", "codex"),
+                    kw.get("sidebar", False))
         try:
             for _ in range(repeat):
                 for name, fn in cases(s):

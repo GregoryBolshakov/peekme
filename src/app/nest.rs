@@ -193,6 +193,32 @@ impl App {
             row.push_str(&format!("\x1b[{};{}H", hi, span.start + 1));
             render::cells(row, &open.snap.rows[hi - 1][span]);
         }
+        // Copilot's sidebar and its scrollbar in the last column do not
+        // scroll with the chat: each chat row shows the cells Copilot has
+        // there now.
+        if open.copilot && !open.unsure {
+            let cols = open.snap.cols;
+            let (left, _) = copilot::screen::fixed_columns(&open.snap);
+            for (i, row) in rows.iter_mut().enumerate() {
+                let r = lo + i;
+                let Some(cells) = open.snap.rows.get(r) else {
+                    continue;
+                };
+                if open.lay.box_row(r).is_some() {
+                    continue;
+                }
+                if left > 0 {
+                    row.push_str(&format!("\x1b[{};1H", r + 1));
+                    render::cells(row, &cells[..left.min(cells.len())]);
+                }
+                if let Some(cell) = cells.last()
+                    && cell.c == '\u{2503}'
+                {
+                    row.push_str(&format!("\x1b[{};{}H", r + 1, cols));
+                    render::cells(row, std::slice::from_ref(cell));
+                }
+            }
+        }
         let mut frame = String::from(SYNC_BEGIN);
         frame.push_str("\x1b[?25l");
         let top = open.lay.region.0;

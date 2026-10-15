@@ -21,7 +21,7 @@ use crate::overlay::{self, Layout, PeekBox, Status};
 use crate::render::{self, Boundary, SYNC_BEGIN, SYNC_END};
 use crate::select::{self, Located, SelectionSource};
 use crate::shadow::{Shadow, Snapshot};
-use crate::{claude, codex, kiro};
+use crate::{claude, codex, copilot, kiro};
 
 mod nest;
 
@@ -143,6 +143,11 @@ struct Open {
     /// header covers the top row without moving the chat, a hint covers its
     /// last row while scrolled up, and its ends show on the screen.
     claude: bool,
+    /// The box is over full-screen Copilot's chat: a tab bar above it and a
+    /// scrollbar in its last column, its wheel turns go to it a few at a time
+    /// (turns that come together it draws as one jump), and a turn at either
+    /// end of its chat draws nothing.
+    copilot: bool,
     /// When the child last wrote while the box was open.
     wrote_at: Instant,
     /// Where the chat is was last taken from Claude's count, not seen:
@@ -266,6 +271,53 @@ impl Open {
         }
     }
 
+    /// Full-screen Copilot: its turns move the chat exactly their rows up to
+    /// either end, and one that stops a row short of the bottom goes on to
+    /// it, a row more. A turn past an end draws nothing: once Copilot drew
+    /// nothing for a while after the last turn went, the rows the turns had
+    /// left are the box's to show, unless Copilot's scrollbar has its thumb
+    /// between its ends (it is surely at neither: still drawing).
+    fn copilot_settle(&mut self, snap: &Snapshot) {
+        let all: isize = self.run.iter().map(|r| r.abs()).sum();
+        let extra = if self.run_way == 1 {
+            copilot::scroll::snap_extra(&self.run, self.moved)
+        } else {
+            0
+        };
+        // The chat moved after all, with the box's rows shown for it.
+        let over = (self.moved + self.revealed - all - extra).min(self.revealed);
+        if over > 0 {
+            self.reveal_rows(-over);
+            if self.revealed == 0 {
+                self.end = None;
+            }
+            return;
+        }
+        // As many as the box has left to show that way: a row up with Alt at
+        // the bottom moves Copilot nothing (it goes back to the bottom), and
+        // is no end of the chat unless box rows show past the bottom.
+        let lift = self.lay.home - self.lay.box_top;
+        let room = if self.run_way > 0 {
+            self.lay.box_height as isize - lift
+        } else {
+            lift
+        };
+        let owed = all + extra - self.moved - self.revealed;
+        // Away from the ends every turn moves 3 rows: a run of plain turns
+        // that moved some other number found an end, and the turns still on
+        // their way move nothing.
+        let found = self.run.iter().all(|r| r.abs() == 3) && self.moved % 3 != 0;
+        let quiet = found
+            || self.sent.elapsed() >= COPILOT_QUIET && self.wrote_at.elapsed() >= COPILOT_QUIET;
+        let (lo, hi) = self.lay.region;
+        if owed > 0 && quiet && !copilot::screen::thumb_inside(snap, lo..hi) {
+            if owed.min(room) > 0 {
+                self.reveal_rows(owed.min(room));
+            }
+            self.end = Some(self.run_way);
+        }
+    }
+
     /// Show `rows` more of the box's rows the run's way (fewer: minus).
     fn reveal_rows(&mut self, rows: isize) {
         self.lay = overlay::reveal(&self.lay, self.run_way * rows);
@@ -291,6 +343,13 @@ const STRAY_MOUSE: Duration = Duration::from_secs(1);
 const WHEEL_UNMOVED: Duration = Duration::from_millis(150);
 /// Claude drew nothing for this long: its last frame is where it stopped.
 const CLAUDE_QUIET: Duration = Duration::from_millis(80);
+/// Copilot drew nothing for this long after the last turn went: it took
+/// every turn sent (it draws one in about 8 ms, 23 ms at most, seen on
+/// 1.0.98), and a turn it did not draw found an end of the chat.
+const COPILOT_QUIET: Duration = Duration::from_millis(60);
+/// Copilot draws each frame between hiding the cursor and showing it again;
+/// a frame left open this long is taken as done.
+const COPILOT_FRAME: Duration = Duration::from_millis(100);
 /// Claude's turns this far apart start a new run (see `wheel_rows`).
 const CLAUDE_RUN_GAP: Duration = Duration::from_millis(400);
 /// Codex took several turns in one read and answered them with fewer
@@ -643,6 +702,8 @@ fn event_loop(
         child_pointer: None,
         wheel: codex::scroll::Wheel::new(scroll_speed),
         claude_wheel,
+        copilot_turns: VecDeque::new(),
+        copilot_frame: None,
     };
     let mut stdout = std::io::stdout().lock();
     if app.in_tmux {
@@ -840,6 +901,11 @@ struct App {
     wheel: codex::scroll::Wheel,
     /// Claude's count, which speeds up with the wheel (full-screen Claude).
     claude_wheel: Option<claude::scroll::Wheel>,
+    /// Wheel turns (and page keys) for full-screen Copilot with a box open,
+    /// waiting to go to it: the report and the rows it moves the chat.
+    copilot_turns: VecDeque<(Vec<u8>, isize)>,
+    /// Copilot hid the cursor to draw a frame and has not shown it again.
+    copilot_frame: Option<Instant>,
 }
 
 impl App {
@@ -870,6 +936,7 @@ impl App {
             self.advance_open(bytes);
             self.marks_stale = !self.marks.is_empty();
         }
+        self.note_copilot_frame(bytes);
         if let Some(text) = self.osc52.feed(bytes)
             && let Some((at, cell)) = self.last_release
             && at.elapsed() < SELECTION_AFTER_RELEASE
@@ -918,6 +985,7 @@ impl App {
             self.follow_feed(out)?;
         }
         self.wheel_past_end(out)?;
+        self.release_copilot_turns(out, child)?;
         if self.pending.is_some() && self.can_draw() {
             self.pending = None;
             self.open_peek(out)?;
@@ -976,7 +1044,60 @@ impl App {
 
     fn on_idle(&mut self, out: &mut dyn Write, child: &mut dyn Write) -> Result<()> {
         self.resolve_pending_hotkey(out, child)?;
-        self.tick(out)
+        self.tick(out)?;
+        self.release_copilot_turns(out, child)
+    }
+
+    /// Send full-screen Copilot the wheel turns waiting for it, a few at a
+    /// time: turns that reach it together it draws as one jump, which can
+    /// leave no row in common with the screen before (30 quick turns, 4
+    /// frames). The next go once it drew the rows of those before, up to most
+    /// of its chat's rows on their way, or once it drew nothing for a while (a
+    /// turn at an end of the chat moves nothing). Without a box, all go.
+    fn release_copilot_turns(&mut self, out: &mut dyn Write, child: &mut dyn Write) -> Result<()> {
+        let mut bytes = Vec::new();
+        self.release_turns_into(out, &mut bytes)?;
+        if !bytes.is_empty() {
+            child.write_all(&bytes)?;
+            child.flush()?;
+        }
+        Ok(())
+    }
+
+    fn release_turns_into(&mut self, out: &mut dyn Write, sink: &mut Vec<u8>) -> Result<()> {
+        while let Some(&(_, rows)) = self.copilot_turns.front() {
+            if let Some(open) = self.open.as_ref().filter(|o| o.copilot) {
+                let way = rows.signum();
+                let same = open.run_way == way && open.sent.elapsed() < CLAUDE_RUN_GAP;
+                let owed: isize =
+                    open.run.iter().map(|r| r.abs()).sum::<isize>() - open.moved - open.revealed;
+                let owed = if same { owed.max(0) } else { 0 };
+                let (lo, hi) = open.lay.region;
+                // Rows on their way: as many as leave a quarter of the chat's
+                // rows (at least 4) in common with the screen before. Copilot
+                // draws about 30 frames a second while turns keep coming.
+                let rows_shown = hi - lo;
+                let room = rows_shown.saturating_sub((rows_shown / 4).max(4)).max(3);
+                // Where rows repeat, a frame of several turns could read as
+                // one of fewer: fewer go at a time there.
+                let text = copilot::screen::chat_text(&open.snap);
+                let room = copilot::screen::readable_move(&text, lo..hi, way, room) as isize;
+                let quiet = open.sent.elapsed() >= COPILOT_QUIET
+                    && open.wrote_at.elapsed() >= COPILOT_QUIET;
+                let at_end = open.end == Some(way);
+                if owed > 0 && owed + rows.abs() > room && !quiet && !at_end {
+                    break;
+                }
+            }
+            let Some((report, rows)) = self.copilot_turns.pop_front() else {
+                break;
+            };
+            if self.open.is_some() {
+                self.wheel_rows(rows.signum(), vec![rows], out)?;
+            }
+            sink.extend_from_slice(&report);
+        }
+        Ok(())
     }
 
     /// First screen row whose content the shadow really knows.
@@ -989,14 +1110,36 @@ impl App {
 
     /// The terminal is between the child's frames and escape sequences.
     fn can_draw(&self) -> bool {
-        !self.shadow.in_sync_update() && self.boundary.at_boundary()
+        !self.shadow.in_sync_update()
+            && self.boundary.at_boundary()
+            && !self
+                .copilot_frame
+                .is_some_and(|t| t.elapsed() < COPILOT_FRAME)
+    }
+
+    /// Copilot draws without synchronized updates, each frame between hiding
+    /// the cursor and showing it again: whether `bytes` leave one open.
+    fn note_copilot_frame(&mut self, bytes: &[u8]) {
+        if self.agent != Some(Agent::Copilot) {
+            return;
+        }
+        let hide = rfind(bytes, b"\x1b[?25l");
+        let show = rfind(bytes, b"\x1b[?25h");
+        match (hide, show) {
+            (Some(h), Some(v)) if v > h => self.copilot_frame = None,
+            (Some(_), _) => {
+                self.copilot_frame.get_or_insert_with(Instant::now);
+            }
+            (None, Some(_)) => self.copilot_frame = None,
+            (None, None) => {}
+        }
     }
 
     /// The child's input area on `snap`, per agent.
     fn composer_top(&self, snap: &Snapshot) -> Option<usize> {
         match self.agent {
-            // Copilot draws its input box like Claude Code: `❯` between two rules.
-            Some(Agent::Claude | Agent::Copilot) => claude::screen::composer_top(snap),
+            Some(Agent::Claude) => claude::screen::composer_top(snap),
+            Some(Agent::Copilot) => copilot::screen::composer_top(snap),
             Some(Agent::Kiro) => kiro::screen::composer_top(snap),
             _ => codex::screen::composer_top(snap),
         }
@@ -1019,7 +1162,8 @@ impl App {
     /// with the question, so there any change of the box counts.
     fn strip_moved(&self, now: &Snapshot, top: usize) -> bool {
         match self.agent {
-            Some(Agent::Claude | Agent::Copilot) => claude::screen::composer_top(now) != Some(top),
+            Some(Agent::Claude) => claude::screen::composer_top(now) != Some(top),
+            Some(Agent::Copilot) => copilot::screen::composer_top(now) != Some(top),
             Some(Agent::Kiro) => kiro::screen::composer_top(now) != Some(top),
             _ => {
                 self.shadow.alt_screen()
@@ -1035,6 +1179,8 @@ impl App {
         let k = self.codex_input_top()?;
         let end = if open.claude {
             claude::screen::chat_end(snap, k)
+        } else if open.copilot {
+            copilot::screen::chat_rows(snap, k).end
         } else {
             codex::screen::chat_end(snap, k)
         };
@@ -1048,7 +1194,8 @@ impl App {
         let codex = !matches!(
             self.agent,
             Some(Agent::Claude | Agent::Copilot | Agent::Kiro)
-        ) || open.claude;
+        ) || open.claude
+            || open.copilot;
         (codex && self.shadow.alt_screen() && open.strip_top == Some(open.lay.region.1))
             .then_some(open.composer)
             .flatten()
@@ -1073,6 +1220,7 @@ impl App {
             return self.close(out, false);
         }
         let (history, alt) = (self.shadow.history_size(), self.shadow.alt_screen());
+        let agent = self.agent;
         let end = self.codex_chat_end(&now);
         let Some(open) = &mut self.open else {
             return Ok(());
@@ -1095,9 +1243,12 @@ impl App {
         // Rows that are chat on both screens tell how far it moved.
         let both = hi.min(was).min(now.rows.len()).min(open.snap.rows.len());
         let found = match (&open.selection, &mut open.mark) {
-            (Some((sel, _)), Some((place, cells))) if place.alt() == alt => place
-                .find(&now, &select::Text::of(&now), sel, history)
-                .inspect(|f| *cells = f.clone()),
+            (Some((sel, _)), Some((place, cells))) if place.alt() == alt => {
+                let view = text_view(agent, alt, &now);
+                place
+                    .find(&view, &select::Text::of(&view), sel, history)
+                    .inspect(|f| *cells = f.clone())
+            }
             _ => None,
         };
         // Rows match rows: how far the chat moved (where rows repeat, as far
@@ -1123,17 +1274,31 @@ impl App {
             };
             open.lay.home - home
         });
-        let moved = overlay::scroll_delta_near(&open.snap, &now, first..both, &expect, open.claude)
-            .or(found_k);
+        // Copilot's chat text, without its sidebar and scrollbar, which stay put.
+        let (text_old, text_now) = if open.copilot {
+            (
+                std::borrow::Cow::Owned(copilot::screen::chat_text(&open.snap)),
+                std::borrow::Cow::Owned(copilot::screen::chat_text(&now)),
+            )
+        } else {
+            (
+                std::borrow::Cow::Borrowed(&open.snap),
+                std::borrow::Cow::Borrowed(&now),
+            )
+        };
+        let moved =
+            overlay::scroll_delta_near(&text_old, &text_now, first..both, &expect, open.claude)
+                .or(found_k);
         // Claude can jump further than a screen in one frame (its wheel
         // speeds up): the rows it shows are then found among the ones seen
         // before, or it moved as far as its count says.
-        let changed = now.rows_text(first, both) != open.snap.rows_text(first, both);
-        let guessed = moved.is_none() && open.claude && changed;
+        let changed = text_now.rows_text(first, both) != text_old.rows_text(first, both);
+        // Copilot pages a whole screen of rows at a time.
+        let guessed = moved.is_none() && (open.claude || open.copilot) && changed;
         // Unsure where the chat is, every frame is also tried against the
         // rows remembered from before (filed where the chat really was).
         let seen = (guessed || (open.unsure && changed))
-            .then(|| remembered_shift(open, &now, first, hi))
+            .then(|| remembered_shift(open, &text_now, first, hi))
             .flatten();
         let moved = if guessed {
             seen.or_else(|| expect.last().copied())
@@ -1160,7 +1325,9 @@ impl App {
         };
         if anchored || seen.is_some() {
             open.unsure = false;
-        } else if guessed {
+        } else if guessed && open.claude {
+            // Copilot's count is exact away from the ends, and a move that
+            // stopped at one leaves rows in common: it is never unsure.
             open.unsure = true;
         }
         let k = moved.unwrap_or(0);
@@ -1191,6 +1358,8 @@ impl App {
         if open.claude {
             let (at_end, away) = (open.claude_at_end(&now), open.claude_away(&now));
             open.claude_settle(at_end, away);
+        } else if open.copilot {
+            open.copilot_settle(&now);
         } else {
             open.settle_run();
             if open.run.len() == 1 && open.done() && open.revealed == 0 && open.moved > 0 {
@@ -1206,10 +1375,13 @@ impl App {
             // Nor is Claude's hint: a row it covers keeps what was seen of it.
             let key = r as isize + open.scrolled;
             let hint = open.claude && r + 1 == hi && claude::screen::bottom_hint(&now, r).is_some();
-            if open.mem.contains_key(&key) && (hint || now.rows_text(r, r + 1).trim().is_empty()) {
+            if open.mem.contains_key(&key)
+                && (hint || text_now.rows_text(r, r + 1).trim().is_empty())
+            {
                 continue;
             }
-            open.mem.insert(key, chat_row(open.claude, &now, r, hi));
+            open.mem
+                .insert(key, chat_row(open.claude, &text_now, r, hi));
         }
         crate::event(
             "follow",
@@ -1247,6 +1419,12 @@ impl App {
                 let (at_end, away) = (open.claude_at_end(&open.snap), open.claude_away(&open.snap));
                 open.claude_settle(at_end, away);
             }
+        } else if open.copilot {
+            // Nor does Copilot draw a turn at an end (see `Open::copilot_settle`).
+            if !open.fresh {
+                let snap = open.snap.clone();
+                open.copilot_settle(&snap);
+            }
         } else if open.answering {
             // Codex answered and may have gone quiet: see `Open::settle_run`.
             open.settle_run();
@@ -1275,6 +1453,30 @@ impl App {
         let open = self.open.as_ref().filter(|o| o.claude)?;
         let (lo, hi) = open.lay.region;
         Some(((hi - lo).saturating_sub(1) / 2).max(1) as isize)
+    }
+
+    /// Home or End over full-screen Copilot with nothing typed: Copilot jumps
+    /// to the start or the end of its chat (with text, they move the cursor).
+    fn copilot_jump(&self, key: &[u8]) -> bool {
+        const KEYS: [&[u8]; 6] = [
+            b"\x1b[H", b"\x1b[F", b"\x1b[1~", b"\x1b[4~", b"\x1bOH", b"\x1bOF",
+        ];
+        let Some(open) = self.open.as_ref().filter(|o| o.copilot) else {
+            return false;
+        };
+        KEYS.contains(&key)
+            && open.composer.is_some_and(|k| {
+                let snap = self.shadow.snapshot();
+                copilot::screen::input_empty(&snap, k)
+            })
+    }
+
+    /// PageUp or PageDown over full-screen Copilot's chat: Copilot takes the
+    /// keys and moves as many rows as its chat shows.
+    fn copilot_page(&self) -> Option<isize> {
+        let open = self.open.as_ref().filter(|o| o.copilot)?;
+        let (lo, hi) = open.lay.region;
+        Some((hi - lo).max(1) as isize)
     }
 
     /// PageUp or PageDown for a child that scrolls its chat with the wheel
@@ -1328,7 +1530,7 @@ impl App {
         open.follow = Some(Instant::now());
         // Claude never says it is done with a run: one ends when the wheel
         // rests (its count slows down there anyway) or turns the other way.
-        let ended = if open.claude {
+        let ended = if open.claude || open.copilot {
             open.sent.elapsed() >= CLAUDE_RUN_GAP
         } else {
             open.done()
@@ -1559,9 +1761,12 @@ impl App {
         let all = std::mem::take(&mut self.marks_all);
         self.marks_stale = false;
         let snap = self.shadow.snapshot();
-        let placed =
-            self.marks
-                .visible(&snap, self.shadow.history_size(), self.shadow.alt_screen());
+        let alt = self.shadow.alt_screen();
+        let placed = self.marks.visible(
+            &text_view(self.agent, alt, &snap),
+            self.shadow.history_size(),
+            alt,
+        );
         let known = self.known_top();
         let mut s = String::new();
         let stale: Vec<_> = self
@@ -1607,6 +1812,10 @@ impl App {
         let tokens = input::tokenize(bytes, &mut self.carry, &mut self.in_paste);
         let mut forward: Vec<u8> = Vec::new();
         for mut t in tokens {
+            // Turns held for Copilot while a box was open go first.
+            if self.open.is_none() && !self.copilot_turns.is_empty() {
+                self.release_turns_into(out, &mut forward)?;
+            }
             match t.bytes.as_slice() {
                 b"\x1b[200~" => pasting = true,
                 b"\x1b[201~" => pasting = false,
@@ -1792,13 +2001,24 @@ impl App {
                     let depth = self.open.as_ref().map_or(0, |o| o.nested.len());
                     // A box with more text than rows scrolls; otherwise the chat.
                     let claude_page = self.claude_page();
-                    let wheel = if self.can_scroll(depth, down) || claude_page.is_some() {
+                    let copilot_page = self.copilot_page();
+                    let wheel = if self.can_scroll(depth, down)
+                        || claude_page.is_some()
+                        || copilot_page.is_some()
+                    {
                         None
                     } else {
                         self.page_as_wheel(down)
                     };
                     match (wheel, claude_page) {
                         _ if self.can_scroll(depth, down) => self.scroll(down, out)?,
+                        _ if copilot_page.is_some() => {
+                            // Copilot pages its chat itself, all its rows, after
+                            // the turns before.
+                            let rows = copilot_page.unwrap_or(1) * if down { 1 } else { -1 };
+                            self.copilot_turns.push_back((t.bytes.clone(), rows));
+                            self.release_turns_into(out, &mut forward)?;
+                        }
                         (_, Some(rows)) => {
                             // Claude pages its chat itself, half its rows.
                             let way = if down { 1 } else { -1 };
@@ -1812,8 +2032,10 @@ impl App {
                         (None, None) => self.scroll(down, out)?,
                     }
                 }
-                (Kind::ChatJump, true) => {
-                    // Far from the selection: the box closes, Codex jumps.
+                (Kind::ChatJump, true) | (Kind::Key, true)
+                    if t.kind == Kind::ChatJump || self.copilot_jump(&t.bytes) =>
+                {
+                    // Far from the selection: the box closes, the chat jumps.
                     self.flush_forward(&mut forward, child)?;
                     self.close(out, false)?;
                     forward.extend_from_slice(&t.bytes);
@@ -1827,10 +2049,28 @@ impl App {
                 (Kind::Mouse(m), true) => match m {
                     Mouse::Motion | Mouse::WheelSide => {}
                     Mouse::WheelUp | Mouse::WheelDown => {
-                        if self.shadow.mouse_mode() {
+                        let way = if m == Mouse::WheelDown { 1 } else { -1 };
+                        let over_sidebar = self.open.as_ref().is_some_and(|o| {
+                            o.copilot
+                                && copilot::screen::sidebar(&o.snap).is_some_and(|c| {
+                                    input::mouse_cell(&t.bytes)
+                                        .is_some_and(|(y, x)| x <= c && o.lay.box_row(y).is_none())
+                                })
+                        });
+                        if over_sidebar && self.shadow.mouse_mode() {
+                            // Copilot scrolls its sidebar there, not the chat.
+                            forward.extend_from_slice(&t.bytes);
+                        } else if self.shadow.mouse_mode()
+                            && self.open.as_ref().is_some_and(|o| o.copilot)
+                        {
+                            // Copilot gets its turns a few at a time.
+                            let alt = input::mouse_button(&t.bytes).is_some_and(|b| b & 8 != 0);
+                            let rows = copilot::scroll::turn(way, alt);
+                            self.copilot_turns.push_back((t.bytes.clone(), rows));
+                            self.release_turns_into(out, &mut forward)?;
+                        } else if self.shadow.mouse_mode() {
                             // The child scrolls; its new screen shows under the box.
-                            let turn = if m == Mouse::WheelDown { 1 } else { -1 };
-                            self.wheel_turns(turn, out)?;
+                            self.wheel_turns(way, out)?;
                             forward.extend_from_slice(&t.bytes);
                         } else {
                             self.lend_mouse(out)?;
@@ -1986,13 +2226,14 @@ impl App {
             return None;
         }
         let known = self.known_top();
+        let agent = self.agent;
         let hit =
             |snap: &Snapshot, marks: &mut Marks, cell: (usize, usize), history: usize, alt| {
                 if snap.rows.get(cell.0)?.get(cell.1)?.hyperlink().is_some() {
                     return None;
                 }
                 marks
-                    .visible(snap, history, alt)
+                    .visible(&text_view(agent, alt, snap), history, alt)
                     .into_iter()
                     .find(|v| v.cells.contains(&cell) && v.cells.iter().all(|&(r, _)| r >= known))
                     .map(|v| MarkHit {
@@ -2250,6 +2491,8 @@ impl App {
     /// near where the drag ended) or Codex's (reverse video). Otherwise the
     /// terminal's mouse selection (X11 PRIMARY), or `PEEKME_SELECTION`.
     fn current_selection(&mut self, snap: &Snapshot) -> (Option<String>, Option<Located>) {
+        let view = text_view(self.agent, self.shadow.alt_screen(), snap);
+        let snap = &*view;
         self.selection_within(snap, crate::tmux::FRESH)
     }
 
@@ -2376,6 +2619,8 @@ impl App {
             self.shadow.flush_sync();
         }
         let snap = self.shadow.snapshot();
+        let alt = self.shadow.alt_screen();
+        let tsnap = text_view(self.agent, alt, &snap).into_owned();
         let rows = snap.rows.len();
         // Test hook (debug builds only): panic after the box is drawn, to check
         // that the session degrades to pass-through instead of dying.
@@ -2390,7 +2635,7 @@ impl App {
             _ if forced.is_some() => (None, None),
             Some(hit) => {
                 self.selection_source = "mark";
-                let loc = select::at_cells(&snap, &hit.cells);
+                let loc = select::at_cells(&text_view(self.agent, alt, &snap), &hit.cells);
                 (Some(hit.text), loc)
             }
             None => self.current_selection(&snap),
@@ -2421,25 +2666,34 @@ impl App {
                 );
                 // Full-screen Claude keeps a row of notices above its input box.
                 let claude = self.agent == Some(Agent::Claude);
+                // Full-screen Copilot's chat is the rows of its scrollbar: its
+                // tab bar above, a gap and its status line below.
+                let copilot = self.agent == Some(Agent::Copilot) && self.shadow.alt_screen();
+                let chat = composer
+                    .filter(|_| copilot)
+                    .map(|k| copilot::screen::chat_rows(&snap, k))
+                    .filter(|c| c.start <= loc.first_row);
                 strip = composer.map(|k| {
                     if codex && self.shadow.alt_screen() {
                         codex::screen::chat_end(&snap, k).max(loc.last_row + 1)
                     } else if claude && self.shadow.alt_screen() {
                         claude::screen::chat_end(&snap, k).max(loc.last_row + 1)
+                    } else if let Some(chat) = &chat {
+                        chat.end.max(loc.last_row + 1)
                     } else {
                         k
                     }
                 });
                 let lay = overlay::layout_within(
-                    self.known_top(),
+                    chat.as_ref().map_or(self.known_top(), |c| c.start),
                     strip.unwrap_or(rows),
                     loc.first_row,
                     loc.last_row,
                 );
                 let mut peek = PeekBox::new(sel);
-                let first = snap.text_with_positions().1[loc.screen.start];
+                let first = tsnap.text_with_positions().1[loc.screen.start];
                 mark = Place::new(
-                    &snap,
+                    &tsnap,
                     sel,
                     first,
                     self.shadow.history_size(),
@@ -2555,6 +2809,9 @@ impl App {
         let over_claude = self.agent == Some(Agent::Claude)
             && self.shadow.alt_screen()
             && strip.is_some_and(|k| k == lay.region.1);
+        let over_copilot = self.agent == Some(Agent::Copilot)
+            && self.shadow.alt_screen()
+            && strip.is_some_and(|k| k == lay.region.1);
         let heads =
             (codex || over_claude) && self.shadow.alt_screen() && strip.is_some() && lo == 0;
         let header =
@@ -2581,7 +2838,10 @@ impl App {
             base: snap.clone(),
             shown: vec![None; lay.region.1 - lay.region.0],
             mem: (lo + usize::from(header)..lay.region.1.min(snap.rows.len()))
-                .map(|r| (r as isize, chat_row(over_claude, &snap, r, lay.region.1)))
+                .map(|r| {
+                    let text = if over_copilot { &tsnap } else { &snap };
+                    (r as isize, chat_row(over_claude, text, r, lay.region.1))
+                })
                 .collect(),
             scrolled: 0,
             fresh: false,
@@ -2600,6 +2860,7 @@ impl App {
             heads,
             header,
             claude: over_claude,
+            copilot: over_copilot,
             wrote_at: Instant::now(),
             unsure: false,
             snap,
@@ -3180,6 +3441,17 @@ fn remembered_shift(open: &Open, now: &Snapshot, first: usize, end: usize) -> Op
     let (best, k) = scores[0];
     let second = scores.get(1).map_or(0, |s| s.0);
     (best >= 3 && best >= rows.len() / 2 && second * 2 < best).then_some(k)
+}
+
+/// `snap` as its text reads: full-screen Copilot's scrollbar in the last
+/// column is not text (Copilot copies a selection without it), so it is
+/// blank here. Rows and columns stay where they are.
+fn text_view(agent: Option<Agent>, alt: bool, snap: &Snapshot) -> std::borrow::Cow<'_, Snapshot> {
+    if agent == Some(Agent::Copilot) && alt {
+        std::borrow::Cow::Owned(copilot::screen::chat_text(snap))
+    } else {
+        std::borrow::Cow::Borrowed(snap)
+    }
 }
 
 /// The text of a rendered row, without its colours.
@@ -4153,6 +4425,8 @@ mod tests {
                     flood: false,
                 })
             }),
+            copilot_turns: VecDeque::new(),
+            copilot_frame: None,
         }
     }
 
@@ -5229,6 +5503,145 @@ mod tests {
         assert_eq!(child, b"\x1b[6~", "Claude pages its chat itself");
     }
 
+    /// Full-screen Copilot 1.0.98's screen, its chat (rows 2-33, labels
+    /// `b1rNN`, 100 rows in all) from row `first`: its tab bar and a blank
+    /// row above, its scrollbar in the last column (the thumb where Copilot
+    /// puts it), a gap, its status line, its input box (36-38) and hints. One
+    /// frame, between hiding the cursor and showing it.
+    fn copilot_screen(first: usize) -> String {
+        let mut s = String::from("\x1b[?25l\x1b[1;1H  Current   Sessions   Issues   Gists");
+        let (t, e) = (32usize, 100usize);
+        let g = ((t * t) as f64 / e as f64).round() as usize;
+        let at = (first as f64 / (e - t) as f64 * (t - g) as f64).round() as usize;
+        for r in 0..t {
+            let rgb = if (at..at + g).contains(&r) {
+                "240;246;252"
+            } else {
+                "145;152;161"
+            };
+            s.push_str(&format!(
+                "\x1b[{};1H\x1b[2K   - b1r{:02} words of row {}\x1b[{};120H\x1b[38;2;{rgb}m\u{2503}\x1b[m",
+                r + 3,
+                first + r,
+                first + r,
+                r + 3
+            ));
+        }
+        s.push_str(&format!(
+            "\x1b[35;1H\x1b[2K\x1b[36;1H ~/project [main]\x1b[37;1H\u{257b}{}\x1b[38;1H\u{2503}\x1b[39;1H\u{2579}{}\x1b[40;1H  hints\x1b[38;3H\x1b[?25h",
+            "\u{2584}".repeat(119),
+            "\u{2580}".repeat(119)
+        ));
+        s
+    }
+
+    /// Full-screen Copilot: its wheel turns go a few at a time (it draws
+    /// turns that come together as one jump), the box moves as far as the
+    /// chat, and past either end (a turn Copilot draws nothing for) the
+    /// box's rows show; a turn a row short of the bottom moves a row more.
+    /// Its tab bar, status line and input box are not chat, and its
+    /// scrollbar shows as Copilot has it now.
+    #[test]
+    fn copilot_scrolls_under_the_box_a_few_turns_at_a_time() {
+        let mut app = test_app_for(Agent::Copilot, 120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let start = format!("\x1b[?1049h\x1b[?1003h\x1b[?1006h{}", copilot_screen(40));
+        app.on_output(start.as_bytes(), &mut out, &mut child)
+            .unwrap();
+        // Drag over "b1r50" on row 13 (1-based); Copilot copies it.
+        app.on_input(
+            b"\x1b[<0;6;13M\x1b[<32;10;13M\x1b[<0;10;13m",
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        app.on_output(b"\x1b]52;p!;YjFyNTA=;\x07", &mut out, &mut child)
+            .unwrap();
+        app.open_peek(&mut out).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.peek.title, "b1r50");
+        assert!(open.copilot);
+        assert_eq!(open.lay.region, (2, 34), "tab bar, gap and status not chat");
+        let lay = |app: &App| {
+            let o = app.open.as_ref().unwrap();
+            (o.lay.home, o.lay.box_top)
+        };
+        let (home, top) = lay(&app);
+        // Ten turns down at once: eight go (24 rows, a quarter of the chat's
+        // 32 left in common).
+        child.clear();
+        app.on_input(&b"\x1b[<65;60;15M".repeat(10), &mut out, &mut child)
+            .unwrap();
+        assert_eq!(child, b"\x1b[<65;60;15M".repeat(8));
+        // A frame cut before its end is not followed yet.
+        let frame = copilot_screen(55);
+        let (a, b) = frame.split_at(frame.len() / 2);
+        child.clear();
+        app.on_output(a.as_bytes(), &mut out, &mut child).unwrap();
+        assert_eq!(lay(&app), (home, top), "half a frame");
+        app.on_output(b.as_bytes(), &mut out, &mut child).unwrap();
+        assert_eq!(lay(&app), (home - 15, top - 15), "as far as Copilot moved");
+        // Copilot drew five of them: the other two go.
+        assert_eq!(child, b"\x1b[<65;60;15M".repeat(2));
+        // They take it to its bottom (68), 13 rows: the ninth turn starts 4
+        // rows short and goes a row on, the tenth draws nothing. 28 rows is
+        // no whole number of turns: an end, and 3 rows of the box show for
+        // it at once.
+        app.on_output(copilot_screen(68).as_bytes(), &mut out, &mut child)
+            .unwrap();
+        let o = app.open.as_ref().unwrap();
+        assert_eq!(o.lay.home, home - 28);
+        assert_eq!(o.revealed, 3, "the turns' rows past the bottom");
+        assert_eq!(o.end, Some(1));
+        // The scrollbar is drawn as Copilot has it, over remembered rows.
+        let drawn = String::from_utf8_lossy(&out).into_owned();
+        assert!(
+            drawn.contains("\x1b[34;120H"),
+            "scrollbar cell on the last chat row"
+        );
+        assert!(
+            !o.mem
+                .values()
+                .any(|r| r.contains("Sessions") || r.contains("~/project")),
+            "tab bar and status are not chat"
+        );
+        // Up a turn and a row (Alt), then down from 4 rows short of the
+        // bottom: Copilot goes on to it, 4 rows, and the box with it.
+        std::thread::sleep(CLAUDE_RUN_GAP);
+        app.on_input(b"\x1b[<64;60;15M", &mut out, &mut child)
+            .unwrap();
+        app.on_output(copilot_screen(65).as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.on_input(b"\x1b[<72;60;15M", &mut out, &mut child)
+            .unwrap();
+        app.on_output(copilot_screen(64).as_bytes(), &mut out, &mut child)
+            .unwrap();
+        std::thread::sleep(CLAUDE_RUN_GAP);
+        app.on_idle(&mut out, &mut child).unwrap();
+        let (h, _) = lay(&app);
+        app.on_input(b"\x1b[<65;60;15M", &mut out, &mut child)
+            .unwrap();
+        app.on_output(copilot_screen(68).as_bytes(), &mut out, &mut child)
+            .unwrap();
+        std::thread::sleep(COPILOT_QUIET + Duration::from_millis(20));
+        app.on_idle(&mut out, &mut child).unwrap();
+        let o = app.open.as_ref().unwrap();
+        assert_eq!(
+            (o.lay.home, o.revealed),
+            (h - 4, 0),
+            "4 rows, none of the box"
+        );
+        // PageDown goes to Copilot as the key.
+        child.clear();
+        app.on_input(b"\x1b[6~", &mut out, &mut child).unwrap();
+        assert_eq!(child, b"\x1b[6~", "Copilot pages its chat itself");
+        // Home with nothing typed: Copilot jumps to the start, the box closes.
+        child.clear();
+        app.on_input(b"\x1b[H", &mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+        assert_eq!(child, b"\x1b[H");
+    }
+
     /// Claude starts working with the box open: its spinner line over the
     /// last chat rows (a blank row above it) is not chat, the chat ends above
     /// it, and the spinner is never remembered as a chat row.
@@ -5665,8 +6078,10 @@ mod tests {
             "right under the selected row"
         );
         assert_eq!(open.peek.child_name, "Copilot");
+        // Live from the gap above Copilot's status line, which is not chat.
         let top = open.strip_top.expect("Copilot's input box stays live");
-        assert_eq!(top, 36);
+        assert_eq!(top, 34);
+        assert_eq!(open.lay.region.0, 2, "under Copilot's tab bar");
 
         app.on_input(b"\x1b", &mut out, &mut child).unwrap();
         real.advance(&std::mem::take(&mut out));
