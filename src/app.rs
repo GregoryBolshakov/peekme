@@ -477,6 +477,11 @@ pub fn run(
     agent: Option<Agent>,
 ) -> std::result::Result<i32, Failure> {
     let setup = setup(program, args).map_err(Failure::Setup)?;
+    let (color, warning) = crate::color::for_agent(agent, |k| std::env::var(k).ok());
+    if let Some(w) = warning {
+        crate::log(&w);
+    }
+    overlay::set_color(&crate::color::sgr(color, crate::color::truecolor()));
     let scroll_speed = matches!(agent, Some(Agent::Codex))
         .then(|| codex::scroll::speed_setting(args))
         .flatten();

@@ -226,7 +226,17 @@ enum BodyRow {
     Inner(Row),
 }
 
-const BORDER: &str = "\x1b[0;36m";
+/// The pen of the box's borders: cyan until `set_color` (tests keep it).
+static BORDER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Draw the boxes of this run in `sgr` (SGR parameters, from `color`).
+pub fn set_color(sgr: &str) {
+    let _ = BORDER.set(format!("\x1b[0;{sgr}m"));
+}
+
+fn border() -> &'static str {
+    BORDER.get().map_or("\x1b[0;36m", String::as_str)
+}
 
 /// The content of a peek box.
 #[derive(Clone)]
@@ -497,7 +507,7 @@ impl PeekBox {
             clip(&sanitize(&self.title), budget.saturating_sub(9))
         );
         let fill = width.saturating_sub(3 + title.width() + right.width());
-        format!("{BORDER}╭─{title}{}{right}╮", "─".repeat(fill))
+        format!("{}╭─{title}{}{right}╮", border(), "─".repeat(fill))
     }
 
     /// The bottom border with hints. Only the innermost box takes keys.
@@ -545,7 +555,7 @@ impl PeekBox {
             clip(&format!(" {} ", hints.join(" · ")), width.saturating_sub(4))
         };
         let fill = width.saturating_sub(3 + hint.width());
-        format!("{BORDER}╰{}{hint}─╯\x1b[0m", "─".repeat(fill))
+        format!("{}╰{}{hint}─╯\x1b[0m", border(), "─".repeat(fill))
     }
 }
 
@@ -678,12 +688,13 @@ fn box_rows(levels: &[Level], k: usize, width: usize) -> Vec<Row> {
     for i in 0..inner_h {
         rows.push(match body.get(scroll + i) {
             Some(BodyRow::Own(l)) => {
-                let mut text = format!("{BORDER}│ ");
+                let mut text = format!("{}│ ", border());
                 let used = draw_line(&mut text, &lines[*l], *l, lv.decor);
                 write!(
                     text,
-                    "\x1b[0m{}{BORDER} │",
-                    " ".repeat(tw.saturating_sub(used))
+                    "\x1b[0m{}{} │",
+                    " ".repeat(tw.saturating_sub(used)),
+                    border()
                 )
                 .unwrap();
                 Row {
@@ -695,12 +706,12 @@ fn box_rows(levels: &[Level], k: usize, width: usize) -> Vec<Row> {
                 let mut parts = edge(None);
                 parts.extend(&row.parts);
                 Row {
-                    text: format!("{BORDER}│ {}{BORDER} │", row.text),
+                    text: format!("{b}│ {}{b} │", row.text, b = border()),
                     parts,
                 }
             }
             None => Row {
-                text: format!("{BORDER}│ \x1b[0m{}{BORDER} │", " ".repeat(tw)),
+                text: format!("{b}│ \x1b[0m{}{b} │", " ".repeat(tw), b = border()),
                 parts: edge(None),
             },
         });

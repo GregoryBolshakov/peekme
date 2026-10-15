@@ -11,6 +11,7 @@ pub mod agent;
 pub mod app;
 pub mod claude;
 pub mod codex;
+pub mod color;
 pub mod context;
 pub mod copilot;
 pub mod explain;

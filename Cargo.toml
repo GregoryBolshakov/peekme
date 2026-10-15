@@ -11,6 +11,8 @@ documentation = "https://peekme.dev/docs/"
 readme = "README.md"
 keywords = ["claude-code", "codex", "copilot", "kiro", "terminal"]
 categories = ["command-line-utilities", "development-tools"]
+# The README links its GIFs on GitHub; the crate needs neither them nor the website.
+exclude = ["docs/", "site/"]
 
 [dependencies]
 alacritty_terminal = "0.26"
