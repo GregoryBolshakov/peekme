@@ -1,15 +1,18 @@
 # Changelog
 
-## 0.5.1-beta.1 (2026-10-15)
-
-A test build, only on crates.io: `cargo install peekme --version 0.5.1-beta.1`.
+## 0.5.1 (2026-10-16)
 
 - Fixed: with a long answer open and a long answer in a box inside it, the mouse wheel often
-  scrolled the text inside one of the boxes, not the chat. In Codex, Claude Code full screen,
-  Copilot CLI and Kiro CLI full screen a box now never scrolls on its own. Each box is as tall as
-  its answer, taller than the screen when it has to be. The wheel and PgUp/PgDn scroll the chat
-  with the boxes in it, the same as without peekme. Over Claude Code classic and Kiro inline the
-  boxes still fit the screen.
+  scrolled the text inside one of the boxes, not the chat. Now text never scrolls inside a box,
+  in every agent and on every screen. Each box is as tall as its answer, taller than the screen
+  when it has to be. The wheel and PgUp/PgDn scroll the chat with the boxes in it, the same as
+  without peekme.
+- On Claude Code's classic screen and Kiro's inline screen peekme now scrolls the chat with the
+  box in it itself: 3 rows a turn of the wheel, a page for PgUp and PgDn, from the oldest line
+  it saw in your terminal's history to the end of the chat. Before, the wheel gave the mouse
+  back to the terminal, which scrolled its history and left the box where it was.
+- Over a full screen that leaves the mouse to the terminal (Codex inside tmux with its mouse
+  off), the wheel shows the rest of a long box.
 - A new box inside a box opens under its line without moving the screen, unless the screen has
   to move up a little to show the new box whole.
 
