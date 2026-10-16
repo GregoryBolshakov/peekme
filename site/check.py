@@ -53,9 +53,11 @@ for cmd in installs:
 cargo = re.search(r'^version = "([^"]+)"', read("Cargo.toml"), re.M).group(1)
 site_v = re.search(r'^version = "([^"]+)"', read("site", "config.toml"), re.M).group(1)
 readme_v = re.search(r"^Status: ([0-9][^ .]*\.[0-9]+\.[0-9]+)", readme, re.M)
-if site_v != cargo:
+# A beta (0.5.1-beta.1) goes to crates.io only: the README and the site
+# keep the last release until the next one.
+if "-" not in cargo and site_v != cargo:
     errors.append(f"site/config.toml version {site_v} != Cargo.toml {cargo}")
-if not readme_v or readme_v.group(1) != cargo:
+if "-" not in cargo and (not readme_v or readme_v.group(1) != cargo):
     errors.append(f"README Status line version != Cargo.toml {cargo}")
 
 # Tested agent versions on each agent page.
