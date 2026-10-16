@@ -9,7 +9,7 @@ closes the box and the screen is exactly as before.
 
 ![peekme in Claude Code: select "Rows Removed by Filter" and press Alt+P for a short explanation. In the box select "ORDER BY with LIMIT", press Alt+Q and ask "How do I fix that?". The mouse wheel scrolls the chat with both boxes open, Esc closes them, and a click on the underlined words opens the saved answer](https://raw.githubusercontent.com/GregoryBolshakov/peekme/main/docs/demo-claude.gif)
 
-Status: 0.5.0. Tested with Claude Code 2.1.301, Codex 0.162, Copilot CLI 1.0.98 and Kiro CLI 2.28 on Linux, also
+Status: 0.5.1. Tested with Claude Code 2.1.301, Codex 0.162, Copilot CLI 1.0.98 and Kiro CLI 2.28 on Linux, also
 inside tmux and over SSH. On macOS it is tested in Terminal and iTerm2 with a stand-in agent, and
 in Terminal with the real Codex, also inside tmux and over SSH.
 
@@ -78,8 +78,8 @@ the selection itself, and peekme uses that selection.
 | Alt+P again | box is open, same selection | explain again using the whole conversation |
 | Alt+P or Alt+Q on text in the box | box is open | open a new box inside it, under that line |
 | click on underlined text | any time | show the saved answer, with no new request |
-| mouse wheel | box is open | scroll the answer under the pointer, or the chat with the box in it |
-| PgUp / PgDn | box is open | scroll a long answer, then the chat by a page |
+| mouse wheel | box is open | scroll the chat with the box in it |
+| PgUp / PgDn | box is open | scroll the chat with the box in it by a page |
 | Ctrl+Home / Ctrl+End | box is open | close the box and jump to the start or the end of the chat |
 | Esc | box is open | close the innermost box |
 | typing | box is open | goes to the agent's input line, the box stays open |
@@ -88,10 +88,13 @@ the selection itself, and peekme uses that selection.
 A second click on underlined text closes the saved answer. Boxes inside boxes go several levels
 deep while the window is wide enough.
 
-In Codex, GitHub Copilot CLI and the full screens of Claude Code and Kiro CLI, scrolling with a
-box open works as if the box were printed in the chat. The box keeps its size and grows only
-while its answer comes in. The chat and the box move together, as many rows per turn of the
-wheel as the agent scrolls without peekme, from the start of the chat to its end.
+Scrolling with a box open works as if the box were printed in the chat. The box keeps its size
+and grows only while its answer comes in, taller than the screen when the answer is long. Text
+never scrolls inside a box. In Codex, GitHub Copilot CLI and the full screens of Claude Code and
+Kiro CLI the chat and the box move together, as many rows per turn of the wheel as the agent
+scrolls without peekme, from the start of the chat to its end. On the classic screen of Claude
+Code and Kiro's inline screen peekme scrolls the chat itself, 3 rows per turn of the wheel, from
+the oldest line it saw in your terminal's history to the end of the chat.
 
 In Claude Code, Alt+P opens the model picker. With peekme it explains the selection instead.
 `/model` still opens the model picker.

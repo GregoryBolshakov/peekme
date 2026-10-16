@@ -106,6 +106,11 @@ struct Open {
     mem: std::collections::HashMap<isize, String>,
     /// How far the chat scrolled since the box opened, in rows (up is plus).
     scrolled: isize,
+    /// Inline (Claude classic, Kiro inline), with the box printed in the
+    /// chat: the screen with the history peekme saw above it, and how many
+    /// rows of history that is. peekme scrolls the chat and the box itself
+    /// (`view_scroll`), as the terminal scrolls its history without them.
+    view: Option<(Snapshot, usize)>,
     /// The child wrote since the box was last drawn around its screen.
     fresh: bool,
     /// The wheel turns of this run (one way, since the child answered the
@@ -347,6 +352,13 @@ impl Open {
         self.copilot || self.kiro
     }
 
+    /// A full-screen child that takes no mouse: the wheel shows `rows` more
+    /// of the chat below the box (minus: above it), as far as the box pushed
+    /// rows away. The child's own place stays.
+    fn lift(&mut self, rows: isize) {
+        self.lay = overlay::reveal(&self.lay, rows);
+    }
+
     /// Show `rows` more of the box's rows the run's way (fewer: minus).
     fn reveal_rows(&mut self, rows: isize) {
         self.lay = overlay::reveal(&self.lay, self.run_way * rows);
@@ -393,6 +405,8 @@ const CODEX_EMPTY_UPDATE: &[u8] = b"\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[?2026
 /// Rows of history above the screen searched for a selection made up in
 /// the terminal's scrollback.
 const HISTORY_SEARCH: usize = 2000;
+/// Rows the chat scrolls for a turn of the wheel, inline with a box open.
+const VIEW_WHEEL_ROWS: isize = 3;
 
 /// How long after a wheel event the child's output is shown under the box.
 const FOLLOW: Duration = Duration::from_millis(1500);
@@ -2170,6 +2184,11 @@ impl App {
                             // The child scrolls; its new screen shows under the box.
                             self.wheel_turns(way, out)?;
                             forward.extend_from_slice(&t.bytes);
+                        } else if self.open.as_ref().is_some_and(|o| o.view.is_some()) {
+                            self.view_scroll(way * VIEW_WHEEL_ROWS, out)?;
+                        } else if let Some(open) = self.open.as_mut().filter(|o| o.lay.free) {
+                            open.lift(way * VIEW_WHEEL_ROWS);
+                            self.redraw_box(out)?;
                         } else {
                             self.lend_mouse(out)?;
                         }
@@ -2344,6 +2363,11 @@ impl App {
             // The screen shows the snapshot with the box in it and rows moved
             // away from it: find the snapshot cell under the pointer. A click
             // on the box's own mark closes it, on another one switches to it.
+            // Inline, scrolled up into the history, the rows shown are not
+            // the screen's.
+            if open.view.is_some() && open.scrolled != 0 {
+                return None;
+            }
             let cell = snap_cell(&open.lay, cell)?;
             return hit(&open.snap, &mut self.marks, cell, open.history, alt);
         }
@@ -2672,13 +2696,13 @@ impl App {
         (s, l)
     }
 
-    /// The terminal's own selection is text in one of the boxes: after a turn
-    /// of the wheel over an agent that leaves the mouse to the terminal,
-    /// peekme lent the terminal the mouse, so a drag in the box is the
-    /// terminal's. Not the box's own words (Alt+P again asks about the whole
-    /// chat) nor words on the screen. Takes it as a drag in that box.
+    /// The terminal's own selection is text in one of the boxes, over an
+    /// agent that leaves the mouse to the terminal: a drag with Shift held
+    /// while peekme has the mouse, or any drag once it lent the terminal the
+    /// mouse (a message box). Not the box's own words (Alt+P again asks about
+    /// the whole chat) nor words on the screen. Takes it as a drag in that box.
     fn terminal_box_selection(&mut self) -> bool {
-        if self.shadow.mouse_mode() || self.open.as_ref().is_none_or(|o| o.own_mouse) {
+        if self.shadow.mouse_mode() || self.open.is_none() {
             return false;
         }
         let Some(text) = self.selection.read() else {
@@ -2972,13 +2996,26 @@ impl App {
             }),
         );
         let lines = lay.box_height.saturating_sub(2);
-        // Over a full-screen chat that scrolls with the wheel, the box is
-        // printed in the chat: as tall as its text, past the screen too, and
-        // the wheel scrolls the chat with it, never the box's own text.
+        // The box is printed in the chat: as tall as its text, past the
+        // screen too, and the wheel scrolls the chat with it, never the box's
+        // own text. A full-screen child that takes the mouse scrolls its chat
+        // for the wheel. One that leaves the mouse to the terminal (in tmux
+        // with its mouse off) pages its chat for PgUp/PgDn, and the wheel
+        // shows the rows the box pushed away (`Open::lift`). Inline peekme
+        // scrolls the chat itself (`view_scroll`), from the rows it saw go
+        // into the terminal's history down to the child's input area (to the
+        // screen's end where none was found).
         let mut lay = lay;
-        lay.free = self.shadow.alt_screen()
-            && self.shadow.mouse_mode()
-            && strip.is_some_and(|k| k == lay.region.1);
+        let printed = strip.is_some_and(|k| k == lay.region.1);
+        let alt = self.shadow.alt_screen();
+        let own_view = remembered.is_some() && !alt && !self.shadow.mouse_mode();
+        lay.free = own_view || (printed && alt);
+        let view = own_view.then(|| {
+            let hist = (self.shadow.history_size())
+                .saturating_sub(self.known_from)
+                .min(HISTORY_SEARCH);
+            (self.shadow.snapshot_with_history(hist), hist)
+        });
         // The box starts as small as its text and grows with it (see `fit_top`).
         let lay = overlay::resize(&lay, peek.fitted_height(snap.cols).max(3));
         let strip_shown = strip.map_or_else(Vec::new, |top| snap.rows[top..].to_vec());
@@ -3032,8 +3069,14 @@ impl App {
                     let text = if over_copilot { &tsnap } else { &snap };
                     (r as isize, chat_row(over_claude, text, r, lay.region.1))
                 })
+                .chain(view.iter().flat_map(|(full, hist)| {
+                    (0..*hist).map(move |i| {
+                        (i as isize - *hist as isize, render::row_text(&full.rows[i]))
+                    })
+                }))
                 .collect(),
             scrolled: 0,
+            view,
             fresh: false,
             run: Vec::new(),
             run_way: 0,
@@ -3420,10 +3463,62 @@ impl App {
         bytes
     }
 
-    /// PgUp/PgDn: the innermost box scrolls.
+    /// PgUp/PgDn: the innermost box scrolls. Inline, with the box printed
+    /// in the chat, the chat scrolls a page; no box scrolls its own text.
     fn scroll(&mut self, down: bool, out: &mut dyn Write) -> Result<()> {
-        let depth = self.open.as_ref().map_or(0, |o| o.nested.len());
+        let Some(open) = &self.open else {
+            return Ok(());
+        };
+        let (lo, hi) = open.lay.region;
+        let page = (hi - lo).saturating_sub(1).max(1) as isize * if down { 1 } else { -1 };
+        if open.view.is_some() {
+            return self.view_scroll(page, out);
+        }
+        if open.lay.free {
+            // Full-screen Codex without the mouse: the rows the box pushed away.
+            if !self.shadow.mouse_mode()
+                && let Some(open) = &mut self.open
+            {
+                open.lift(page);
+                self.redraw_box(out)?;
+            }
+            return Ok(());
+        }
+        let depth = open.nested.len();
         self.scroll_level(depth, down, out)
+    }
+
+    /// Inline, the screen with the box open is a window of the chat with
+    /// the box printed in it, from the oldest row peekme saw in the
+    /// terminal's history to the chat's last row past the box: `rows` more
+    /// of it down (minus: up), as far as it goes.
+    fn view_scroll(&mut self, rows: isize, out: &mut dyn Write) -> Result<()> {
+        let Some(open) = &mut self.open else {
+            return Ok(());
+        };
+        let Some((full, hist)) = &open.view else {
+            return Ok(());
+        };
+        // The window starts `off` rows down from the chat's place when the
+        // box opened: rows of the history above it (minus), or rows of the
+        // box it pushed up (plus). Above the screen, nothing is pushed.
+        let (c, lift) = (open.scrolled, open.lay.home - open.lay.box_top);
+        let off = c + lift;
+        let h = open.lay.box_height as isize;
+        let to = (off + rows).clamp(-(*hist as isize), h.max(off));
+        if to == off {
+            return Ok(());
+        }
+        let (c2, lift2) = if to < 0 { (to, 0) } else { (0, to) };
+        let start = (*hist as isize + c2) as usize;
+        let mut snap = open.base.clone();
+        snap.rows = full.rows[start..start + snap.rows.len()].to_vec();
+        open.snap = snap;
+        open.lay = overlay::scroll_by(&open.lay, c2 - c);
+        open.lay.box_top = open.lay.home - lift2;
+        open.scrolled = c2;
+        crate::event("view_scroll", serde_json::json!({"rows": rows, "off": to}));
+        self.redraw_box(out)
     }
 
     fn on_progress(&mut self, id: u64, p: Progress, out: &mut dyn Write) -> Result<()> {
@@ -3467,7 +3562,8 @@ impl App {
                         serde_json::json!({"selection": sel, "cells": cells.len()}),
                     );
                     // Underline it right away if the box leaves its rows alone.
-                    if cells.iter().all(|&(r, _)| open.lay.snap_row(r) == Some(r)) {
+                    let in_place = open.view.is_none() || open.scrolled == 0;
+                    if in_place && cells.iter().all(|&(r, _)| open.lay.snap_row(r) == Some(r)) {
                         let mut s = String::from(SYNC_BEGIN);
                         marks::draw(&mut s, &open.snap, cells, false);
                         render::restore_cursor(&mut s, &open.snap);
@@ -3910,7 +4006,8 @@ mod tests {
     }
 
     /// The box opens at 3 rows while it thinks, grows with every line that
-    /// streams in, never past its region, and keeps that height when done.
+    /// streams in, past the screen (inline peekme scrolls the chat with the
+    /// box in it), and keeps that height when done.
     #[test]
     fn the_box_grows_with_its_text() {
         let mut app = test_app(40, 30);
@@ -3937,16 +4034,10 @@ mod tests {
         assert_eq!(heights[0], 3);
         assert_eq!(heights[1], 5, "two paragraphs and the blank line between");
         assert!(heights.windows(2).all(|w| w[0] <= w[1]), "{heights:?}");
-        assert_eq!(
-            *heights.last().unwrap(),
-            region.1 - region.0,
-            "all of its region"
-        );
+        assert_eq!(*heights.last().unwrap(), 2 + 79, "all of its text");
+        assert!(2 + 79 > region.1 - region.0);
         app.on_progress(id, Progress::Done, &mut out).unwrap();
-        assert_eq!(
-            app.open.as_ref().unwrap().lay.box_height,
-            region.1 - region.0
-        );
+        assert_eq!(app.open.as_ref().unwrap().lay.box_height, 2 + 79);
     }
 
     /// `SCREEN` with the mouse taken by the child and "true colour" (row 2,
@@ -4048,23 +4139,17 @@ mod tests {
         format!("\x1b[<{b};{};{}{end}", cell.1 + 1, cell.0 + 1).into_bytes()
     }
 
-    /// A child that leaves the mouse to the terminal: after a turn of the
-    /// wheel peekme lends the terminal the mouse, so a drag in the box is the
-    /// terminal's own selection. Alt+P on it still opens a box inside the box;
-    /// the box's own words again stay "Alt+P again", and words also on the
-    /// screen stay a new peek.
+    /// A child that leaves the mouse to the terminal: peekme has the mouse
+    /// while the box is open, and a drag with Shift held is the terminal's own
+    /// selection. Alt+P on it still opens a box inside the box; the box's own
+    /// words again stay "Alt+P again", and words also on the screen stay a
+    /// new peek.
     #[test]
     fn a_terminal_selection_in_the_box_opens_a_box_inside_it() {
         let answer = "A pseudo-terminal lets job control work inside tmux panes.";
         let mut app = app_with_an_answer(answer, false);
         let (mut child, mut out) = (Vec::new(), Vec::new());
         assert!(app.open.as_ref().unwrap().own_mouse);
-        app.on_input(b"\x1b[<65;10;20M", &mut out, &mut child)
-            .unwrap();
-        assert!(
-            !app.open.as_ref().unwrap().own_mouse,
-            "lent to the terminal"
-        );
         // The terminal copies the drag with the box's border.
         app.selection = SelectionSource::fixed("\u{2502} job control");
         app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
@@ -4722,13 +4807,14 @@ mod tests {
         codex_selection_and_live_area(CODEX_0161_FULLSCREEN, "OpenAI Codex");
     }
 
-    /// The wheel over an agent that leaves the mouse alone: peekme gives
-    /// the mouse back, so the terminal scrolls its own history; the box stays,
-    /// and reports still on their way never reach the agent.
+    /// The wheel over an agent that leaves the mouse alone, with a message
+    /// box open: peekme gives the mouse back, so the terminal scrolls its own
+    /// history; the box stays, and reports still on their way never reach
+    /// the agent.
     #[test]
     fn the_wheel_gives_the_mouse_back_to_the_terminal() {
         let mut app = test_app(40, 12);
-        app.selection = SelectionSource::fixed("true colour");
+        app.selection = SelectionSource::without_system();
         let (mut out, mut child) = (Vec::new(), Vec::new());
         app.on_output(SCREEN, &mut out, &mut child).unwrap();
         app.open_peek(&mut out).unwrap();
@@ -4872,6 +4958,63 @@ mod tests {
         let open = app.open.as_ref().unwrap();
         assert!(open.nested.is_empty());
         assert_eq!(open.lay.box_height, 2 + 45);
+    }
+
+    /// A full screen that leaves the mouse to the terminal (Codex in tmux
+    /// with its mouse off): the box is printed in the chat all the same, and
+    /// the wheel shows the rows it pushed away, as PgUp/PgDn do over Codex.
+    /// Claude pages its chat itself with PgUp/PgDn. Nothing scrolls inside a
+    /// box.
+    #[test]
+    fn full_screens_without_the_mouse_print_the_box_in_the_chat_too() {
+        const MOUSE_OFF_BYTES: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l";
+        let lines = |n: usize| (1..=n).map(|i| format!("line {i}\n")).collect::<String>();
+        for agent in [Agent::Codex, Agent::Claude] {
+            let mut app = test_app_for(agent, 120, 40);
+            let (mut child, mut out) = (Vec::new(), Vec::new());
+            let screen = if agent == Agent::Codex {
+                CODEX_0161_FULLSCREEN
+            } else {
+                app.selection = SelectionSource::fixed("Key differences");
+                CLAUDE[0]
+            };
+            app.on_output(screen, &mut out, &mut child).unwrap();
+            app.on_output(MOUSE_OFF_BYTES, &mut out, &mut child)
+                .unwrap();
+            app.shadow.flush_sync();
+            assert!(app.shadow.alt_screen() && !app.shadow.mouse_mode());
+            app.open_peek(&mut out).unwrap();
+            let open = app.open.as_ref().expect("box open");
+            assert!(open.lay.free && open.own_mouse, "{agent:?}");
+            assert!(open.view.is_none());
+            let id = open.id;
+            app.on_progress(id, Progress::Delta(lines(45)), &mut out)
+                .unwrap();
+            app.on_progress(id, Progress::Done, &mut out).unwrap();
+            let open = app.open.as_ref().unwrap();
+            assert_eq!(open.lay.box_height, 2 + 45, "{agent:?}: all of its text");
+            let row = (open.lay.box_rows().start + open.lay.box_rows().end) / 2;
+            let top = open.lay.box_top;
+            for (b, moved) in [(65, -3), (65, -6), (64, -3)] {
+                app.on_input(&mouse(b, (row, 60), true), &mut out, &mut child)
+                    .unwrap();
+                let open = app.open.as_ref().unwrap();
+                assert_eq!(open.lay.box_top, top + moved, "{agent:?}: the chat moved");
+                assert_eq!(open.peek.scroll, 0);
+            }
+            assert!(child.is_empty(), "{agent:?}: no wheel reaches the child");
+            app.on_input(b"\x1b[6~", &mut out, &mut child).unwrap();
+            assert_eq!(app.open.as_ref().unwrap().peek.scroll, 0);
+            if agent == Agent::Claude {
+                assert_eq!(child, b"\x1b[6~", "Claude pages its chat");
+            } else {
+                assert!(child.is_empty());
+                assert!(
+                    app.open.as_ref().unwrap().lay.box_top < top - 3,
+                    "a page down"
+                );
+            }
+        }
     }
 
     /// At the end of the chat Codex does not move for the wheel: peekme
@@ -6685,6 +6828,180 @@ mod tests {
         real.advance(&std::mem::take(&mut out));
         real.flush_sync();
         assert!(same_screen(&real.snapshot(), &app.shadow.snapshot()));
+    }
+
+    /// Inline (Kiro's inline screen; Claude's classic one is the same), a
+    /// long answer with a long answer inside it is printed in the chat too,
+    /// past the screen. The wheel and PgUp/PgDn scroll that chat with the
+    /// boxes in it, from the oldest row peekme saw in the terminal's history
+    /// down to the chat's last row: every screen is a window of it, no box
+    /// scrolls its own text, and nothing reaches Kiro.
+    #[test]
+    fn inline_boxes_never_scroll_their_own_text() {
+        inline_boxes(Agent::Kiro, KIRO[0], "main.rs — the program entry point");
+        inline_boxes(Agent::Claude, CLAUDE[1], "Key differences");
+    }
+
+    fn inline_boxes(agent: Agent, capture: &[u8], words: &str) {
+        let mut app = test_app_for(agent, 120, 40);
+        app.selection = SelectionSource::fixed(words);
+        let mut real = Shadow::new(120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let history: String = (1..=30).map(|i| format!("history row {i}\r\n")).collect();
+        app.on_output(history.as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.on_output(capture, &mut out, &mut child).unwrap();
+        app.shadow.flush_sync();
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+        let hist = app.shadow.history_size();
+        assert!(hist > 20, "history rows scrolled off: {hist}");
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let open = app.open.as_ref().expect("box open");
+        assert!(open.lay.free && open.own_mouse);
+        assert_eq!(
+            open.view.as_ref().map(|v| v.1),
+            Some(hist.min(HISTORY_SEARCH))
+        );
+        let (id, (lo, hi), home) = (open.id, open.lay.region, open.lay.home as usize);
+        // The chat: the history, then the screen's rows above Kiro's live area.
+        let full = app.shadow.snapshot_with_history(hist);
+        let t: Vec<String> = (0..hist + hi).map(|i| full.rows_text(i, i + 1)).collect();
+        let at = hist + home;
+
+        let lines = |n: usize, w: &str| (1..=n).map(|i| format!("{w} {i}\n")).collect::<String>();
+        app.on_progress(id, Progress::Delta(lines(45, "outer line")), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.lay.box_height, 2 + 45, "all of its text");
+        let top = open.lay.box_top;
+        assert!(top >= lo as isize, "{:?}", open.lay);
+        let first = (top + 1) as usize;
+        let drag = [
+            mouse(0, (first, 2), true),
+            mouse(32, (first, 7), true),
+            mouse(0, (first, 7), false),
+        ]
+        .concat();
+        app.on_input(&drag, &mut out, &mut child).unwrap();
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        let id = app.open.as_ref().unwrap().nested[0].id;
+        app.on_progress(id, Progress::Delta(lines(25, "inner")), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.nested[0].height, 2 + 25);
+        let h = open.lay.box_height;
+        assert_eq!(h, 2 + 45 + 2 + 25);
+
+        // Every screen: the chat rows around the box where the window of
+        // (chat before `at`, box, chat after) puts them.
+        let check = |app: &App, real: &mut Shadow, what: &str| -> isize {
+            real.flush_sync();
+            let open = app.open.as_ref().unwrap();
+            let scrolls = open.nested.iter().map(|n| n.peek.scroll);
+            assert!(
+                std::iter::once(open.peek.scroll)
+                    .chain(scrolls)
+                    .all(|s| s == 0),
+                "{what}"
+            );
+            let off = open.scrolled + open.lay.home - open.lay.box_top;
+            let h = open.lay.box_height;
+            let shown = real.snapshot();
+            for r in lo..hi {
+                let v = (hist + r) as isize + off;
+                let row = shown.rows_text(r, r + 1);
+                let want = if v < at as isize {
+                    Some(&t[v as usize])
+                } else if v >= (at + h) as isize {
+                    Some(&t[v as usize - h])
+                } else {
+                    None
+                };
+                match want {
+                    Some(want) => assert_eq!(row.trim_end(), want.trim_end(), "{what}, row {r}"),
+                    None if v == at as isize => {
+                        assert!(row.starts_with("╭─ peek"), "{what}, row {r}: {row}")
+                    }
+                    None => assert!(
+                        row.starts_with('│') || row.starts_with('╰'),
+                        "{what}, row {r}: {row}"
+                    ),
+                }
+            }
+            off
+        };
+        let mut off = check(&app, &mut real, "opened");
+        // Up to the oldest row of the history, over the boxes and the chat.
+        let mut turns = 0;
+        loop {
+            let cell = if turns % 2 == 0 { (20, 60) } else { (20, 2) };
+            app.on_input(&mouse(64, cell, true), &mut out, &mut child)
+                .unwrap();
+            real.advance(&std::mem::take(&mut out));
+            let now = check(&app, &mut real, "up");
+            if now == off {
+                break;
+            }
+            assert_eq!(now, (off - 3).max(-(hist as isize)), "a turn is 3 rows");
+            (off, turns) = (now, turns + 1);
+        }
+        assert_eq!(off, -(hist as isize));
+        assert!(
+            real.snapshot()
+                .rows_text(lo, lo + 1)
+                .starts_with(t[0].trim_end())
+        );
+        // Down a page at a time, to the chat's last row past the boxes.
+        loop {
+            app.on_input(b"\x1b[6~", &mut out, &mut child).unwrap();
+            real.advance(&std::mem::take(&mut out));
+            let now = check(&app, &mut real, "page down");
+            if now == off {
+                break;
+            }
+            off = now;
+        }
+        assert_eq!(off, h as isize, "the boxes all above the chat's end");
+        assert_eq!(
+            real.snapshot().rows_text(hi - 1, hi).trim_end(),
+            t[hist + hi - 1].trim_end()
+        );
+        app.on_input(b"\x1b[5~", &mut out, &mut child).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        assert_eq!(
+            check(&app, &mut real, "page up"),
+            off - (hi - lo - 1) as isize
+        );
+        assert!(child.is_empty(), "nothing reached the agent");
+
+        // Esc twice: the agent's screen as it was.
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        app.on_idle(&mut out, &mut child).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        check(&app, &mut real, "inner closed");
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        app.on_idle(&mut out, &mut child).unwrap();
+        real.advance(&std::mem::take(&mut out));
+        real.flush_sync();
+        assert!(app.open.is_none());
+        // The agent's screen, with the answered words underlined.
+        let (a, b) = (real.snapshot(), app.shadow.snapshot());
+        assert_eq!(a.cursor, b.cursor);
+        for (r, (ra, rb)) in a.rows.iter().zip(&b.rows).enumerate() {
+            for (x, y) in ra.iter().zip(rb) {
+                let mark = x.flags == y.flags | Flags::DOTTED_UNDERLINE;
+                assert!(
+                    x.c == y.c && x.fg == y.fg && x.bg == y.bg && (x.flags == y.flags || mark),
+                    "row {r}"
+                );
+            }
+        }
     }
 
     /// Over SSH, Kiro's inline screen leaves the selection on the user's own

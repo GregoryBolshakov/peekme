@@ -26,9 +26,9 @@ pub struct Layout {
     /// side pushes the selection away to make room. Off the screen when the
     /// chat scrolled the selection away.
     pub home: isize,
-    /// The box is printed in a chat that scrolls past it (a full-screen
-    /// agent's): it may be taller than the region, all of its text, and never
-    /// scrolls on its own. Otherwise it fits the region.
+    /// The box is printed in a chat that scrolls past it (the agent's, or
+    /// inline peekme's view of it): it may be taller than the region, all of
+    /// its text, and never scrolls on its own. Otherwise it fits the region.
     pub free: bool,
 }
 

@@ -1,6 +1,7 @@
 //! Peeks inside peeks: a selection in a box opens a box inside that box.
-//! Over a full-screen chat every box is as tall as its text and the chat
-//! scrolls them all; elsewhere the boxes fit the screen and each scrolls on
+//! The boxes are printed in the chat, each as tall as its text, and the chat
+//! scrolls them all. A message box ("Select some text first"), or a box over
+//! a full screen whose chat peekme can't find, fits the screen and scrolls on
 //! its own. Nested answers are saved under their parent answer and underlined
 //! in it like marks on the screen.
 
@@ -687,8 +688,8 @@ impl App {
     /// The most rows each level may take, outermost first, one more than
     /// there are levels: the outermost box up to about two thirds of the screen
     /// (never less than it had), each inner one 3 rows less than its parent
-    /// (its borders and the line it explains). Printed in a full-screen chat,
-    /// the boxes have no cap: these only say how long an answer to ask for.
+    /// (its borders and the line it explains). Printed in the chat, the
+    /// boxes have no cap: these only say how long an answer to ask for.
     fn caps(&self) -> Vec<usize> {
         let Some(open) = &self.open else {
             return Vec::new();
@@ -704,10 +705,10 @@ impl App {
     }
 
     /// Size every box to its text and the box inside it, within the caps
-    /// unless printed in a full-screen chat: a
-    /// box starts as small as its text (a question waiting to be typed, or
-    /// "thinking…") and grows as its answer comes in, like the outer box. With
-    /// no boxes inside, the outer box goes back to its height.
+    /// unless printed in the chat: a box starts as small as its text (a
+    /// question waiting to be typed, or "thinking…") and grows as its answer
+    /// comes in, like the outer box. With no boxes inside, the outer box goes
+    /// back to its height.
     pub(super) fn fit(&mut self) {
         let caps = self.caps();
         let Some(open) = &mut self.open else {
@@ -793,8 +794,8 @@ impl App {
     }
 
     /// With no boxes inside, the outer box is as tall as its text, from 3
-    /// rows while it thinks up to all of its region (past it, printed in a
-    /// full-screen chat).
+    /// rows while it thinks up to all of its region (past it, printed in the
+    /// chat).
     fn fit_top(&mut self) {
         let Some(open) = &mut self.open else {
             return;

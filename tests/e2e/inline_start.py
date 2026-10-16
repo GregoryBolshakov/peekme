@@ -13,12 +13,18 @@ a fake agent in that style, directly, in tmux and over SSH + tmux.
 Checks: the box opens right under the selected text as the terminal shows it,
 the earlier shell lines stay as they were while the box is open, a drag in the
 box and Alt+P open a box inside it (the agent takes no mouse and tmux has the
-mouse off), and after Esc the screen is exactly as before.
+mouse off), the two long answers together are taller than the screen and the
+wheel over them scrolls the chat with both boxes in it (peekme does that
+itself, inline), never the text inside a box, and after Esc the screen is
+exactly as before.
 """
-import os, shlex, sys, tempfile, time
+import os, re, shlex, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import matrix as m  # noqa: E402
+
+# A box that scrolls its own text shows where it is in its bottom border.
+SCROLLED = re.compile(r"╰[^╯]*\s\d+/\d+\s[^╯]*╯")
 
 
 def run(env, layer, shell_lines, n, out):
@@ -27,7 +33,7 @@ def run(env, layer, shell_lines, n, out):
     os.makedirs(d, exist_ok=True)
     paths = {"events": os.path.join(d, "events.jsonl"), "agent": os.path.join(d, "agent.jsonl")}
     case = dict(layers=layer, mouse="off", extkeys="off", agent="classic", n=n,
-                env={"PEEKME_SELECTION": "alpha bravo"})
+                env={"PEEKME_SELECTION": "alpha bravo", "PEEKME_FAKE_LINES": "12"})
     argv, socks = m.build_command(env, case, paths)
     shell = "".join(f"user@host:~$ echo shell line {i}\\r\\nshell line {i}\\r\\n" for i in range(shell_lines // 2))
     line = f"printf %b {shlex.quote(shell + 'user@host:~$ claude' + chr(92) + 'r' + chr(92) + 'n')}; {argv[2]}"
@@ -78,6 +84,22 @@ def run(env, layer, shell_lines, n, out):
                 fails.append("a drag in the box and Alt+P opened no box inside it")
             elif nested[-1].get("words") != "explanation":
                 fails.append(f"inner box on the wrong words: {nested[-1].get('words')!r}")
+            time.sleep(0.6)
+            # The wheel over the boxes: the chat with both in it scrolls.
+            screens = []
+            for up in (False,) * 24 + (True,) * 3:
+                t.send(f"\x1b[<{64 + (not up)};{col + 1};{y}M".encode())
+                time.sleep(0.15)
+                screens.append(t.screen())
+            if not events("view_scroll"):
+                fails.append("the wheel did not scroll the chat with the boxes in it")
+            if any(SCROLLED.search(l) for scr in screens for l in scr):
+                fails.append("a box scrolls its own text")
+            if not any(l.startswith("╰") for scr in screens for l in scr[:-1]):
+                fails.append("the boxes' bottom never came into view")
+            painted = sorted({r for scr in screens for r in shell_rows if scr[r] != before[r]})
+            if painted:
+                fails.append(f"shell output painted over while scrolling, rows {painted}")
             t.send(b"\x1b")
             time.sleep(0.4)
         else:

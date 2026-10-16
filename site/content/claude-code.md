@@ -36,6 +36,11 @@ PgUp and PgDn move half a screen. At the end of the chat the rows the box pushed
 into view. The prompt Claude keeps at the top, its "Jump to bottom" hint and its input box stay
 where they are.
 
+On the classic screen peekme scrolls the chat with the box in it itself: 3 rows a turn of the
+wheel, a page for PgUp and PgDn. It goes up to the oldest line peekme saw in your
+terminal's history and down to the end of the chat. A long answer, and a box inside it, are as
+tall as their text and never scroll on their own.
+
 ## Which model explains
 
 No API key is needed. A peek runs `claude -p` with your own Claude login, on Haiku, without tools

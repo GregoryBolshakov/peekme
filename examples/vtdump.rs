@@ -2,6 +2,8 @@
 //! peekme uses and print the resulting screen.
 //!
 //!     cargo run --example vtdump -- <file> <cols> <rows> [byte-offset]
+//!
+//! With `VTDUMP_HISTORY=N`, up to N rows of history come first.
 
 use peekme::shadow;
 
@@ -16,8 +18,15 @@ fn main() {
     let mut term = shadow::Shadow::new(cols, rows);
     term.advance(&bytes[..end]);
     term.flush_sync();
-    let snap = term.snapshot();
-    print!("{}", snap.rows_text(0, rows as usize));
+    // VTDUMP_HISTORY=N: up to N rows of the terminal's history first.
+    let history = std::env::var("VTDUMP_HISTORY")
+        .ok()
+        .and_then(|n| n.parse().ok());
+    let snap = match history {
+        Some(n) => term.snapshot_with_history(n),
+        None => term.snapshot(),
+    };
+    print!("{}", snap.rows_text(0, snap.rows.len()));
     if std::env::var_os("VTDUMP_INVERSE").is_some() {
         // Print runs of reverse-video cells (how Codex highlights its own selection).
         for (r, row) in snap.rows.iter().enumerate() {

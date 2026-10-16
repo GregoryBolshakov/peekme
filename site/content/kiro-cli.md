@@ -32,6 +32,11 @@ pushed down come into view. Kiro's input area stays where it is, with its "more 
 End, and Home with nothing typed, jump to the end or the start of the chat, as in Kiro, and close
 the box.
 
+On the inline screen peekme scrolls the chat with the box in it itself: 3 rows a turn of the
+wheel, a page for PgUp and PgDn. It goes up to the oldest line peekme saw in your
+terminal's history and down to the end of the chat. A long answer, and a box inside it, are as
+tall as their text and never scroll on their own.
+
 ## Which model explains
 
 No API key is needed. On the first explanation peekme starts Kiro's ACP server (`kiro-cli acp`,
