@@ -22,7 +22,10 @@ USAGE:
     peekme kiro-cli [ARGS...]  run kiro-cli with peekme
     peekme install             make typing `claude`, `codex`, `copilot`, `kiro-cli` open them
                                with peekme
+    peekme install --shell     also start every new terminal's shell with peekme, so
+                               Alt+P works on any text there
     peekme uninstall           undo `peekme install`
+    peekme uninstall --shell   only stop starting the shell with peekme
     peekme doctor              check the setup
     peekme -- COMMAND [ARGS]   run any other command with peekme
 
@@ -68,8 +71,14 @@ fn main() {
                 println!("peekme {}", env!("CARGO_PKG_VERSION"));
                 return;
             }
-            Some("install") => std::process::exit(report(install::install())),
-            Some("uninstall") => std::process::exit(report(install::uninstall())),
+            Some("install") => {
+                let shell = shell_flag(&args[1..]);
+                std::process::exit(report(install::install(shell)))
+            }
+            Some("uninstall") => {
+                let shell = shell_flag(&args[1..]);
+                std::process::exit(report(install::uninstall(shell)))
+            }
             Some("doctor") => std::process::exit(install::doctor()),
             Some("--") => {
                 args.remove(0);
@@ -105,7 +114,10 @@ fn main() {
 
     // Step aside when there is nothing to overlay: already inside peekme, not
     // a terminal, or an agent command without its interactive screen.
-    let nested = std::env::var_os(launch::ACTIVE_ENV).is_some();
+    let nested = launch::nested(
+        std::env::var_os(launch::ACTIVE_ENV).as_deref(),
+        agent.is_some(),
+    );
     let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     if nested || !tty || agent.is_some_and(|a| !a.is_interactive(&rest)) {
         exec(&program, &rest);
@@ -146,6 +158,21 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// `--shell` after `install` or `uninstall`; anything else is an error.
+fn shell_flag(rest: &[String]) -> bool {
+    match rest {
+        [] => false,
+        [flag] if flag == "--shell" => true,
+        _ => {
+            eprintln!(
+                "peekme: unknown argument `{}`. See: peekme --help",
+                rest.join(" ")
+            );
+            std::process::exit(2);
+        }
+    }
 }
 
 /// Plain `peekme`: the first agent that is installed.

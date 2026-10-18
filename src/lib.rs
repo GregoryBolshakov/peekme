@@ -87,7 +87,7 @@ pub fn event(kind: &str, fields: serde_json::Value) {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());
-    let mut line = serde_json::json!({"t": ms as u64, "event": kind});
+    let mut line = serde_json::json!({"t": ms as u64, "pid": std::process::id(), "event": kind});
     if let (Some(obj), serde_json::Value::Object(extra)) = (line.as_object_mut(), fields) {
         obj.extend(extra);
     }

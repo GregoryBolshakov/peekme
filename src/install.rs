@@ -13,6 +13,12 @@
 //! A function calls its link by the full path, so it works even when peekme
 //! itself is not on PATH, and falls back to the plain agent if the link is gone.
 //! Both agents are always set up: one that is installed later just works.
+//!
+//! `install --shell` adds a second block at the top of the startup file: an
+//! interactive shell in a terminal replaces itself with `peekme -- <shell>`
+//! (through a `peekme` link in the same directory), so Alt+P works on any
+//! text in the terminal from the first line. At the top, so the shell that is
+//! replaced has not run the rest of the file, which the new one runs.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -26,6 +32,10 @@ use crate::launch;
 
 pub const BEGIN: &str = "# >>> peekme >>>";
 pub const END: &str = "# <<< peekme <<<";
+pub const SHELL_BEGIN: &str = "# >>> peekme shell >>>";
+pub const SHELL_END: &str = "# <<< peekme shell <<<";
+/// The link the shell block starts, next to the agent links.
+const SHELL_LINK: &str = "peekme";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shell {
@@ -97,8 +107,63 @@ pub fn posix_block(shim_dir: &Path) -> String {
     )
 }
 
-/// The whole file we own in fish's conf.d.
-pub fn fish_file(shim_dir: &Path) -> String {
+const SHELL_HEADER: &str = "# Starts this shell with peekme, so Alt+P works on any text in the terminal. \
+     Stop with: peekme uninstall --shell";
+
+/// The block that starts bash or zsh with peekme. Only an interactive shell in
+/// a terminal, not over SSH (the selection is on the other machine), not in
+/// VS Code (its shell integration comes with the shell it started), and not
+/// under a peekme already. A peekme that does not run leaves the shell as it is.
+pub fn shell_block(shell: Shell, shim_dir: &Path) -> String {
+    let p = format!("{}/{SHELL_LINK}", shell_path(shim_dir));
+    let (interactive, login, me) = match shell {
+        Shell::Zsh => ("[[ -o interactive ]]", "[[ -o login ]]", "zsh"),
+        _ => ("[[ $- == *i* ]]", "shopt -q login_shell", "\"$BASH\""),
+    };
+    format!(
+        "{SHELL_BEGIN}\n\
+         {SHELL_HEADER}\n\
+         if {interactive} && [ -z \"${{PEEKME_ACTIVE-}}\" ] && [ -z \"${{SSH_CONNECTION-}}\" ] \\\n\
+         \x20 && [ \"${{TERM-dumb}}\" != dumb ] && [ \"${{TERM_PROGRAM-}}\" != vscode ] \\\n\
+         \x20 && [ -t 0 ] && [ -t 1 ] \\\n\
+         \x20 && \"{p}\" --version >/dev/null 2>&1; then\n\
+         \x20 if {login}; then exec \"{p}\" -- {me} -l; fi\n\
+         \x20 exec \"{p}\" -- {me}\n\
+         fi\n\
+         {SHELL_END}\n"
+    )
+}
+
+/// The same for fish, at the top of our conf.d file.
+fn fish_shell_block(shim_dir: &Path) -> String {
+    let p = format!("{}/{SHELL_LINK}", shell_path(shim_dir));
+    format!(
+        "{SHELL_BEGIN}\n\
+         {SHELL_HEADER}\n\
+         if status is-interactive; and not set -q PEEKME_ACTIVE; and not set -q SSH_CONNECTION \\\n\
+         \x20   ; and test \"$TERM\" != dumb; and test \"$TERM_PROGRAM\" != vscode \\\n\
+         \x20   ; and isatty stdin; and isatty stdout \\\n\
+         \x20   ; and \"{p}\" --version >/dev/null 2>&1\n\
+         \x20   if status is-login\n\
+         \x20       exec \"{p}\" -- fish -l\n\
+         \x20   end\n\
+         \x20   exec \"{p}\" -- fish\n\
+         end\n\
+         {SHELL_END}\n"
+    )
+}
+
+/// The whole file we own in fish's conf.d, with the shell block when `shell`.
+pub fn fish_file(shim_dir: &Path, shell: bool) -> String {
+    let start = if shell {
+        format!("{}\n", fish_shell_block(shim_dir))
+    } else {
+        String::new()
+    };
+    format!("{start}{}", fish_agents(shim_dir))
+}
+
+fn fish_agents(shim_dir: &Path) -> String {
     let dir = shell_path(shim_dir);
     let header = header();
     let functions: String = Agent::ALL
@@ -129,7 +194,7 @@ pub fn fish_file(shim_dir: &Path) -> String {
 
 /// Insert our block, or replace it where it already is.
 pub fn upsert_block(text: &str, block: &str) -> String {
-    if let Some((start, end)) = block_span(text) {
+    if let Some((start, end)) = block_span(text, BEGIN, END) {
         return format!("{}{}{}", &text[..start], block, &text[end..]);
     }
     let mut out = text.to_string();
@@ -145,7 +210,7 @@ pub fn upsert_block(text: &str, block: &str) -> String {
 
 /// Remove our block and the blank line we put before it.
 pub fn remove_block(text: &str) -> String {
-    let Some((mut start, end)) = block_span(text) else {
+    let Some((mut start, end)) = block_span(text, BEGIN, END) else {
         return text.to_string();
     };
     if text[..start].ends_with("\n\n") {
@@ -154,11 +219,34 @@ pub fn remove_block(text: &str) -> String {
     format!("{}{}", &text[..start], &text[end..])
 }
 
-/// Byte range of the block, including its final newline.
-fn block_span(text: &str) -> Option<(usize, usize)> {
-    let start = text.find(BEGIN)?;
-    let end_marker = start + text[start..].find(END)?;
-    let mut end = end_marker + END.len();
+/// Put the shell block first in the file, or replace it where it already is
+/// (the user may have moved it).
+pub fn upsert_shell_block(text: &str, block: &str) -> String {
+    if let Some((start, end)) = block_span(text, SHELL_BEGIN, SHELL_END) {
+        return format!("{}{}{}", &text[..start], block, &text[end..]);
+    }
+    if text.is_empty() {
+        return block.to_string();
+    }
+    format!("{block}\n{text}")
+}
+
+/// Remove the shell block and the blank line we put after it.
+pub fn remove_shell_block(text: &str) -> String {
+    let Some((start, mut end)) = block_span(text, SHELL_BEGIN, SHELL_END) else {
+        return text.to_string();
+    };
+    if start == 0 && text[end..].starts_with('\n') {
+        end += 1;
+    }
+    format!("{}{}", &text[..start], &text[end..])
+}
+
+/// Byte range of a block, including its final newline.
+fn block_span(text: &str, begin: &str, end_mark: &str) -> Option<(usize, usize)> {
+    let start = text.find(begin)?;
+    let end_marker = start + text[start..].find(end_mark)?;
+    let mut end = end_marker + end_mark.len();
     if text[end..].starts_with('\n') {
         end += 1;
     }
@@ -209,10 +297,36 @@ pub fn targets() -> Result<Vec<Target>> {
 
 /// Is our block (or fish file) present anywhere?
 pub fn installed() -> bool {
+    has_anywhere(BEGIN)
+}
+
+/// Does some startup file start the shell with peekme?
+pub fn shell_installed() -> bool {
+    has_anywhere(SHELL_BEGIN)
+}
+
+fn has_anywhere(marker: &str) -> bool {
     targets().is_ok_and(|ts| {
         ts.iter()
-            .any(|t| std::fs::read_to_string(&t.path).is_ok_and(|s| s.contains(BEGIN)))
+            .any(|t| std::fs::read_to_string(&t.path).is_ok_and(|s| s.contains(marker)))
     })
+}
+
+/// The startup file with our blocks as this peekme writes them: the agent
+/// block, and the shell block where `shell` or where there is one already.
+fn with_blocks(t: &Target, old: &str, shim_dir: &Path, shell: bool) -> String {
+    let shell = shell || old.contains(SHELL_BEGIN);
+    match t.shell {
+        Shell::Fish => fish_file(shim_dir, shell),
+        _ => {
+            let new = upsert_block(old, &posix_block(shim_dir));
+            if shell {
+                upsert_shell_block(&new, &shell_block(t.shell, shim_dir))
+            } else {
+                new
+            }
+        }
+    }
 }
 
 /// Write `contents` to `path` atomically. A startup file that is a symlink
@@ -243,12 +357,14 @@ fn tilde(p: &Path) -> String {
     }
 }
 
-/// Create or refresh the `codex` and `claude` links to this binary.
-fn install_shim(shim_dir: &Path) -> Result<()> {
+/// Create or refresh the `codex` and `claude` links to this binary, and with
+/// `shell` the `peekme` link the shell block starts.
+fn install_shim(shim_dir: &Path, shell: bool) -> Result<()> {
     let me = std::env::current_exe()?.canonicalize()?;
     std::fs::create_dir_all(shim_dir)?;
-    for agent in Agent::ALL {
-        let link = shim_dir.join(agent.command());
+    let names = Agent::ALL.iter().map(|a| a.command());
+    for name in names.chain(shell.then_some(SHELL_LINK)) {
+        let link = shim_dir.join(name);
         if std::fs::symlink_metadata(&link).is_ok() {
             std::fs::remove_file(&link)?;
         }
@@ -269,7 +385,7 @@ pub fn refresh() -> Option<String> {
     }
     let shim_dir = launch::shim_dir()?;
     let me = std::env::current_exe().ok()?.canonicalize().ok()?;
-    let (added, moved) = relink(&shim_dir, &me);
+    let (added, moved) = relink(&shim_dir, &me, shell_installed());
     let mut rewrote = false;
     for t in targets().ok()? {
         let Ok(old) = std::fs::read_to_string(&t.path) else {
@@ -278,10 +394,7 @@ pub fn refresh() -> Option<String> {
         if !old.contains(BEGIN) {
             continue;
         }
-        let new = match t.shell {
-            Shell::Fish => fish_file(&shim_dir),
-            _ => upsert_block(&old, &posix_block(&shim_dir)),
-        };
+        let new = with_blocks(&t, &old, &shim_dir, false);
         // The same lines in another order (0.3.3 lists Claude first) are not
         // worth touching the user's file for.
         if !same_lines(&old, &new) && write_file(&t.path, &new).is_ok() {
@@ -320,18 +433,20 @@ pub fn refresh() -> Option<String> {
 /// updates: `codex` kept running the old copy after the new one was
 /// installed. Returns the agents added, and for the moved ones the old
 /// version and the agent.
-fn relink(shim_dir: &Path, me: &Path) -> (Vec<String>, Vec<(String, String)>) {
+fn relink(shim_dir: &Path, me: &Path, shell: bool) -> (Vec<String>, Vec<(String, String)>) {
     let mine = env!("CARGO_PKG_VERSION");
     let mut added = Vec::new();
     let mut moved = Vec::new();
-    for agent in Agent::ALL {
-        let link = shim_dir.join(agent.command());
-        let name = format!("`{}`", agent.command());
+    let names = Agent::ALL.iter().map(|a| a.command());
+    for command in names.chain(shell.then_some(SHELL_LINK)) {
+        let link = shim_dir.join(command);
+        let name = format!("`{command}`");
         match std::fs::canonicalize(&link) {
             Err(_) => {
                 let _ = std::fs::remove_file(&link);
                 let _ = std::fs::create_dir_all(shim_dir);
-                if std::os::unix::fs::symlink(me, &link).is_ok() {
+                // The `peekme` link is no news: `peekme` itself is what runs.
+                if std::os::unix::fs::symlink(me, &link).is_ok() && command != SHELL_LINK {
                     added.push(name);
                 }
             }
@@ -396,29 +511,34 @@ fn same_lines(a: &str, b: &str) -> bool {
     sorted(a) == sorted(b)
 }
 
-pub fn install() -> Result<()> {
+/// `peekme install`, and with `shell` also start new terminals' shells with peekme.
+pub fn install(shell: bool) -> Result<()> {
     let shim_dir = launch::shim_dir().ok_or_else(|| anyhow!("HOME is not set"))?;
-    install_shim(&shim_dir)?;
+    let shell = shell || shell_installed();
+    install_shim(&shim_dir, shell)?;
     let targets = targets()?;
     if targets.is_empty() {
         println!("No bash, zsh or fish setup found. Add this to your shell's startup file:\n");
+        if shell {
+            println!("{}", shell_block(Shell::Bash, &shim_dir));
+        }
         print!("{}", posix_block(&shim_dir));
         return Ok(());
     }
     for t in &targets {
-        match t.shell {
-            Shell::Fish => write_file(&t.path, &fish_file(&shim_dir))?,
-            _ => {
-                let old = std::fs::read_to_string(&t.path).unwrap_or_default();
-                let new = upsert_block(&old, &posix_block(&shim_dir));
-                if new != old {
-                    write_file(&t.path, &new)?;
-                }
-            }
+        let old = std::fs::read_to_string(&t.path).unwrap_or_default();
+        let new = with_blocks(t, &old, &shim_dir, shell);
+        if new != old {
+            write_file(&t.path, &new)?;
         }
         println!("Set up {} in {}", t.shell.name(), tilde(&t.path));
     }
     println!();
+    if shell {
+        println!(
+            "New terminals start the shell with peekme: select any text there and press Alt+P."
+        );
+    }
     for agent in Agent::ALL {
         let (c, name) = (agent.command(), agent.name());
         if launch::find_real(c).is_some() {
@@ -448,7 +568,11 @@ pub fn install() -> Result<()> {
     Ok(())
 }
 
-pub fn uninstall() -> Result<()> {
+/// `peekme uninstall`; with `shell` only the shell block goes.
+pub fn uninstall(shell: bool) -> Result<()> {
+    if shell {
+        return uninstall_shell();
+    }
     for t in targets()? {
         match t.shell {
             Shell::Fish => {
@@ -461,16 +585,17 @@ pub fn uninstall() -> Result<()> {
                 let Ok(old) = std::fs::read_to_string(&t.path) else {
                     continue;
                 };
-                if old.contains(BEGIN) {
-                    write_file(&t.path, &remove_block(&old))?;
+                if old.contains(BEGIN) || old.contains(SHELL_BEGIN) {
+                    write_file(&t.path, &remove_shell_block(&remove_block(&old)))?;
                     println!("Removed the peekme block from {}", tilde(&t.path));
                 }
             }
         }
     }
     if let Some(dir) = launch::shim_dir() {
-        for agent in Agent::ALL {
-            let link = dir.join(agent.command());
+        let names = Agent::ALL.iter().map(|a| a.command());
+        for name in names.chain([SHELL_LINK]) {
+            let link = dir.join(name);
             if std::fs::symlink_metadata(&link).is_ok() {
                 std::fs::remove_file(&link)?;
                 println!("Removed {}", tilde(&link));
@@ -483,6 +608,36 @@ pub fn uninstall() -> Result<()> {
         "Done. New terminals run the agents without peekme. In open ones, run: unset -f {}",
         names.join(" ")
     );
+    Ok(())
+}
+
+fn uninstall_shell() -> Result<()> {
+    let shim_dir = launch::shim_dir().ok_or_else(|| anyhow!("HOME is not set"))?;
+    let mut removed = false;
+    for t in targets()? {
+        let Ok(old) = std::fs::read_to_string(&t.path) else {
+            continue;
+        };
+        if !old.contains(SHELL_BEGIN) {
+            continue;
+        }
+        let new = match t.shell {
+            Shell::Fish => fish_file(&shim_dir, false),
+            _ => remove_shell_block(&old),
+        };
+        write_file(&t.path, &new)?;
+        println!("Removed the peekme shell start from {}", tilde(&t.path));
+        removed = true;
+    }
+    let link = shim_dir.join(SHELL_LINK);
+    if std::fs::symlink_metadata(&link).is_ok() {
+        std::fs::remove_file(&link)?;
+    }
+    if removed {
+        println!("Done. New terminals start the shell without peekme.");
+    } else {
+        println!("No shell start with peekme found.");
+    }
     Ok(())
 }
 
@@ -627,7 +782,32 @@ pub fn doctor() -> i32 {
     }
     for t in &targets {
         let sh = t.shell.name();
-        let has = std::fs::read_to_string(&t.path).is_ok_and(|s| s.contains(BEGIN));
+        let text = std::fs::read_to_string(&t.path).unwrap_or_default();
+        if text.contains(SHELL_BEGIN) {
+            let link = shim_dir.join(SHELL_LINK);
+            match std::fs::canonicalize(&link) {
+                Ok(target) if Some(&target) == me.as_ref() => line(
+                    true,
+                    format!("{sh}: new terminals start the shell with this peekme"),
+                ),
+                Ok(target) => line(
+                    false,
+                    format!(
+                        "{sh}: new terminals start the shell with {}. Run: peekme install --shell",
+                        tilde(&target)
+                    ),
+                ),
+                Err(_) => line(
+                    false,
+                    format!(
+                        "{sh}: {} is missing, so the shell starts without peekme. \
+                         Run: peekme install --shell",
+                        tilde(&link)
+                    ),
+                ),
+            }
+        }
+        let has = text.contains(BEGIN);
         if !has {
             line(
                 false,
@@ -742,7 +922,7 @@ pub fn first_run_question() {
     let _ = std::io::stdin().read_line(&mut answer);
     let answer = answer.trim().to_lowercase();
     if answer.is_empty() || answer == "y" || answer == "yes" {
-        if let Err(e) = install() {
+        if let Err(e) = install(false) {
             eprintln!("peekme: {e:#}");
         }
         println!();
@@ -835,7 +1015,7 @@ mod tests {
         symlink(&future, shims.join("claude")).unwrap();
         symlink(dir.join("gone"), shims.join("copilot")).unwrap();
 
-        let (added, moved) = relink(&shims, &me);
+        let (added, moved) = relink(&shims, &me, false);
         assert_eq!(added, vec!["`copilot`", "`kiro-cli`"]);
         assert_eq!(moved, vec![("0.1.0".to_string(), "`codex`".to_string())]);
         let target = |a: &str| std::fs::canonicalize(shims.join(a)).unwrap();
@@ -845,8 +1025,67 @@ mod tests {
         assert_eq!(target("claude"), future.canonicalize().unwrap());
         std::fs::remove_file(shims.join("codex")).unwrap();
         symlink(&other, shims.join("codex")).unwrap();
-        assert_eq!(relink(&shims, &me), (vec![], vec![]));
+        assert_eq!(relink(&shims, &me, false), (vec![], vec![]));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_shell_link_is_made_quietly() {
+        let dir = std::env::temp_dir().join(format!("peekme-shell-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let me = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let (added, _) = relink(&dir, &me, true);
+        assert_eq!(added.len(), Agent::ALL.len());
+        assert!(!added.contains(&"`peekme`".to_string()));
+        assert_eq!(std::fs::canonicalize(dir.join(SHELL_LINK)).unwrap(), me);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shell_block_goes_first_and_comes_out_again() {
+        let dir = Path::new("/home/u/.local/share/peekme/bin");
+        for original in ["", "# ~/.bashrc\nalias ll='ls -l'\n", "no newline at end"] {
+            let agents = upsert_block(original, &posix_block(dir));
+            let with = upsert_shell_block(&agents, &shell_block(Shell::Bash, dir));
+            assert!(with.starts_with(SHELL_BEGIN), "{with}");
+            assert!(with.contains(BEGIN));
+            assert_eq!(
+                upsert_shell_block(&with, &shell_block(Shell::Bash, dir)),
+                with
+            );
+            assert_eq!(remove_shell_block(&with), agents);
+            // A full uninstall removes both.
+            assert_eq!(
+                remove_shell_block(&remove_block(&with)),
+                remove_block(&agents)
+            );
+        }
+        // Moved down by the user: replaced where it is.
+        let moved = format!("export A=1\n{SHELL_BEGIN}\nold\n{SHELL_END}\n");
+        let new = upsert_shell_block(&moved, &shell_block(Shell::Zsh, dir));
+        assert!(new.starts_with("export A=1\n# >>> peekme shell >>>"));
+    }
+
+    #[test]
+    fn shell_blocks_parse() {
+        let dir = Path::new("/home/u/.local/share/peekme/bin");
+        let check = |shell: &str, text: String| {
+            let Ok(out) = Command::new(shell)
+                .args(["-n", "-c", &text])
+                .stderr(Stdio::piped())
+                .output()
+            else {
+                return; // not installed here
+            };
+            assert!(
+                out.status.success(),
+                "{shell}: {}\n{text}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        check("bash", shell_block(Shell::Bash, dir));
+        check("zsh", shell_block(Shell::Zsh, dir));
+        check("fish", fish_file(dir, true));
     }
 
     #[test]

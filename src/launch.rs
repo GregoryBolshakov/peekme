@@ -7,6 +7,54 @@ use std::path::{Path, PathBuf};
 /// Set in the environment of everything peekme starts, so a nested agent
 /// (or peekme) steps aside instead of wrapping twice.
 pub const ACTIVE_ENV: &str = "PEEKME_ACTIVE";
+/// Its value under terminal mode (a shell started with peekme): an agent
+/// started in that shell still gets its own peekme, which knows the agent's
+/// screen, and the outer one lets it have the keys (`foreground_is_peekme`).
+pub const ACTIVE_TERMINAL: &str = "terminal";
+
+/// Under the peekme whose environment this is, should a peekme for `agent`
+/// step aside? Only an agent inside terminal mode runs a peekme of its own.
+pub fn nested(active: Option<&OsStr>, agent: bool) -> bool {
+    match active {
+        None => false,
+        Some(v) => !(agent && v == ACTIVE_TERMINAL),
+    }
+}
+
+/// The program of `pid` is a peekme binary (a link to one counts: the kernel
+/// knows the file, not the name it was started by).
+pub fn is_peekme(pid: u32) -> bool {
+    let Some(exe) = exe_of(pid) else {
+        return false;
+    };
+    let me = std::env::current_exe().and_then(|p| p.canonicalize()).ok();
+    me.as_deref() == Some(exe.as_path()) || exe.file_name().is_some_and(|n| n == "peekme")
+}
+
+#[cfg(target_os = "linux")]
+fn exe_of(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn exe_of(pid: u32) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = vec![0u8; 4096];
+    let n = unsafe { libc::proc_pidpath(pid as i32, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    (n > 0).then(|| PathBuf::from(OsStr::from_bytes(&buf[..n as usize])))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn exe_of(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
+/// The terminal `fd` (a pty's master side) runs a peekme as its foreground
+/// job, other than `ours` (our job-control helper).
+pub fn foreground_is_peekme(fd: i32, ours: Option<u32>) -> bool {
+    let group = unsafe { libc::tcgetpgrp(fd) };
+    group > 0 && Some(group as u32) != ours && is_peekme(group as u32)
+}
 
 /// The directory holding our `codex` and `claude` shims (links to the peekme binary).
 pub fn shim_dir() -> Option<PathBuf> {
@@ -104,6 +152,23 @@ fn is_executable(p: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_agent_under_terminal_mode_gets_its_own_peekme() {
+        let (agent, terminal) = (OsStr::new("1"), OsStr::new(ACTIVE_TERMINAL));
+        assert!(!nested(None, true) && !nested(None, false));
+        assert!(nested(Some(agent), true) && nested(Some(agent), false));
+        assert!(!nested(Some(terminal), true));
+        // A shell under a shell with peekme: one terminal mode is enough.
+        assert!(nested(Some(terminal), false));
+    }
+
+    #[test]
+    fn our_own_exe_counts_as_a_peekme() {
+        // The test binary is not named peekme, but it is our own exe.
+        assert!(is_peekme(std::process::id()));
+        assert!(!is_peekme(u32::MAX));
+    }
 
     #[test]
     fn real_codex_skips_our_shim_and_dangling_links() {

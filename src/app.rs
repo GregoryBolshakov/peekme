@@ -504,7 +504,7 @@ pub fn run(
     args: &[String],
     agent: Option<Agent>,
 ) -> std::result::Result<i32, Failure> {
-    let setup = setup(program, args).map_err(Failure::Setup)?;
+    let setup = setup(program, args, agent.is_none()).map_err(Failure::Setup)?;
     let (color, warning) = crate::color::for_agent(agent, |k| std::env::var(k).ok());
     if let Some(w) = warning {
         crate::log(&w);
@@ -584,7 +584,7 @@ fn cursor_position() -> Option<(u16, u16)> {
     ))
 }
 
-fn setup(program: &str, args: &[String]) -> Result<Setup> {
+fn setup(program: &str, args: &[String], terminal: bool) -> Result<Setup> {
     // Test hook (debug builds only): pretend setup failed, to check fail-open.
     #[cfg(debug_assertions)]
     if std::env::var_os("PEEKME_TEST_FAIL_SETUP").is_some() {
@@ -622,7 +622,12 @@ fn setup(program: &str, args: &[String]) -> Result<Setup> {
     };
     cmd.args(args);
     cmd.cwd(std::env::current_dir()?);
-    cmd.env(crate::launch::ACTIVE_ENV, "1");
+    let active = if terminal {
+        crate::launch::ACTIVE_TERMINAL
+    } else {
+        "1"
+    };
+    cmd.env(crate::launch::ACTIVE_ENV, active);
     let child = pair
         .slave
         .spawn_command(cmd)
@@ -798,6 +803,12 @@ fn event_loop(
         helper_offer_open: false,
         helper_running: crate::anyterm::helper_running,
         helper_install: crate::anyterm::install_helper,
+        peekme_inside: {
+            let fd = master.as_raw_fd();
+            Box::new(move || {
+                fd.is_some_and(|fd| crate::launch::foreground_is_peekme(fd, helper_pid))
+            })
+        },
     };
     if app.terminal {
         let desktop = crate::anyterm::desktop();
@@ -1037,6 +1048,9 @@ struct App {
     /// Whether the helper runs, and installing it (tests answer for both).
     helper_running: fn() -> bool,
     helper_install: fn() -> crate::anyterm::Installed,
+    /// Terminal mode: the foreground job is a peekme of its own (an agent
+    /// started in this shell), which handles the keys and draws its boxes.
+    peekme_inside: Box<dyn Fn() -> bool>,
 }
 
 impl App {
@@ -1979,6 +1993,10 @@ impl App {
     }
 
     fn on_input(&mut self, bytes: &[u8], out: &mut dyn Write, child: &mut dyn Write) -> Result<()> {
+        // An agent started in this shell runs its own peekme: the keys are its.
+        if self.terminal && self.open.is_none() && (self.peekme_inside)() {
+            return Ok(child.write_all(bytes)?);
+        }
         let mut pasting = self.in_paste;
         let tokens = input::tokenize(bytes, &mut self.carry, &mut self.in_paste);
         let mut forward: Vec<u8> = Vec::new();
@@ -4971,6 +4989,20 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_with_its_own_peekme_gets_alt_p() {
+        // `claude` typed in this shell: its peekme is the foreground job.
+        let mut app = shell_app("build 2");
+        app.peekme_inside = Box::new(|| true);
+        select_now();
+        let (mut out, mut child) = (Vec::new(), Vec::new());
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        app.on_idle(&mut out, &mut child).unwrap();
+        assert!(app.open.is_none() && app.nudge.is_none());
+        assert_eq!(child, b"\x1bp");
+        assert!(out.is_empty());
+    }
+
+    #[test]
     fn the_nudge_puts_the_box_under_the_selected_copy() {
         let mut app = shell_app("unused variable");
         select_now();
@@ -5145,6 +5177,7 @@ mod tests {
             helper_offer_open: false,
             helper_running: || false,
             helper_install: || crate::anyterm::Installed::Cancelled,
+            peekme_inside: Box::new(|| false),
         }
     }
 
