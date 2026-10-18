@@ -38,9 +38,14 @@ def dump():
     with open(tmp, "w") as f:
         json.dump(geo, f)
     os.replace(tmp, os.path.join(out, "geometry.json"))
-    # The visible rows (VTE 0.68's Python binding returns text and attributes).
-    text = term.get_text()
-    text = text[0] if isinstance(text, tuple) else text
+    # The visible rows. VTE 0.76+ has get_text_format (0.84 refuses get_text's
+    # attributes, which the Python binding always asks for); 0.68's get_text
+    # returns text and attributes.
+    if hasattr(term, "get_text_format"):
+        text = term.get_text_format(Vte.Format.TEXT)
+    else:
+        text = term.get_text()
+        text = text[0] if isinstance(text, tuple) else text
     tmp = os.path.join(out, "screen.txt.tmp")
     with open(tmp, "w") as f:
         f.write(text or "")

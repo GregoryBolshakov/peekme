@@ -1,8 +1,15 @@
 {
   "uuid": "peekme-helper@peekme.dev",
   "name": "peekme helper",
-  "description": "Lets peekme (peekme.dev) open its explanation box right under the text you selected in a terminal. It tells peekme what is selected and moves the pointer by a pixel and back when you press peekme's shortcut, so the terminal reports where the selection ends.",
-  "shell-version": ["45", "46", "47", "48", "49", "50"],
-  "url": "https://github.com/GregoryBolshakov/peekme",
-  "version": 1
+  "description": "Helper for peekme (peekme.dev), a terminal tool that explains text you select. On Wayland a program in a terminal cannot see the selection or where it is on screen, so peekme asks this extension when you press its shortcut.\n\nThe extension reads the primary selection (the text you selected with the mouse) and gives it only to a program running in the focused window. When asked, it moves the pointer by a pixel and back, so the terminal reports where the selection ends and peekme opens its box under it.\n\nIt sends nothing over the network and has no settings. peekme offers to install it the first time it is needed.",
+  "shell-version": [
+    "45",
+    "46",
+    "47",
+    "48",
+    "49",
+    "50",
+    "51"
+  ],
+  "url": "https://github.com/GregoryBolshakov/peekme"
 }

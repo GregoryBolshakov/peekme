@@ -11,8 +11,9 @@ turns on the shell's unsafe mode so the test can move the pointer and type
 through Clutter virtual devices (org.gnome.Shell.Eval). The terminal is a GTK3
 VTE window (vtehost.py) running `peekme -- bash`; the explainer is canned.
 
-The install asks extensions.gnome.org first; the helper is not published
-there yet, so it falls back to a local copy (no network: the same).
+The install asks extensions.gnome.org first. The private session's proxy
+points at a closed port, so that fails the same whether or not the helper is
+published, and peekme falls back to a local copy.
 
 Needs: gnome-shell, busctl, gsettings, python3-gi with Vte 2.91, a release
 build. Skips (exit 0) without gnome-shell.
@@ -29,6 +30,12 @@ WAYLAND = "wl-peekme-test"
 PROBE_JS = """function init() {}
 function enable() { global.context.unsafe_mode = true; }
 function disable() {}
+"""
+# GNOME 45 and later load extensions as ES modules.
+PROBE_ESM = """export default class Probe {
+    enable() { global.context.unsafe_mode = true; }
+    disable() {}
+}
 """
 
 
@@ -72,7 +79,9 @@ class Shell:
         if not wait(lambda: os.path.exists(sock), 15):
             raise RuntimeError("gnome-shell did not start")
         wait(lambda: self.eval_ok(), 15)
-        eval_js("const s = Clutter.get_default_backend().get_default_seat(); "
+        # global.stage.context from GNOME 47, Clutter.get_default_backend() up to 50.
+        eval_js("const s = (global.stage.context?.get_backend() ?? Clutter.get_default_backend())"
+                ".get_default_seat(); "
                 "global._vp = s.create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE); "
                 "global._vk = s.create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE); "
                 "Main.overview.hide(); 1")
@@ -190,9 +199,15 @@ def inner(work):
         json.dump({"uuid": PROBE, "name": "test probe", "description": "test only",
                    "shell-version": [shell_version()]}, f)
     with open(os.path.join(ext, PROBE, "extension.js"), "w") as f:
-        f.write(PROBE_JS)
+        f.write(PROBE_ESM if int(shell_version()) >= 45 else PROBE_JS)
     subprocess.run(["gsettings", "set", "org.gnome.shell", "enabled-extensions", f"['{PROBE}']"])
     subprocess.run(["gsettings", "set", "org.gnome.shell", "disable-user-extensions", "false"])
+    # The pointer starts at 0,0, the hot corner: on GNOME 51 the first move opens the overview.
+    for schema, key, value in [("org.gnome.desktop.interface", "enable-hot-corners", "false"),
+                               ("org.gnome.system.proxy", "mode", "manual"),
+                               ("org.gnome.system.proxy.https", "host", "127.0.0.1"),
+                               ("org.gnome.system.proxy.https", "port", "9")]:
+        subprocess.run(["gsettings", "set", schema, key, value])
     shell = Shell(work)
     fails = []
 
@@ -244,6 +259,17 @@ def inner(work):
         time.sleep(1.2)
         return "a box for a selection older than the last key" if w.box_row() is not None else None
 
+    def outside_the_window(w):
+        # This script is no child of the focused terminal: no selection for it.
+        w.drag(3, 9, 23)
+        call = ["busctl", "--user", "call", "dev.peekme.Helper", "/dev/peekme/Helper",
+                "dev.peekme.Helper1"]
+        up = subprocess.run(call + ["Version"], capture_output=True, text=True)
+        got = subprocess.run(call + ["Primary"], capture_output=True, text=True)
+        if up.returncode != 0:
+            return f"helper not running: {up.stderr.strip()}"
+        return None if got.returncode and "focused window" in got.stderr else f"Primary answered: {got.stdout or got.stderr}"
+
     try:
         shell.start()
         case("offer and install", offer_and_install)
@@ -252,11 +278,12 @@ def inner(work):
         state = eval_js(f"Main.extensionManager.lookup('{UUID}')?.state ?? -1")
         print(f"helper state after the new login: {state}")
         for name, fn in [("second copy", second_copy), ("ask on the third copy", ask_third_copy),
-                         ("key typed after the selection", typed_after)]:
+                         ("key typed after the selection", typed_after),
+                         ("a program outside the window", outside_the_window)]:
             case(name, fn)
     finally:
         shell.stop()
-    print(f"\n{4 - len(fails)}/4 passed")
+    print(f"\n{5 - len(fails)}/5 passed")
     return 1 if fails else 0
 
 

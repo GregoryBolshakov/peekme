@@ -19,6 +19,30 @@ const IFACE = `<node>
 
 const MAX_STEP = 32;
 const HOLD_MS = 20;
+const NOT_FOCUSED = 'dev.peekme.Helper1.Error.NotFocused';
+
+// The parent of process `pid`, from /proc/<pid>/stat; 0 when unknown.
+function parentOf(pid) {
+    try {
+        const [, bytes] = GLib.file_get_contents(`/proc/${pid}/stat`);
+        const stat = new TextDecoder().decode(bytes);
+        // "pid (name) state ppid ...": the name may hold spaces and parens.
+        return parseInt(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]) || 0;
+    } catch {
+        return 0;
+    }
+}
+
+// Whether process `pid` runs under the focused window's program, like a
+// shell and peekme under the terminal the user is typing in.
+function inFocusedWindow(pid) {
+    const owner = global.display.focus_window?.get_pid() ?? 0;
+    for (let p = pid, hops = 0; owner > 1 && p > 1 && hops < 64; p = parentOf(p), hops++) {
+        if (p === owner)
+            return true;
+    }
+    return false;
+}
 
 class Helper {
     constructor() {
@@ -45,26 +69,59 @@ class Helper {
         return '1';
     }
 
+    // Run `answer` only for a caller inside the focused window: the selection
+    // is not handed to any other program on the session bus.
+    _ifFocused(invocation, answer) {
+        Gio.DBus.session.call('org.freedesktop.DBus', '/org/freedesktop/DBus',
+            'org.freedesktop.DBus', 'GetConnectionUnixProcessID',
+            new GLib.Variant('(s)', [invocation.get_sender()]), new GLib.VariantType('(u)'),
+            Gio.DBusCallFlags.NONE, -1, null, (bus, res) => {
+                let pid = 0;
+                try {
+                    [pid] = bus.call_finish(res).deepUnpack();
+                } catch {
+                    pid = 0;
+                }
+                if (inFocusedWindow(pid))
+                    answer();
+                else
+                    invocation.return_dbus_error(NOT_FOCUSED, 'Only a program in the focused window may ask');
+            });
+    }
+
     PrimaryAsync(_params, invocation) {
-        St.Clipboard.get_default().get_text(St.ClipboardType.PRIMARY, (_c, text) => {
-            invocation.return_value(new GLib.Variant('(s)', [text ?? '']));
+        this._ifFocused(invocation, () => {
+            St.Clipboard.get_default().get_text(St.ClipboardType.PRIMARY, (_c, text) => {
+                invocation.return_value(new GLib.Variant('(s)', [text ?? '']));
+            });
         });
     }
 
     // Monotonic microseconds of the last new PRIMARY selection, 0 for none.
-    SelectionChanged() {
-        return this._changed;
+    SelectionChangedAsync(_params, invocation) {
+        this._ifFocused(invocation, () => {
+            invocation.return_value(new GLib.Variant('(x)', [this._changed]));
+        });
     }
 
-    // Move the pointer `step` pixels sideways and back, only while a window
-    // has the focus and by at most MAX_STEP pixels.
-    Nudge(step) {
-        if (!global.display.focus_window || step < 1 || step > MAX_STEP)
+    // Move the pointer `step` pixels sideways and back, by at most MAX_STEP.
+    NudgeAsync([step], invocation) {
+        this._ifFocused(invocation, () => {
+            invocation.return_value(null);
+            this._nudge(step);
+        });
+    }
+
+    _nudge(step) {
+        if (step < 1 || step > MAX_STEP)
             return;
         const [x, y] = global.get_pointer();
         const to = x + step < global.stage.width ? x + step : x - step;
         if (!this._pointer) {
-            const seat = Clutter.get_default_backend().get_default_seat();
+            // global.stage.context is there from GNOME 47; GNOME 51 has
+            // no Clutter.get_default_backend().
+            const backend = global.stage.context?.get_backend() ?? Clutter.get_default_backend();
+            const seat = backend.get_default_seat();
             this._pointer = seat.create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE);
         }
         this._pointer.notify_absolute_motion(GLib.get_monotonic_time(), to, y);
