@@ -16,6 +16,49 @@
 //! The user can escalate to the full conversation (a forked thread) when this
 //! is not enough; see `explain.rs`.
 
+/// Whose screen the selection is on: an agent CLI's chat, or a plain terminal
+/// (a shell and whatever runs in it, see `anyterm`), which has no
+/// conversation and is described as what it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    Agent(Agent),
+    Terminal,
+}
+
+impl From<Agent> for Place {
+    fn from(a: Agent) -> Self {
+        Place::Agent(a)
+    }
+}
+
+impl Place {
+    fn environment(self, cwd: &str) -> String {
+        match self {
+            Place::Agent(a) => a.environment(cwd),
+            Place::Terminal => crate::anyterm::environment(cwd),
+        }
+    }
+
+    /// Where the passage comes from when it is not in a conversation.
+    fn screen_source(self) -> String {
+        match self {
+            Place::Agent(a) => format!(
+                "the terminal screen; this text was not found in the conversation, so it is probably {} interface text or tool output",
+                a.name()
+            ),
+            Place::Terminal => "the terminal screen".into(),
+        }
+    }
+
+    /// "next to their Codex CLI session", or nothing in a plain terminal.
+    fn next_to(self) -> String {
+        match self {
+            Place::Agent(a) => format!(" next to their {} session", a.name()),
+            Place::Terminal => String::new(),
+        }
+    }
+}
+
 /// The selection as it appears on screen: the screen text and the selected range.
 #[derive(Clone, Debug)]
 pub struct ScreenSel {
@@ -410,13 +453,13 @@ fn ask(sel: &ScreenSel) -> String {
 
 /// Instructions for a question the user typed about a selection (the ask
 /// box), in place of "explain the selection".
-pub fn ask_system(agent: Agent) -> String {
+pub fn ask_system(place: impl Into<Place>) -> String {
     format!(
-        "You are \"peek\", built into the user's terminal next to their {} session. The user highlighted \
+        "You are \"peek\", built into the user's terminal{}. The user highlighted \
          a fragment of text (marked {OPEN}like this{CLOSE}) and typed a question about it. Answer that \
          question directly, from the conversation, the passage and general knowledge. Be complete but \
          brief, no preamble. Do not use tools, do not run commands, do not read files.",
-        agent.name()
+        place.into().next_to()
     )
 }
 
@@ -426,7 +469,7 @@ pub fn ask_system(agent: Agent) -> String {
 /// "explain this".
 #[allow(clippy::too_many_arguments)]
 pub fn build_question(
-    agent: Agent,
+    place: impl Into<Place>,
     cwd: &str,
     conv: Option<&Conversation>,
     hit: Option<Hit>,
@@ -435,9 +478,10 @@ pub fn build_question(
     whole: bool,
     question: &str,
 ) -> Built {
+    let place = place.into();
     let mut built = match conv {
-        Some(c) if whole => build_deep(agent, cwd, c, hit, sel),
-        _ => build(agent, cwd, conv, hit, sel, None),
+        Some(c) if whole => build_deep(place, cwd, c, hit, sel),
+        _ => build(place, cwd, conv, hit, sel, None),
     };
     let explain = ask(sel);
     if built.prompt.ends_with(&explain) {
@@ -464,14 +508,15 @@ pub fn build_question(
 
 /// Assemble the explainer's input.
 pub fn build(
-    agent: Agent,
+    place: impl Into<Place>,
     cwd: &str,
     conv: Option<&Conversation>,
     hit: Option<Hit>,
     sel: &ScreenSel,
     nested: Option<&Nested>,
 ) -> Built {
-    let mut p = agent.environment(cwd);
+    let place = place.into();
+    let mut p = place.environment(cwd);
 
     if let Some(conv) = conv {
         let current = hit.and_then(|h| request_for(conv, h.item));
@@ -530,7 +575,7 @@ pub fn build(
             "conversation"
         }
         _ => {
-            p.push_str(&format!("<passage source=\"the terminal screen; this text was not found in the conversation, so it is probably {} interface text or tool output\">\n", agent.name()));
+            p.push_str(&format!("<passage source=\"{}\">\n", place.screen_source()));
             p.push_str(&marked_window(&sel.text, sel.start, sel.end, SCREEN_SIDE));
             p.push_str("\n</passage>\n");
             "screen"
@@ -560,7 +605,7 @@ pub fn build(
 /// session cheaply. Tool results are clipped and the oldest items are dropped
 /// first to stay within the budget.
 pub fn build_deep(
-    agent: Agent,
+    place: impl Into<Place>,
     cwd: &str,
     conv: &Conversation,
     hit: Option<Hit>,
@@ -602,7 +647,7 @@ pub fn build_deep(
         first += 1;
     }
 
-    let mut p = agent.environment(cwd);
+    let mut p = place.into().environment(cwd);
     match &conv.title {
         Some(t) => p.push_str(&format!("<conversation title=\"{}\">\n", one_line(t, 100))),
         None => p.push_str("<conversation>\n"),

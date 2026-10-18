@@ -1,12 +1,12 @@
 //! What every explainer backend reports back, what it is asked, and which
 //! backend explains for which agent.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::agent::Agent;
 use crate::claude::explain::Pool;
 use crate::codex::explain::{self as codex, Slot};
-use crate::context::{Nested, ScreenSel};
+use crate::context::{Nested, Place, ScreenSel};
 use crate::copilot::explain as copilot;
 use crate::kiro::explain as kiro;
 
@@ -82,6 +82,20 @@ pub struct Request {
     /// A question the user typed about the selection (Alt+Q): answered
     /// by the chat's own model, with the whole conversation.
     pub question: Option<String>,
+    /// The selection is in a plain terminal, not in an agent's chat (see
+    /// `anyterm`): no transcript is looked up and the screen is called what it is.
+    pub terminal: bool,
+}
+
+impl Request {
+    /// What `agent`'s explainer should call the screen.
+    pub fn place(&self, agent: Agent) -> Place {
+        if self.terminal {
+            Place::Terminal
+        } else {
+            Place::Agent(agent)
+        }
+    }
 }
 
 /// Above this estimate, "the whole chat" asks before sending (a normal
@@ -100,6 +114,9 @@ pub enum Explainer {
     Copilot(Arc<copilot::Slot>),
     /// Kiro CLI's ACP server, one session per explanation.
     Kiro(Arc<kiro::Slot>),
+    /// Not an agent's session: the agent picked at the first explanation
+    /// (`anyterm::pick`).
+    Picked(Arc<OnceLock<Explainer>>),
     /// Canned text, no model: `PEEKME_FAKE_EXPLAINER=1`, for end-to-end tests.
     Fake,
 }
@@ -125,12 +142,10 @@ impl Explainer {
         }
     }
 
-    /// For a program that is not an agent: the first agent that is installed.
+    /// For a program that is not an agent: `PEEKME_EXPLAINER`, else the first
+    /// agent that is installed and logged in, chosen when first needed.
     pub fn for_other_program() -> Self {
-        let installed = Agent::ALL
-            .into_iter()
-            .find(|a| crate::launch::find_real(a.command()).is_some());
-        Self::new(installed.unwrap_or(Agent::Claude))
+        Explainer::Picked(Arc::default())
     }
 
     /// Run one explanation, reporting progress on `tx`. Blocks; call from a thread.
@@ -143,6 +158,9 @@ impl Explainer {
             Explainer::Claude(pool) => crate::claude::explain::explain(pool, req, tx),
             Explainer::Copilot(slot) => copilot::explain(slot, req, tx),
             Explainer::Kiro(slot) => kiro::explain(slot, req, tx),
+            Explainer::Picked(cell) => cell
+                .get_or_init(|| Self::new(crate::anyterm::pick::agent()))
+                .explain(req, tx),
             Explainer::Fake => {
                 let sel = match &req.nested {
                     Some(n) => {
@@ -208,6 +226,11 @@ impl Explainer {
             Explainer::Claude(pool) => pool.shutdown(),
             Explainer::Copilot(slot) => slot.shutdown(),
             Explainer::Kiro(slot) => slot.shutdown(),
+            Explainer::Picked(cell) => {
+                if let Some(e) = cell.get() {
+                    e.shutdown();
+                }
+            }
             Explainer::Fake => {}
         }
     }

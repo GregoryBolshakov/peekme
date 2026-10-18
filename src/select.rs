@@ -28,6 +28,8 @@ pub struct SelectionSource {
     ax_seen: Option<String>,
     /// The last `read` came from Accessibility.
     pub from_accessibility: bool,
+    /// The last `read` came from `PEEKME_SELECTION`, not the system.
+    pub from_env: bool,
 }
 
 impl SelectionSource {
@@ -43,6 +45,7 @@ impl SelectionSource {
                 && std::env::var_os("SSH_CONNECTION").is_none(),
             ax_seen: None,
             from_accessibility: false,
+            from_env: false,
         };
         // Whatever was copied before the agent started is no selection.
         s.settle();
@@ -61,6 +64,7 @@ impl SelectionSource {
             accessibility: false,
             ax_seen: None,
             from_accessibility: false,
+            from_env: false,
         }
     }
 
@@ -83,9 +87,11 @@ impl SelectionSource {
     }
 
     pub fn read(&mut self) -> Option<String> {
+        self.from_env = false;
         if self.fixed.is_none()
             && let Ok(s) = std::env::var("PEEKME_SELECTION")
         {
+            self.from_env = true;
             return Some(s).filter(|s| !s.trim().is_empty());
         }
         self.from_accessibility = false;
@@ -137,6 +143,12 @@ impl SelectionSource {
         if std::env::var_os("SSH_CONNECTION").is_some() {
             // The mouse selection lives on the user's machine, not this one.
             return None;
+        }
+        // GNOME on Wayland gives X11 programs no PRIMARY; its helper does.
+        if crate::anyterm::gnome::session()
+            && let Some(text) = crate::anyterm::gnome::primary()
+        {
+            return Some(text);
         }
         if self.clipboard.is_none() {
             self.clipboard = arboard::Clipboard::new().ok();

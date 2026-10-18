@@ -26,6 +26,10 @@ serde_json = "1"
 signal-hook = "0.3"
 unicode-width = "0.2"
 
+# The X11 pointer nudge and selection watch of `anyterm` (arboard already uses x11rb).
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["xtest", "xfixes"] }
+
 [profile.release]
 lto = "thin"
 

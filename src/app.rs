@@ -4,6 +4,8 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -33,6 +35,8 @@ enum Msg {
     Peek(u64, Progress),
     /// The child suspended itself (Ctrl+Z).
     ChildStopped,
+    /// The GNOME helper install the user asked for is over.
+    HelperInstalled(crate::anyterm::Installed),
 }
 
 /// Why `run` failed. Setup failures happen before the child starts, so the
@@ -480,6 +484,16 @@ struct PendingHotkey {
     ask: bool,
 }
 
+/// Alt+P on text the terminal selected that is on screen more than once:
+/// waiting for the motion report the nudge brings (see `anyterm`).
+struct PendingNudge {
+    since: Instant,
+    /// Alt+Q: the box asks for a question first.
+    ask: bool,
+    /// Set once a report came, so the nudge makes no second move.
+    answered: Arc<AtomicBool>,
+}
+
 const HOTKEY_AFTER_DRAG: Duration = Duration::from_secs(1);
 const HOTKEY_SELECTION_WAIT: Duration = Duration::from_secs(1);
 
@@ -773,7 +787,24 @@ fn event_loop(
         paced_turns: VecDeque::new(),
         kiro_wheel: 2,
         copilot_frame: None,
+        terminal: agent.is_none(),
+        typed_at: None,
+        selection_watch: None,
+        nudger: None,
+        nudge: None,
+        pointer_hint: None,
+        gnome_wayland: false,
+        offered_helper: false,
+        helper_offer_open: false,
+        helper_running: crate::anyterm::helper_running,
+        helper_install: crate::anyterm::install_helper,
     };
+    if app.terminal {
+        let desktop = crate::anyterm::desktop();
+        app.selection_watch = crate::anyterm::selection_watch(desktop);
+        app.nudger = crate::anyterm::nudger(desktop);
+        app.gnome_wayland = desktop == crate::anyterm::Desktop::GnomeWayland;
+    }
     let mut stdout = std::io::stdout().lock();
     if app.in_tmux {
         crate::tmux::prepare_copy_mode();
@@ -845,6 +876,9 @@ fn event_loop(
                     jobctl::continue_child(pid);
                 }
             }
+            Msg::HelperInstalled(how) => guarded(&mut app, &mut stdout, |app, out| {
+                app.on_helper_installed(how, out)
+            })?,
             Msg::ChildGone => break,
         }
         app.keep_marks();
@@ -981,6 +1015,28 @@ struct App {
     kiro_wheel: isize,
     /// Copilot hid the cursor to draw a frame and has not shown it again.
     copilot_frame: Option<Instant>,
+    /// The child is not an agent CLI: a shell or any other program (`anyterm`).
+    terminal: bool,
+    /// Last key typed into the child, in terminal mode: a selection made
+    /// before it is old, and Alt+P goes to the child (Meta+P in a shell).
+    typed_at: Option<Instant>,
+    /// When the system's selection last changed hands, where that can be
+    /// watched (X11, GNOME's helper). None: any selection on screen counts.
+    selection_watch: Option<fn() -> Option<Instant>>,
+    /// Moves the pointer so the terminal reports where it is (XTEST, GNOME's helper).
+    nudger: Option<crate::anyterm::Nudger>,
+    nudge: Option<PendingNudge>,
+    /// The cell the nudge reported: the selected copy is on its row.
+    pointer_hint: Option<(usize, usize)>,
+    /// GNOME on Wayland: the selection is seen through the helper extension.
+    gnome_wayland: bool,
+    /// Offered to install the helper in this session (once is enough).
+    offered_helper: bool,
+    /// The open box is that offer: Enter installs.
+    helper_offer_open: bool,
+    /// Whether the helper runs, and installing it (tests answer for both).
+    helper_running: fn() -> bool,
+    helper_install: fn() -> crate::anyterm::Installed,
 }
 
 impl App {
@@ -1118,6 +1174,13 @@ impl App {
     }
 
     fn on_idle(&mut self, out: &mut dyn Write, child: &mut dyn Write) -> Result<()> {
+        if self
+            .nudge
+            .as_ref()
+            .is_some_and(|n| n.since.elapsed() >= crate::anyterm::NUDGE_WAIT)
+        {
+            self.end_nudge(None, out)?;
+        }
         self.resolve_pending_hotkey(out, child)?;
         self.tick(out)?;
         self.release_paced_turns(out, child)
@@ -1933,6 +1996,16 @@ impl App {
             if self.asking() && self.ask_key(&t, pasting, out)? {
                 continue;
             }
+            // The report the nudge asked for: where the pointer is.
+            if self.nudge.is_some()
+                && let Kind::Mouse(_) = t.kind
+            {
+                self.end_nudge(input::mouse_cell(&t.bytes), out)?;
+                continue;
+            }
+            if self.terminal && t.kind == Kind::Key {
+                self.typed_at = Some(Instant::now());
+            }
             if t.kind == Kind::Key && !pasting && types_greek(&t.bytes) {
                 self.greek_typed = true;
             }
@@ -1995,6 +2068,22 @@ impl App {
                 if !hotkey {
                     self.selection.settle();
                 }
+            }
+            if matches!(t.kind, Kind::Hotkey | Kind::AskHotkey)
+                && self.open.is_none()
+                && self.offers_helper()
+            {
+                // GNOME on Wayland without the helper sees no selection at all.
+                self.offered_helper = true;
+                self.next_message = Some(HELPER_OFFER);
+            } else if matches!(t.kind, Kind::Hotkey | Kind::AskHotkey)
+                && self.open.is_none()
+                && self.terminal_selects()
+                && !self.fresh_selection()
+            {
+                // Meta+P is history search in bash and zsh.
+                crate::event("hotkey_to_child", serde_json::json!({}));
+                t.kind = Kind::Key;
             }
             self.sniff_colors(&t);
             if matches!(t.bytes.as_slice(), b"\x1b[I" | b"\x1b[O") {
@@ -2078,8 +2167,21 @@ impl App {
                         }
                         self.close(out, false)?;
                     }
+                    if self.start_nudge(ask, out)? {
+                        continue;
+                    }
                     self.ask_next = ask;
                     self.request_open(out)?;
+                }
+                (Kind::Key, true) if self.helper_offer_open && t.bytes == b"\r" => {
+                    self.consumed.consume(&t);
+                    self.flush_forward(&mut forward, child)?;
+                    self.close(out, false)?;
+                    crate::event("helper_install", serde_json::json!({}));
+                    let (tx, install) = (self.tx.clone(), self.helper_install);
+                    std::thread::spawn(move || {
+                        let _ = tx.send(Msg::HelperInstalled(install()));
+                    });
                 }
                 (Kind::Key, true) if self.accessibility_offer_open && t.bytes == b"\r" => {
                     self.consumed.consume(&t);
@@ -2508,7 +2610,133 @@ impl App {
         if self.open.is_some() {
             return true;
         }
+        if self.terminal_selects() {
+            return self.fresh_selection();
+        }
         self.has_selection()
+    }
+
+    /// GNOME on Wayland, the terminal's own selection, and no helper to see
+    /// it: offer the helper, once a session.
+    fn offers_helper(&self) -> bool {
+        self.gnome_wayland
+            && !self.offered_helper
+            && self.terminal_selects()
+            && !(self.helper_running)()
+    }
+
+    /// The helper install is over: on success go on with the Alt+P that
+    /// offered it (the selection is still there), else say what happened.
+    fn on_helper_installed(
+        &mut self,
+        how: crate::anyterm::Installed,
+        out: &mut dyn Write,
+    ) -> Result<()> {
+        use crate::anyterm::Installed;
+        crate::event(
+            "helper_installed",
+            serde_json::json!({"how": format!("{how:?}")}),
+        );
+        if self.open.is_some() {
+            return Ok(());
+        }
+        match how {
+            Installed::Now => {
+                if self.start_nudge(false, out)? {
+                    return Ok(());
+                }
+            }
+            Installed::AfterLogin => self.next_message = Some(HELPER_AFTER_LOGIN),
+            Installed::Cancelled => return Ok(()),
+            Installed::Failed(e) => {
+                crate::log(&format!("anyterm: helper install failed: {e}"));
+                self.next_message = Some(HELPER_FAILED);
+            }
+        }
+        self.request_open(out)
+    }
+
+    /// Terminal mode with the mouse left to the terminal: the selection is the
+    /// terminal's own, known only as text.
+    fn terminal_selects(&self) -> bool {
+        self.terminal && !self.shadow.mouse_mode()
+    }
+
+    /// Something on screen is selected, and (where the system's selection
+    /// can be watched) it was selected after the last key typed.
+    fn fresh_selection(&mut self) -> bool {
+        if !self.has_selection() {
+            return false;
+        }
+        // `PEEKME_SELECTION` stands in for the system: always new.
+        let watched = self.selection_source == "system" && !self.selection.from_env;
+        match self.selection_watch {
+            Some(changed_at) if watched => {
+                changed_at().is_some_and(|c| self.typed_at.is_none_or(|k| c > k))
+            }
+            _ => true,
+        }
+    }
+
+    /// Alt+P on a terminal selection whose text is on screen more than once:
+    /// turn on motion reports and move the pointer, so the terminal says
+    /// where the pointer is, the end of the drag. The box opens when the
+    /// report comes (`end_nudge`) or after `NUDGE_WAIT`.
+    fn start_nudge(&mut self, ask: bool, out: &mut dyn Write) -> Result<bool> {
+        let Some(nudger) = self.nudger else {
+            return Ok(false);
+        };
+        // A message to show (an offer) is no selection to place.
+        if self.open.is_some()
+            || !self.terminal_selects()
+            || self.in_tmux
+            || self.next_message.is_some()
+        {
+            return Ok(false);
+        }
+        let Some(text) = self.selection.read() else {
+            return Ok(false);
+        };
+        let copies = select::occurrences(&self.shadow.snapshot(), &text).len();
+        if copies < 2 {
+            return Ok(false);
+        }
+        out.write_all(crate::anyterm::NUDGE_ON.as_bytes())?;
+        out.flush()?;
+        let answered = Arc::new(AtomicBool::new(false));
+        let moved = answered.clone();
+        std::thread::spawn(move || nudger(moved));
+        crate::event("nudge_start", serde_json::json!({"copies": copies}));
+        self.nudge = Some(PendingNudge {
+            since: Instant::now(),
+            ask,
+            answered,
+        });
+        Ok(true)
+    }
+
+    /// The nudge's report came (`cell`) or it timed out (None): reports off,
+    /// and the box opens on the copy at that row.
+    fn end_nudge(&mut self, cell: Option<(usize, usize)>, out: &mut dyn Write) -> Result<()> {
+        let Some(nudge) = self.nudge.take() else {
+            return Ok(());
+        };
+        nudge.answered.store(true, Ordering::Relaxed);
+        let mut s = String::from(crate::anyterm::NUDGE_OFF);
+        if !self.shadow.sgr_mouse() {
+            s.push_str(SGR_OFF);
+        }
+        out.write_all(s.as_bytes())?;
+        out.flush()?;
+        // Reports from the move back are still on their way.
+        self.own_mouse_off = Some(Instant::now());
+        self.pointer_hint = cell;
+        crate::event(
+            "nudge",
+            serde_json::json!({"cell": cell, "ms": nudge.since.elapsed().as_millis() as u64}),
+        );
+        self.ask_next = nudge.ask;
+        self.request_open(out)
     }
 
     /// Whether π with nothing selected should offer Accessibility: in
@@ -2692,7 +2920,9 @@ impl App {
                 "system"
             };
         }
-        let l = s.as_deref().and_then(|s| select::locate(snap, s, None));
+        let l = s
+            .as_deref()
+            .and_then(|s| select::locate(snap, s, self.pointer_hint));
         (s, l)
     }
 
@@ -2812,6 +3042,7 @@ impl App {
             }
             None => self.current_selection(&snap),
         };
+        self.pointer_hint = None;
         // Inline, text selected higher up in the terminal's scrollback is not
         // on the screen (a key press scrolls the terminal back down): found in
         // the history peekme keeps, its box opens at the top of the screen,
@@ -3046,6 +3277,7 @@ impl App {
         // Selecting text in the box needs the mouse reports.
         let own_mouse = !self.shadow.mouse_mode();
         self.accessibility_offer_open = forced == Some(ACCESSIBILITY_OFFER);
+        self.helper_offer_open = forced == Some(HELPER_OFFER);
         self.open = Some(Open {
             id,
             selection: remembered,
@@ -3147,6 +3379,7 @@ impl App {
             agent_pid: self.agent_pid(),
             nested,
             question,
+            terminal: self.agent.is_none(),
         };
         let tx = self.tx.clone();
         std::thread::spawn(move || {
@@ -3371,6 +3604,7 @@ impl App {
     fn close(&mut self, out: &mut dyn Write, skip_repaint: bool) -> Result<()> {
         self.close_below(0);
         self.accessibility_offer_open = false;
+        self.helper_offer_open = false;
         let Some(open) = self.open.take() else {
             return Ok(());
         };
@@ -3687,6 +3921,15 @@ fn tmux_mouse_message(agent: Option<Agent>) -> String {
 const ACCESSIBILITY_OFFER: &str = "Terminal keeps what you select to itself, so peekme can't see it. \
      macOS can let peekme read it: press Enter, then turn on Terminal in System Settings > \
      Privacy & Security > Accessibility. Esc: not now.";
+
+const HELPER_OFFER: &str = "On GNOME with Wayland, peekme needs a small GNOME Shell extension to see \
+     what you select and where. Press Enter to install it from extensions.gnome.org (GNOME asks you \
+     first). Esc: not now.";
+
+const HELPER_AFTER_LOGIN: &str = "The peekme helper is installed and starts at your next login. Log \
+     out and in once, then select text and press Alt+P.";
+
+const HELPER_FAILED: &str = "The peekme helper could not be installed. peekme's log says why.";
 
 const ACCESSIBILITY_ASKED: &str = "Once Terminal is on in that list, select text and press Option+P \
      again. If π still appears, quit Terminal and open it again.";
@@ -4661,6 +4904,162 @@ mod tests {
         assert_eq!(viewport_top(b"\x1b[1;5H\x1b[r", 40), None);
     }
 
+    // Terminal mode (`anyterm`): a shell, the terminal's own selection.
+
+    thread_local! {
+        /// When the test's "system selection" last changed hands.
+        static SELECTED_AT: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+    }
+
+    fn selected_at() -> Option<Instant> {
+        SELECTED_AT.with(|c| c.get())
+    }
+
+    fn select_now() {
+        SELECTED_AT.with(|c| c.set(Some(Instant::now())));
+    }
+
+    fn no_nudge(_: Arc<AtomicBool>) {}
+
+    /// Four copies of the same warning, as a build prints them.
+    const BUILD_LOG: &[u8] = b"build 1: ok\r\nwarning: unused variable x\r\nbuild 2: ok\r\n\
+        warning: unused variable x\r\nbuild 3: ok\r\nwarning: unused variable x\r\n\
+        build 4: ok\r\nwarning: unused variable x\r\n$ ";
+
+    fn shell_app(selected: &str) -> App {
+        let mut app = test_app(80, 24);
+        app.agent = None;
+        app.terminal = true;
+        app.selection = SelectionSource::fixed(selected);
+        app.selection_watch = Some(selected_at);
+        app.nudger = Some(no_nudge);
+        SELECTED_AT.with(|c| c.set(None));
+        let (mut out, mut child) = (Vec::new(), Vec::new());
+        app.on_output(BUILD_LOG, &mut out, &mut child).unwrap();
+        app
+    }
+
+    fn mark_rows(app: &App) -> Vec<usize> {
+        let (_, cells) = app.open.as_ref().unwrap().mark.as_ref().unwrap();
+        let mut rows: Vec<usize> = cells.iter().map(|&(r, _)| r).collect();
+        rows.dedup();
+        rows
+    }
+
+    #[test]
+    fn alt_p_goes_to_the_shell_without_a_new_selection() {
+        // Selected before peekme started (no change seen): Meta+P is bash's.
+        let mut app = shell_app("build 2");
+        let (mut out, mut child) = (Vec::new(), Vec::new());
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+        assert_eq!(child, b"\x1bp");
+        // Selected, then a key typed: old again.
+        select_now();
+        child.clear();
+        app.on_input(b"l\x1bp", &mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+        assert_eq!(child, b"l\x1bp");
+        // Selected after the last key: the box.
+        select_now();
+        child.clear();
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        app.on_idle(&mut out, &mut child).unwrap();
+        assert!(app.open.is_some());
+        assert!(child.is_empty());
+        assert_eq!(mark_rows(&app), vec![2]);
+    }
+
+    #[test]
+    fn the_nudge_puts_the_box_under_the_selected_copy() {
+        let mut app = shell_app("unused variable");
+        select_now();
+        let (mut out, mut child) = (Vec::new(), Vec::new());
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        // Four copies: motion reports on, the box waits for the report.
+        assert!(String::from_utf8_lossy(&out).contains(crate::anyterm::NUDGE_ON));
+        assert!(app.open.is_none() && app.nudge.is_some());
+        out.clear();
+        // The pointer is on the second copy (row 3), where the drag ended.
+        app.on_input(&mouse(35, (3, 23), true), &mut out, &mut child)
+            .unwrap();
+        app.on_idle(&mut out, &mut child).unwrap();
+        assert!(String::from_utf8_lossy(&out).contains("\x1b[?1003l\x1b[?1006l"));
+        assert_eq!(mark_rows(&app), vec![3]);
+        assert!(child.is_empty());
+        // The report of the move back is dropped, not given to the shell.
+        app.on_input(&mouse(35, (3, 23), true), &mut out, &mut child)
+            .unwrap();
+        assert!(child.is_empty());
+    }
+
+    #[test]
+    fn no_report_opens_on_the_bottom_copy_as_before() {
+        let mut app = shell_app("unused variable");
+        select_now();
+        let (mut out, mut child) = (Vec::new(), Vec::new());
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        app.nudge.as_mut().unwrap().since -= crate::anyterm::NUDGE_WAIT;
+        app.on_idle(&mut out, &mut child).unwrap();
+        app.on_idle(&mut out, &mut child).unwrap();
+        assert_eq!(mark_rows(&app), vec![7]);
+        assert!(String::from_utf8_lossy(&out).contains("\x1b[?1003l"));
+    }
+
+    #[test]
+    fn one_copy_needs_no_nudge() {
+        let mut app = shell_app("build 3");
+        select_now();
+        let (mut out, mut child) = (Vec::new(), Vec::new());
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        app.on_idle(&mut out, &mut child).unwrap();
+        assert!(app.nudge.is_none());
+        assert!(!String::from_utf8_lossy(&out).contains("1003h"));
+        assert_eq!(mark_rows(&app), vec![4]);
+    }
+
+    #[test]
+    fn gnome_wayland_offers_the_helper_once_and_goes_on_after_it() {
+        let mut app = shell_app("unused variable");
+        app.gnome_wayland = true;
+        app.helper_running = || false;
+        let (mut out, mut child) = (Vec::new(), Vec::new());
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        app.on_idle(&mut out, &mut child).unwrap();
+        let open = app.open.as_ref().expect("the offer");
+        assert_eq!(open.peek.status, Status::Message(HELPER_OFFER.into()));
+        assert!(app.helper_offer_open && child.is_empty());
+        // Esc: not now. The next Alt+P is the shell's again.
+        app.on_input(b"\x1b", &mut out, &mut child).unwrap();
+        app.on_idle(&mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+        app.on_input(b"\x1bp", &mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+        assert_eq!(child, b"\x1bp");
+        // Installed from extensions.gnome.org: the box opens on the selection,
+        // after the nudge found its copy.
+        select_now();
+        app.on_helper_installed(crate::anyterm::Installed::Now, &mut out)
+            .unwrap();
+        assert!(app.nudge.is_some());
+        app.on_input(&mouse(35, (5, 20), true), &mut out, &mut child)
+            .unwrap();
+        app.on_idle(&mut out, &mut child).unwrap();
+        assert_eq!(mark_rows(&app), vec![5]);
+    }
+
+    #[test]
+    fn a_local_helper_install_says_to_log_in_again() {
+        let mut app = shell_app("build 1");
+        app.gnome_wayland = true;
+        let (mut out, mut child) = (Vec::new(), Vec::new());
+        app.on_helper_installed(crate::anyterm::Installed::AfterLogin, &mut out)
+            .unwrap();
+        app.on_idle(&mut out, &mut child).unwrap();
+        let open = app.open.as_ref().expect("the message");
+        assert_eq!(open.peek.status, Status::Message(HELPER_AFTER_LOGIN.into()));
+    }
+
     fn test_app(cols: u16, rows: u16) -> App {
         test_app_for(Agent::Codex, cols, rows)
     }
@@ -4735,6 +5134,17 @@ mod tests {
             paced_turns: VecDeque::new(),
             kiro_wheel: 2,
             copilot_frame: None,
+            terminal: false,
+            typed_at: None,
+            selection_watch: None,
+            nudger: None,
+            nudge: None,
+            pointer_hint: None,
+            gnome_wayland: false,
+            offered_helper: false,
+            helper_offer_open: false,
+            helper_running: || false,
+            helper_install: || crate::anyterm::Installed::Cancelled,
         }
     }
 

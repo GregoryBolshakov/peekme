@@ -1,11 +1,12 @@
 //! Development helper: run one explanation for a selection inside some screen
 //! text, without a terminal. Prints the prompt sent and the streamed answer.
 //!
-//!     cargo run --example peek_text -- "<screen text>" "<selection>" [--deep] [--ask QUESTION] [--inside ANSWER WORDS] [--claude|--copilot|--kiro] [--pid PID]
+//!     cargo run --example peek_text -- "<screen text>" "<selection>" [--deep] [--ask QUESTION] [--inside ANSWER WORDS] [--claude|--copilot|--kiro|--picked] [--terminal] [--pid PID]
 //!
 //! Codex by default. With `--claude`, `--copilot` or `--kiro`, that agent; `--pid` is the
 //! process id of a running interactive session, whose transcript then gives the
-//! context.
+//! context. `--terminal`: the text is a plain terminal's screen, not a chat;
+//! `--picked`: the agent a plain terminal would get (`PEEKME_EXPLAINER`, logins).
 
 use peekme::agent::Agent;
 use peekme::context;
@@ -66,11 +67,16 @@ fn main() {
             .position(|a| a == "--ask")
             .and_then(|i| args.get(i + 1))
             .cloned(),
+        terminal: has("--terminal"),
     };
     // SAFETY: single-threaded at this point.
     unsafe { std::env::set_var("PEEKME_DEBUG_PROMPT", "1") };
     let t0 = std::time::Instant::now();
-    let explainer = Explainer::new(agent);
+    let explainer = if has("--picked") {
+        Explainer::for_other_program()
+    } else {
+        Explainer::new(agent)
+    };
     explainer.explain(req, |p| match p {
         Progress::Started { model, source } => {
             let prompt =

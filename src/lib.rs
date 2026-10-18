@@ -8,6 +8,7 @@
 //! which model explains.
 
 pub mod agent;
+pub mod anyterm;
 pub mod app;
 pub mod claude;
 pub mod codex;

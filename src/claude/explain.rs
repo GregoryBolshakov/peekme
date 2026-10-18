@@ -112,6 +112,8 @@ fn login_settings(config_dir: Option<&Path>, cwd: Option<&Path>) -> Value {
 
 /// A started `claude -p` waiting for its one message.
 struct Worker {
+    /// Its system prompt (a spare is only used for the same one).
+    system: String,
     child: Child,
     stdin: ChildStdin,
     lines: Receiver<String>,
@@ -176,6 +178,7 @@ impl Worker {
             }
         });
         Ok(Self {
+            system: system.to_string(),
             child,
             stdin,
             lines,
@@ -202,23 +205,24 @@ pub struct Pool {
 }
 
 impl Pool {
-    fn take(&self) -> Result<Worker> {
+    fn take(&self, system: &'static str) -> Result<Worker> {
         if let Some(mut w) = self.spare.lock().unwrap().take()
             && w.alive()
+            && w.system == system
         {
             return Ok(w);
         }
-        Worker::spawn(Some(&model()), SYSTEM)
+        Worker::spawn(Some(&model()), system)
     }
 
     /// Start a spare in the background if there is none.
-    pub fn refill(self: &Arc<Self>) {
+    pub fn refill(self: &Arc<Self>, system: &'static str) {
         if *self.closed.lock().unwrap() || self.spare.lock().unwrap().is_some() {
             return;
         }
         let pool = self.clone();
         std::thread::spawn(move || {
-            if let Ok(w) = Worker::spawn(Some(&model()), SYSTEM) {
+            if let Ok(w) = Worker::spawn(Some(&model()), system) {
                 let mut spare = pool.spare.lock().unwrap();
                 if spare.is_none() && !*pool.closed.lock().unwrap() {
                     *spare = Some(w);
@@ -234,10 +238,19 @@ impl Pool {
 }
 
 pub fn explain(pool: &Arc<Pool>, req: Request, tx: impl Fn(Progress)) {
+    let system = system(&req);
     if let Err(e) = run(pool, req, &tx) {
         tx(Progress::Failed(format!("{e:#}")));
     }
-    pool.refill();
+    pool.refill(system);
+}
+
+fn system(req: &Request) -> &'static str {
+    if req.terminal {
+        crate::anyterm::SYSTEM
+    } else {
+        SYSTEM
+    }
 }
 
 /// Everything the explainer is told, and where it came from; with the
@@ -249,12 +262,14 @@ pub fn prompt(req: &Request) -> (context::Built, Option<usize>) {
 /// The prompt, and for a typed question the model of the chat.
 fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<String>) {
     let conv = transcript::config_dir()
+        .filter(|_| !req.terminal)
         .and_then(|c| transcript::find(&c, req.agent_pid, &req.cwd))
         .and_then(|p| transcript::load(&p));
+    let place = req.place(Agent::Claude);
     let hit = conv.as_ref().and_then(|c| context::find(c, &req.screen));
     if let Some(q) = &req.question {
         let mut built = context::build_question(
-            Agent::Claude,
+            place,
             &req.cwd,
             conv.as_ref(),
             hit,
@@ -270,7 +285,7 @@ fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<S
         return ((built, None), model);
     }
     let compact = context::build(
-        Agent::Claude,
+        place,
         &req.cwd,
         conv.as_ref(),
         hit,
@@ -279,7 +294,7 @@ fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<S
     );
     let (mut built, compact_len) = match (&conv, req.deep) {
         (Some(c), true) => (
-            context::build_deep(Agent::Claude, &req.cwd, c, hit, &req.screen),
+            context::build_deep(place, &req.cwd, c, hit, &req.screen),
             Some(compact.prompt.chars().count()),
         ),
         _ => (compact, None),
@@ -316,9 +331,12 @@ fn run(pool: &Arc<Pool>, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
     }
     // A question runs on its own process: another model, other instructions.
     let mut w = if req.question.is_some() {
-        Worker::spawn(chat_model.as_deref(), &context::ask_system(Agent::Claude))?
+        Worker::spawn(
+            chat_model.as_deref(),
+            &context::ask_system(req.place(Agent::Claude)),
+        )?
     } else {
-        pool.take()?
+        pool.take(system(&req))?
     };
     let msg = json!({"type": "user", "message": {"role": "user", "content": built.prompt}});
     writeln!(w.stdin, "{msg}").context("the explainer process is not running")?;

@@ -290,12 +290,14 @@ fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<S
         .map(crate::launch::process_tree)
         .unwrap_or_default();
     let conv = transcript::config_dir()
+        .filter(|_| !req.terminal)
         .and_then(|c| transcript::find(&c, &pids, &req.cwd))
         .and_then(|p| transcript::load(&p));
+    let place = req.place(Agent::Kiro);
     let hit = conv.as_ref().and_then(|c| context::find(c, &req.screen));
     if let Some(q) = &req.question {
         let mut built = context::build_question(
-            Agent::Kiro,
+            place,
             &req.cwd,
             conv.as_ref(),
             hit,
@@ -304,7 +306,7 @@ fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<S
             true,
             q,
         );
-        built.prompt = format!("{}\n\n{}", context::ask_system(Agent::Kiro), built.prompt);
+        built.prompt = format!("{}\n\n{}", context::ask_system(place), built.prompt);
         built.prompt.push_str(&format!(
             "Keep the {OPEN}{CLOSE} marks out of the answer.\n"
         ));
@@ -316,7 +318,7 @@ fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<S
         return ((built, None), Some(model));
     }
     let compact = context::build(
-        Agent::Kiro,
+        place,
         &req.cwd,
         conv.as_ref(),
         hit,
@@ -325,12 +327,17 @@ fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<S
     );
     let (mut built, compact_len) = match (&conv, req.deep) {
         (Some(c), true) => (
-            context::build_deep(Agent::Kiro, &req.cwd, c, hit, &req.screen),
+            context::build_deep(place, &req.cwd, c, hit, &req.screen),
             Some(compact.prompt.chars().count()),
         ),
         _ => (compact, None),
     };
-    built.prompt = format!("{SYSTEM}\n\n{}", built.prompt);
+    let system = if req.terminal {
+        crate::anyterm::SYSTEM
+    } else {
+        SYSTEM
+    };
+    built.prompt = format!("{system}\n\n{}", built.prompt);
     built.prompt.push_str(&format!(
         "Answer in at most {} short lines; keep the {OPEN}{CLOSE} marks out of the answer.\n",
         req.max_lines

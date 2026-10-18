@@ -315,8 +315,9 @@ pub fn explain(server: &AppServer, req: Request, tx: impl Fn(Progress)) {
 
 fn run(server: &AppServer, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
     let (conv, hit) = find_conversation(server, &req);
+    let place = req.place(Agent::Codex);
     let mut built = context::build(
-        Agent::Codex,
+        place,
         &req.cwd,
         conv.as_ref(),
         hit,
@@ -336,7 +337,7 @@ fn run(server: &AppServer, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
     if let Some(q) = &req.question {
         // The fork carries the conversation; the prompt only needs the passage.
         built = context::build_question(
-            Agent::Codex,
+            place,
             &req.cwd,
             conv.as_ref(),
             hit,
@@ -347,7 +348,7 @@ fn run(server: &AppServer, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
         );
     }
     let developer = if asking {
-        context::ask_system(Agent::Codex)
+        context::ask_system(place)
     } else {
         format!(
             "You are \"peek\", an explainer embedded in a terminal. The user highlighted a fragment of text \
@@ -503,6 +504,10 @@ fn run(server: &AppServer, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
 /// is in it. Tries the most recent threads; the first one containing the
 /// selection wins, otherwise the most recent is still used for its outline.
 fn find_conversation(server: &AppServer, req: &Request) -> (Option<Conversation>, Option<Hit>) {
+    // A plain terminal's screen is no Codex chat; the folder's last thread is not its context.
+    if req.terminal {
+        return (None, None);
+    }
     let Ok(list) = server.request(
         "thread/list",
         json!({"cwd": req.cwd, "limit": 3, "sortKey": "recency_at", "sortDirection": "desc"}),

@@ -1,0 +1,8 @@
+{
+  "uuid": "peekme-helper@peekme.dev",
+  "name": "peekme helper",
+  "description": "Lets peekme (peekme.dev) open its explanation box right under the text you selected in a terminal. It tells peekme what is selected and moves the pointer by a pixel and back when you press peekme's shortcut, so the terminal reports where the selection ends.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "url": "https://github.com/GregoryBolshakov/peekme",
+  "version": 1
+}
