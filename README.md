@@ -1,6 +1,6 @@
 # peekme
 
-Pick me. Select text in [Claude Code](https://github.com/anthropics/claude-code),
+Select text in [Claude Code](https://github.com/anthropics/claude-code),
 [Codex CLI](https://github.com/openai/codex),
 [GitHub Copilot CLI](https://github.com/github/copilot-cli) or [Kiro CLI](https://kiro.dev/cli/) output, press **Alt+P** (**Option+P** on a Mac), and a short
 explanation opens right next to that text, inside the terminal. The other lines move to make
