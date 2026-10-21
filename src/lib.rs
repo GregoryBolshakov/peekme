@@ -1,6 +1,6 @@
 //! peekme: select text in an agent CLI's output (Claude Code, Codex CLI,
-//! GitHub Copilot CLI), press Alt+P, and read an explanation that opens inline
-//! next to it.
+//! GitHub Copilot CLI, Kiro CLI, Pi), press Alt+P, and read an explanation
+//! that opens inline next to it.
 //!
 //! The terminal side (pseudo-terminal, shadow emulator, the box drawn in place)
 //! is the same for every agent. What differs per agent lives in its own
@@ -26,6 +26,7 @@ pub mod markdown;
 pub mod marks;
 pub mod osc52;
 pub mod overlay;
+pub mod pi;
 pub mod render;
 pub mod select;
 pub mod shadow;

@@ -23,7 +23,7 @@ use crate::overlay::{self, Layout, PeekBox, Status};
 use crate::render::{self, Boundary, SYNC_BEGIN, SYNC_END};
 use crate::select::{self, Located, SelectionSource};
 use crate::shadow::{Shadow, Snapshot};
-use crate::{claude, codex, copilot, kiro};
+use crate::{claude, codex, copilot, kiro, pi};
 
 mod nest;
 
@@ -162,6 +162,10 @@ struct Open {
     /// end draws nothing, and its "more lines" hint on its rule says it is
     /// scrolled up from the bottom.
     kiro: bool,
+    /// The box is over full-screen Pi's chat: a scrollbar in its last
+    /// column, a hint over its last row while scrolled up; its turns go as
+    /// bursts of one-row turns, as Kiro's and Copilot's go (see `Open::paced`).
+    pi: bool,
     /// When the child last wrote while the box was open.
     wrote_at: Instant,
     /// Where the chat is was last taken from Claude's count, not seen:
@@ -322,12 +326,13 @@ impl Open {
         // their way move nothing.
         let step = self.run.first().map_or(0, |r| r.abs());
         let found = step > 1 && self.run.iter().all(|r| r.abs() == step) && self.moved % step != 0;
-        // Kiro going down without its hint on its rule is at the bottom.
-        let bottom = self.kiro
-            && self.run_way == 1
-            && self
-                .composer
-                .is_some_and(|k| !kiro::screen::jump_hint(snap, k));
+        // Kiro going down without its hint on its rule is at the bottom, and
+        // Pi without its hint over its last chat row.
+        let bottom = self.run_way == 1
+            && self.composer.is_some_and(|k| {
+                (self.kiro && !kiro::screen::jump_hint(snap, k))
+                    || (self.pi && !pi::screen::jump_hint(snap, k.saturating_sub(2)))
+            });
         let quiet = found
             || bottom
             || self.sent.elapsed() >= COPILOT_QUIET && self.wrote_at.elapsed() >= COPILOT_QUIET;
@@ -336,6 +341,8 @@ impl Open {
         // Kiro's hint on its rule, going down (it shows above the bottom).
         let away = if self.copilot {
             copilot::screen::thumb_inside(snap, lo..hi)
+        } else if self.pi {
+            pi::screen::thumb_inside(snap, lo..hi)
         } else {
             self.run_way == 1
                 && self
@@ -350,10 +357,10 @@ impl Open {
         }
     }
 
-    /// Copilot or Kiro full screen: turns of an exact count, sent a few at a
-    /// time.
+    /// Copilot, Kiro or Pi full screen: turns of an exact count, sent a few
+    /// at a time.
     fn paced(&self) -> bool {
-        self.copilot || self.kiro
+        self.copilot || self.kiro || self.pi
     }
 
     /// A full-screen child that takes no mouse: the wheel shows `rows` more
@@ -392,6 +399,9 @@ const CLAUDE_QUIET: Duration = Duration::from_millis(80);
 /// every turn sent (it draws one in about 8 ms, 23 ms at most, seen on
 /// 1.0.98), and a turn it did not draw found an end of the chat.
 const COPILOT_QUIET: Duration = Duration::from_millis(60);
+/// Between two bursts of wheel events to full-screen Pi: Pi counts an event
+/// at least 100 ms after the one before as one row (see `pi::scroll`).
+const PI_BURST_GAP: Duration = Duration::from_millis(150);
 /// Copilot draws each frame between hiding the cursor and showing it again;
 /// a frame left open this long is taken as done.
 const COPILOT_FRAME: Duration = Duration::from_millis(100);
@@ -515,6 +525,10 @@ pub fn run(
     let scroll_speed = matches!(agent, Some(Agent::Codex))
         .then(|| codex::scroll::speed_setting(args))
         .flatten();
+    if agent == Some(Agent::Pi) {
+        // Where its sessions are can be on its command line.
+        pi::transcript::set_chat_args(args);
+    }
     let claude_wheel = matches!(agent, Some(Agent::Claude))
         .then(|| claude::scroll::Wheel::new(claude::scroll::setting(args)));
     // Saved answers are kept for each agent (or command) and folder.
@@ -630,6 +644,11 @@ fn setup(program: &str, args: &[String], terminal: bool) -> Result<Setup> {
         "1"
     };
     cmd.env(crate::launch::ACTIVE_ENV, active);
+    if Agent::from_program(program) == Some(Agent::Pi) {
+        // Pi then also reports what its drag copied with OSC 52, as it does
+        // over SSH, besides the clipboard: peekme reads it there.
+        cmd.env("PI_CLIPBOARD_OSC52", "1");
+    }
     let child = pair
         .slave
         .spawn_command(cmd)
@@ -793,6 +812,10 @@ fn event_loop(
         claude_wheel,
         paced_turns: VecDeque::new(),
         kiro_wheel: 2,
+        pi_wheel: matches!(agent, Some(Agent::Pi))
+            .then(|| pi::scroll::Wheel::for_dir(&std::env::current_dir().unwrap_or_default())),
+        pi_burst: None,
+        pi_burst_unsent: false,
         copilot_frame: None,
         terminal: agent.is_none(),
         typed_at: None,
@@ -1026,6 +1049,13 @@ struct App {
     paced_turns: VecDeque<(Vec<u8>, isize)>,
     /// Rows a turn of the wheel moves full-screen Kiro's chat (its setting).
     kiro_wheel: isize,
+    /// Pi's count of wheel rows, which speeds up with the wheel (full-screen Pi).
+    pi_wheel: Option<pi::scroll::Wheel>,
+    /// When the last burst of wheel events went to full-screen Pi, and its way.
+    pi_burst: Option<(Instant, isize)>,
+    /// That burst is still in the bytes waiting to be written: turns the same
+    /// way can join it (Pi gets them all at once).
+    pi_burst_unsent: bool,
     /// Copilot hid the cursor to draw a frame and has not shown it again.
     copilot_frame: Option<Instant>,
     /// The child is not an agent CLI: a shell or any other program (`anyterm`).
@@ -1214,12 +1244,34 @@ impl App {
         if !bytes.is_empty() {
             child.write_all(&bytes)?;
             child.flush()?;
+            self.pi_burst_unsent = false;
         }
         Ok(())
     }
 
     fn release_turns_into(&mut self, out: &mut dyn Write, sink: &mut Vec<u8>) -> Result<()> {
+        // Pi counts the first event of a burst as one row only when it comes
+        // a while after the last burst (see `pi::scroll`); turns that came
+        // together join the burst that just went, the same way only (the
+        // chat's moves are counted one way at a time).
+        let over_pi = self.open.as_ref().is_some_and(|o| o.pi);
+        let joining = self
+            .pi_burst
+            .filter(|_| self.pi_burst_unsent)
+            .map(|(_, way)| way);
+        if over_pi
+            && joining.is_none()
+            && self
+                .pi_burst
+                .is_some_and(|(t, _)| t.elapsed() < PI_BURST_GAP)
+        {
+            return Ok(());
+        }
+        let mut burst_way = joining;
         while let Some(&(_, rows)) = self.paced_turns.front() {
+            if over_pi && burst_way.is_some_and(|w| w != rows.signum()) {
+                break;
+            }
             if let Some(open) = self.open.as_ref().filter(|o| o.paced()) {
                 let way = rows.signum();
                 let same = open.run_way == way && open.sent.elapsed() < CLAUDE_RUN_GAP;
@@ -1236,6 +1288,8 @@ impl App {
                 // one of fewer: fewer go at a time there.
                 let text = if open.copilot {
                     std::borrow::Cow::Owned(copilot::screen::chat_text(&open.snap))
+                } else if open.pi {
+                    std::borrow::Cow::Owned(pi::screen::chat_text(&open.snap))
                 } else {
                     std::borrow::Cow::Borrowed(&open.snap)
                 };
@@ -1254,6 +1308,11 @@ impl App {
                 self.wheel_rows(rows.signum(), vec![rows], out)?;
             }
             sink.extend_from_slice(&report);
+            if over_pi && burst_way.is_none() {
+                burst_way = Some(rows.signum());
+                self.pi_burst = Some((Instant::now(), rows.signum()));
+                self.pi_burst_unsent = true;
+            }
         }
         Ok(())
     }
@@ -1299,6 +1358,7 @@ impl App {
             Some(Agent::Claude) => claude::screen::composer_top(snap),
             Some(Agent::Copilot) => copilot::screen::composer_top(snap),
             Some(Agent::Kiro) => kiro::screen::composer_top(snap),
+            Some(Agent::Pi) => pi::screen::composer_top(snap),
             _ => codex::screen::composer_top(snap),
         }
     }
@@ -1323,6 +1383,7 @@ impl App {
             Some(Agent::Claude) => claude::screen::composer_top(now) != Some(top),
             Some(Agent::Copilot) => copilot::screen::composer_top(now) != Some(top),
             Some(Agent::Kiro) => kiro::screen::composer_top(now) != Some(top),
+            Some(Agent::Pi) => pi::screen::composer_top(now) != Some(top),
             _ => {
                 self.shadow.alt_screen()
                     && codex::screen::composer_top(now).is_some_and(|k| k < top)
@@ -1341,6 +1402,8 @@ impl App {
             copilot::screen::chat_rows(snap, k).end
         } else if open.kiro {
             kiro::screen::chat_end(k)
+        } else if open.pi {
+            pi::screen::chat_end(k)
         } else {
             codex::screen::chat_end(snap, k)
         };
@@ -1353,7 +1416,7 @@ impl App {
         let open = self.open.as_ref()?;
         let codex = !matches!(
             self.agent,
-            Some(Agent::Claude | Agent::Copilot | Agent::Kiro)
+            Some(Agent::Claude | Agent::Copilot | Agent::Kiro | Agent::Pi)
         ) || open.claude
             || open.paced();
         (codex && self.shadow.alt_screen() && open.strip_top == Some(open.lay.region.1))
@@ -1434,11 +1497,17 @@ impl App {
             };
             open.lay.home - home
         });
-        // Copilot's chat text, without its sidebar and scrollbar, which stay put.
+        // Copilot's chat text, without its sidebar and scrollbar, which stay put;
+        // Pi's without its scrollbar, its hint and its " Copied! ".
         let (text_old, text_now) = if open.copilot {
             (
                 std::borrow::Cow::Owned(copilot::screen::chat_text(&open.snap)),
                 std::borrow::Cow::Owned(copilot::screen::chat_text(&now)),
+            )
+        } else if open.pi {
+            (
+                std::borrow::Cow::Owned(pi::screen::chat_text(&open.snap)),
+                std::borrow::Cow::Owned(pi::screen::chat_text(&now)),
             )
         } else {
             (
@@ -1534,7 +1603,9 @@ impl App {
             // over a remembered one is something that stays put, not chat.
             // Nor is Claude's hint: a row it covers keeps what was seen of it.
             let key = r as isize + open.scrolled;
-            let hint = open.claude && r + 1 == hi && claude::screen::bottom_hint(&now, r).is_some();
+            let hint = r + 1 == hi
+                && (open.claude && claude::screen::bottom_hint(&now, r).is_some()
+                    || open.pi && pi::screen::hint_span(&now, r).is_some());
             if open.mem.contains_key(&key)
                 && (hint || text_now.rows_text(r, r + 1).trim().is_empty())
             {
@@ -1629,6 +1700,11 @@ impl App {
         if open.kiro && end {
             return true;
         }
+        if open.pi {
+            // Ctrl+Shift+Up and Down jump between prompts (Ctrl+Home and
+            // Ctrl+End are `ChatJump`); Home and End stay in the editor.
+            return [&b"\x1b[1;6A"[..], b"\x1b[1;6B"].contains(&key);
+        }
         (home || end)
             && open.composer.is_some_and(|k| {
                 let snap = self.shadow.snapshot();
@@ -1648,6 +1724,8 @@ impl App {
         let (lo, hi) = open.lay.region;
         Some(if open.kiro {
             kiro::scroll::page_rows(hi - lo)
+        } else if open.pi {
+            pi::scroll::page_rows(hi - lo)
         } else {
             (hi - lo).max(1) as isize
         })
@@ -2295,12 +2373,23 @@ impl App {
                         {
                             // Copilot gets its turns a few at a time.
                             let alt = input::mouse_button(&t.bytes).is_some_and(|b| b & 8 != 0);
+                            let over_pi = self.open.as_ref().is_some_and(|o| o.pi);
                             let rows = if self.open.as_ref().is_some_and(|o| o.kiro) {
                                 way * self.kiro_wheel
+                            } else if let Some(w) = self.pi_wheel.as_mut().filter(|_| over_pi) {
+                                w.turn(way, alt, Instant::now())
                             } else {
                                 copilot::scroll::turn(way, alt)
                             };
-                            self.paced_turns.push_back((t.bytes.clone(), rows));
+                            // Pi gets the rows as one-row events (see `pi::scroll`),
+                            // unless it moves a fixed number of rows an event.
+                            let fixed = self.pi_wheel.as_ref().is_some_and(|w| w.fixed());
+                            let report = if over_pi && !fixed {
+                                pi::scroll::one_row(&t.bytes).repeat(rows.unsigned_abs())
+                            } else {
+                                t.bytes.clone()
+                            };
+                            self.paced_turns.push_back((report, rows));
                             self.release_turns_into(out, &mut forward)?;
                         } else if self.shadow.mouse_mode() {
                             // The child scrolls; its new screen shows under the box.
@@ -2589,6 +2678,7 @@ impl App {
             child.write_all(forward)?;
             child.flush()?;
             forward.clear();
+            self.pi_burst_unsent = false;
         }
         Ok(())
     }
@@ -2928,6 +3018,16 @@ impl App {
             self.selection_source = "reverse";
             return (Some(loc.screen.selected()), Some(loc));
         }
+        // Full-screen Pi highlights its drag in reverse video too, in its
+        // chat rows: the selection when no copy came (its setting
+        // `fullscreenCopyOnSelect` off, or a tmux that drops OSC 52).
+        if self.agent == Some(Agent::Pi)
+            && self.shadow.alt_screen()
+            && let Some(loc) = pi::screen::selection(snap)
+        {
+            self.selection_source = "reverse";
+            return (Some(loc.screen.selected()), Some(loc));
+        }
         if let Some(text) = unlocated {
             self.selection_source = "osc52";
             return (Some(text), None);
@@ -3103,7 +3203,7 @@ impl App {
                 // scrolls, so they stay live with the input area.
                 let codex = !matches!(
                     self.agent,
-                    Some(Agent::Claude | Agent::Copilot | Agent::Kiro)
+                    Some(Agent::Claude | Agent::Copilot | Agent::Kiro | Agent::Pi)
                 );
                 // Full-screen Claude keeps a row of notices above its input box.
                 let claude = self.agent == Some(Agent::Claude);
@@ -3124,6 +3224,9 @@ impl App {
                     } else if self.agent == Some(Agent::Kiro) && self.shadow.alt_screen() {
                         // Full-screen Kiro keeps a row of notices above its rule.
                         kiro::screen::chat_end(k).max(loc.last_row + 1)
+                    } else if self.agent == Some(Agent::Pi) && self.shadow.alt_screen() {
+                        // Full-screen Pi keeps a blank row above its rule.
+                        pi::screen::chat_end(k).max(loc.last_row + 1)
                     } else {
                         k
                     }
@@ -3270,7 +3373,7 @@ impl App {
         // guess until the chat moves; never with the selection on it).
         let codex = !matches!(
             self.agent,
-            Some(Agent::Claude | Agent::Copilot | Agent::Kiro)
+            Some(Agent::Claude | Agent::Copilot | Agent::Kiro | Agent::Pi)
         );
         let lo = lay.region.0;
         let over_claude = self.agent == Some(Agent::Claude)
@@ -3280,6 +3383,9 @@ impl App {
             && self.shadow.alt_screen()
             && strip.is_some_and(|k| k == lay.region.1);
         let over_kiro = self.agent == Some(Agent::Kiro)
+            && self.shadow.alt_screen()
+            && strip.is_some_and(|k| k == lay.region.1);
+        let over_pi = self.agent == Some(Agent::Pi)
             && self.shadow.alt_screen()
             && strip.is_some_and(|k| k == lay.region.1);
         if over_kiro {
@@ -3314,7 +3420,11 @@ impl App {
             shown: vec![None; lay.region.1 - lay.region.0],
             mem: (lo + usize::from(header)..lay.region.1.min(snap.rows.len()))
                 .map(|r| {
-                    let text = if over_copilot { &tsnap } else { &snap };
+                    let text = if over_copilot || over_pi {
+                        &tsnap
+                    } else {
+                        &snap
+                    };
                     (r as isize, chat_row(over_claude, text, r, lay.region.1))
                 })
                 .chain(view.iter().flat_map(|(full, hist)| {
@@ -3343,6 +3453,7 @@ impl App {
             claude: over_claude,
             copilot: over_copilot,
             kiro: over_kiro,
+            pi: over_pi,
             wrote_at: Instant::now(),
             unsure: false,
             snap,
@@ -3918,6 +4029,14 @@ fn viewport_top(bytes: &[u8], rows: usize) -> Option<usize> {
 
 /// Why peekme sees no selection inside tmux with the mouse left to the terminal.
 fn tmux_mouse_message(agent: Option<Agent>) -> String {
+    if agent == Some(Agent::Pi) {
+        // Pi's regular screen never asks for the mouse; its full screen does.
+        return "Pi leaves the mouse to the terminal on its regular screen, and tmux has the \
+                mouse off, so peekme cannot see what you select. Turn it on with `tmux set -g \
+                mouse on` (and add `set -g mouse on` to ~/.tmux.conf), or start pi without \
+                `--tui-mode regular`."
+            .into();
+    }
     if agent == Some(Agent::Kiro) {
         // Kiro inline never asks for the mouse, so no restart is needed.
         return "Kiro leaves the mouse to the terminal on its inline screen, and tmux has the \
@@ -3995,6 +4114,9 @@ fn remembered_shift(open: &Open, now: &Snapshot, first: usize, end: usize) -> Op
 fn text_view(agent: Option<Agent>, alt: bool, snap: &Snapshot) -> std::borrow::Cow<'_, Snapshot> {
     if agent == Some(Agent::Copilot) && alt {
         std::borrow::Cow::Owned(copilot::screen::chat_text(snap))
+    } else if agent == Some(Agent::Pi) && alt {
+        // Pi's scrollbar, its jump hint and its " Copied! " too.
+        std::borrow::Cow::Owned(pi::screen::chat_text(snap))
     } else {
         std::borrow::Cow::Borrowed(snap)
     }
@@ -5232,6 +5354,9 @@ mod tests {
             }),
             paced_turns: VecDeque::new(),
             kiro_wheel: 2,
+            pi_wheel: matches!(agent, Agent::Pi).then(|| pi::scroll::Wheel::new(None, true)),
+            pi_burst: None,
+            pi_burst_unsent: false,
             copilot_frame: None,
             terminal: false,
             typed_at: None,
@@ -7128,6 +7253,135 @@ mod tests {
 
     /// Real Kiro CLI 2.28.0 at 120x40: startup, one question with two tool
     /// calls and the answer; drawn inline, then the same after `/fullscreen`.
+    const PI: [&[u8]; 2] = [
+        include_bytes!("../tests/fixtures/pi_regular_120x40.bin"),
+        include_bytes!("../tests/fixtures/pi_fullscreen_120x40.bin"),
+    ];
+
+    #[test]
+    fn round_trip_over_real_pi_output() {
+        for capture in PI {
+            let mut base = Shadow::new(120, 40);
+            base.advance(capture);
+            base.flush_sync();
+            let snap = base.snapshot();
+            for first in (0..40).step_by(3) {
+                let mut real = Shadow::new(120, 40);
+                real.advance(capture);
+                real.flush_sync();
+                let lay = overlay::layout(40, first, (first + 1).min(39));
+                let mut peek = PeekBox::new("entry point");
+                peek.text = "Streaming **explanation** text. ".repeat(12);
+                real.advance(overlay::open_frame(&snap, &lay, &peek).as_bytes());
+                real.advance(overlay::close_frame(&snap, &lay).as_bytes());
+                assert!(same_screen(&real.snapshot(), &snap), "row {first}");
+            }
+        }
+    }
+
+    /// Full-screen Pi 1.3's screen: its chat (rows 0-33, labels `b1rNN`)
+    /// from row `first`, a blank row, the rule (35), the editor, the rule,
+    /// the directory and the status row. Scrolled up (`hidden` rows under
+    /// the screen): a scrollbar in the last column and the jump hint over
+    /// row 33. `copied`: " Copied! " at the end of the top row.
+    fn pi_screen(first: usize, hidden: usize, copied: bool) -> String {
+        let mut s = String::from("\x1b[?2026h");
+        for r in 0..34 {
+            s.push_str(&format!(
+                "\x1b[{};1H\x1b[2K - b1r{:02} words of row {}",
+                r + 1,
+                first + r,
+                first + r
+            ));
+            if hidden > 0 {
+                let bar = if (10..14).contains(&r) {
+                    '\u{2503}'
+                } else {
+                    '\u{2502}'
+                };
+                s.push_str(&format!("\x1b[{};120H{bar}", r + 1));
+            }
+        }
+        if hidden > 0 {
+            s.push_str("\x1b[34;43H \u{2193} Jump to latest message \u{b7} Ctrl+End ");
+        }
+        if copied {
+            s.push_str("\x1b[1;111H\x1b[7m Copied! \x1b[0m");
+        }
+        let rule = "\u{2500}".repeat(120);
+        s.push_str(&format!(
+            "\x1b[35;1H\x1b[2K\x1b[36;1H{rule}\x1b[37;1H\x1b[2K\x1b[38;1H{rule}\x1b[39;1H~/demo\x1b[40;1H0.1%/128k (auto)\x1b[?2026l"
+        ));
+        s
+    }
+
+    /// Full-screen Pi: a drag comes as OSC 52 (peekme asks Pi for it); each
+    /// turn goes as Pi's own count of one-row events, in one burst, and the
+    /// next burst waits (Pi counts an event close after another as more
+    /// rows). The scrollbar, the hint and " Copied! " are not chat. PageUp
+    /// goes to Pi as the key; Ctrl+End closes the box.
+    #[test]
+    fn pi_scrolls_under_the_box_in_one_row_turns() {
+        let mut app = test_app_for(Agent::Pi, 120, 40);
+        let (mut child, mut out) = (Vec::new(), Vec::new());
+        let start = format!(
+            "\x1b[?1049h\x1b[?1003h\x1b[?1006h{}",
+            pi_screen(40, 30, false)
+        );
+        app.on_output(start.as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.shadow.flush_sync();
+        app.on_input(
+            b"\x1b[<0;4;13M\x1b[<32;9;13M\x1b[<0;9;13m",
+            &mut out,
+            &mut child,
+        )
+        .unwrap();
+        // "b1r52", then Pi's notice.
+        app.on_output(b"\x1b]52;c;YjFyNTI=\x07", &mut out, &mut child)
+            .unwrap();
+        app.on_output(pi_screen(40, 30, true).as_bytes(), &mut out, &mut child)
+            .unwrap();
+        app.open_peek(&mut out).unwrap();
+        let open = app.open.as_ref().unwrap();
+        assert_eq!(open.peek.title, "b1r52");
+        assert!(open.pi && open.paced());
+        assert_eq!(
+            open.lay.region,
+            (0, 34),
+            "the blank row above the rule is not chat"
+        );
+        assert!(
+            !open.mem.values().any(|r| r.contains("Copied")
+                || r.contains("Jump to latest")
+                || r.contains('\u{2502}')),
+            "Pi's notice, hint and scrollbar are not chat"
+        );
+        // Three turns at once: a gesture's first and two within 5 ms, a row
+        // each, as one-row events in one burst.
+        child.clear();
+        app.on_input(&b"\x1b[<64;60;15M".repeat(3), &mut out, &mut child)
+            .unwrap();
+        assert_eq!(child, b"\x1b[<64;60;15M".repeat(3));
+        // A moment later, down with Alt: a new gesture (the other way), five
+        // rows, sent without Alt; it waits for the next burst.
+        std::thread::sleep(Duration::from_millis(5));
+        child.clear();
+        app.on_input(b"\x1b[<73;60;15M", &mut out, &mut child)
+            .unwrap();
+        assert!(child.is_empty(), "the next burst waits");
+        assert_eq!(app.paced_turns.back().map(|t| t.1), Some(5));
+        assert_eq!(
+            app.paced_turns.back().map(|t| t.0.clone()),
+            Some(b"\x1b[<65;60;15M".repeat(5))
+        );
+        // Ctrl+End closes the box and goes to Pi.
+        child.clear();
+        app.on_input(b"\x1b[1;5F", &mut out, &mut child).unwrap();
+        assert!(app.open.is_none());
+        assert!(child.ends_with(b"\x1b[1;5F"));
+    }
+
     const KIRO: [&[u8]; 2] = [
         include_bytes!("../tests/fixtures/kiro_inline_120x40.bin"),
         include_bytes!("../tests/fixtures/kiro_fullscreen_120x40.bin"),

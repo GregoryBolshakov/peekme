@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """A tiny full-screen TUI that behaves like the agent CLIs toward the terminal.
 
-    python3 fakeagent.py --style claude|copilot|codex|kiro --log FILE
+    python3 fakeagent.py --style claude|copilot|codex|kiro|pi --log FILE
 
 It draws on the alternate screen with any-motion SGR mouse on, like Claude Code
-(fullscreen), Copilot CLI, Codex and Kiro CLI (after /fullscreen). A mouse drag selects text, and the agent
+(fullscreen), Copilot CLI, Codex, Kiro CLI (after /fullscreen) and Pi. A mouse drag selects text, and the agent
 reports it the way the real one does:
 
     claude   OSC 52 `c` (clipboard), frames wrapped in ?2026
@@ -12,6 +12,10 @@ reports it the way the real one does:
     codex    the selection drawn in reverse video, frames wrapped in ?2026
     kiro     OSC 52 `c`, also inside tmux; frames wrapped in ?2026; the input
              area is a rule, status lines, then `›` at the left edge
+    pi       OSC 52 `c` (peekme sets PI_CLIPBOARD_OSC52), also inside tmux, and
+             the drag stays in reverse video; " Copied! " in reverse video at
+             the right end of the top row; frames wrapped in ?2026; the input
+             area is a rule, the editor, a rule, the directory, a status row
     classic  like Claude Code's classic screen: main screen, no mouse, and only
              relative cursor moves from wherever the cursor was at start
 
@@ -41,6 +45,7 @@ class Agent:
         self.buf = ""
         self.sel = None  # (row, col_start, col_end) on screen, 1-based
         self.press = None
+        self.copied = False
         self.resize()
 
     def resize(self):
@@ -73,11 +78,24 @@ class Agent:
         s += f"\x1b[1;1Hfakeagent ({self.style})"
         for i, line in enumerate(LINES):
             row = 3 + i
-            if self.style == "codex" and self.sel and self.sel[0] == row:
+            if self.style in ("codex", "pi") and self.sel and self.sel[0] == row:
                 _, a, b = self.sel
                 line = line[: a - 1] + "\x1b[7m" + line[a - 1 : b] + "\x1b[0m" + line[b:]
             s += f"\x1b[{row};1H{line}"
         rule = "─" * self.cols
+        if self.style == "pi":
+            # Pi takes its notice away by itself a moment later: here at the
+            # next frame.
+            if self.copied:
+                s += f"\x1b[1;{self.cols - 9}H\x1b[7m Copied! \x1b[0m"
+                self.copied = False
+            s += f"\x1b[{self.rows - 4};1H{rule}"
+            s += f"\x1b[{self.rows - 3};1H{self.buf}"
+            s += f"\x1b[{self.rows - 2};1H{rule}"
+            s += f"\x1b[{self.rows - 1};1H~/work"
+            s += f"\x1b[{self.rows};1H0.0%/128k (auto)"
+            s += f"\x1b[{self.rows - 3};{1 + len(self.buf)}H\x1b[?25h\x1b[?2026l"
+            return self.out(s)
         if self.style == "kiro":
             s += f"\x1b[{self.rows - 5};1H{rule}"
             s += f"\x1b[{self.rows - 4};1Hkiro_default · auto · ◔ 1%"
@@ -128,9 +146,10 @@ class Agent:
             r = subprocess.run(["tmux", "load-buffer", "-w", "-"], input=text.encode(),
                                capture_output=True)
             self.record(kind="copied", via="tmux load-buffer", code=r.returncode)
-        elif self.style in ("claude", "kiro"):
-            # Kiro CLI writes OSC 52 as it is, in tmux too.
+        elif self.style in ("claude", "kiro", "pi"):
+            # Kiro CLI and Pi write OSC 52 as it is, in tmux too.
             self.out(f"\x1b]52;c;{b64}\x07")
+            self.copied = self.style == "pi"
             self.record(kind="copied", via="osc52")
         elif self.style == "copilot":
             seq = f"\x1b]52;p!;{b64};\x07"
@@ -176,7 +195,8 @@ class Agent:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--style", choices=["claude", "copilot", "codex", "classic", "kiro"], default="claude")
+    ap.add_argument("--style", choices=["claude", "copilot", "codex", "classic", "kiro", "pi"],
+                    default="claude")
     ap.add_argument("--log", required=True)
     ap.add_argument("agent_args", nargs="*", help="what the agent itself was given (after --)")
     args = ap.parse_args()

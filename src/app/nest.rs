@@ -152,11 +152,15 @@ impl App {
         }
         let extra = |s: isize| open.mem.get(&(s + open.scrolled)).cloned();
         // Claude's hint over its last chat row stays there, over whatever
-        // row is shown in that place, unless the box is.
+        // row is shown in that place, unless the box is; Pi's too.
         let (lo, hi) = open.lay.region;
-        let hint = (open.claude && hi > lo)
-            .then(|| claude::screen::bottom_hint(&open.snap, hi - 1))
-            .flatten();
+        let hint = if open.claude && hi > lo {
+            claude::screen::bottom_hint(&open.snap, hi - 1)
+        } else if open.pi && hi > lo {
+            pi::screen::hint_span(&open.snap, hi - 1)
+        } else {
+            None
+        };
         // Claude leaves rows blank for a frame or two while it scrolls fast:
         // the text remembered there stands in.
         let known = |s: isize| {
@@ -199,6 +203,22 @@ impl App {
         // Copilot's sidebar and its scrollbar in the last column do not
         // scroll with the chat: each chat row shows the cells Copilot has
         // there now.
+        // Pi's scrollbar stays in its last column the same way.
+        if open.pi && !open.unsure {
+            let cols = open.snap.cols;
+            for (i, row) in rows.iter_mut().enumerate() {
+                let r = lo + i;
+                if open.lay.box_row(r).is_some() {
+                    continue;
+                }
+                if let Some(cell) = open.snap.rows.get(r).and_then(|c| c.last())
+                    && (cell.c == '\u{2502}' || cell.c == '\u{2503}')
+                {
+                    row.push_str(&format!("\x1b[{};{}H", r + 1, cols));
+                    render::cells(row, std::slice::from_ref(cell));
+                }
+            }
+        }
         if open.copilot && !open.unsure {
             let cols = open.snap.cols;
             let (left, _) = copilot::screen::fixed_columns(&open.snap);

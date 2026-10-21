@@ -4,7 +4,7 @@
     python3 tests/e2e/matrix.py [--quick] [--only SUBSTRING] [--jobs N] [--out DIR]
 
 Each case starts `peekme` around a fake agent (tests/e2e/fakeagent.py, named
-claude / copilot / codex / kiro-cli so peekme treats it as that agent) inside some layers:
+claude / copilot / codex / kiro-cli / pi so peekme treats it as that agent) inside some layers:
 
     direct         terminal -> peekme
     tmux           terminal -> tmux -> peekme
@@ -61,7 +61,8 @@ DRAG = b"\x1b[<0;3;3M\x1b[<32;8;3M\x1b[<32;13;3M\x1b[<0;13;3m"
 CLICK = b"\x1b[<0;30;6M\x1b[<0;30;6m"
 SELECTED = "alpha bravo"
 # Fake agents by command name -> fakeagent.py style.
-AGENTS = {"claude": "claude", "copilot": "copilot", "codex": "codex", "classic": "classic", "kiro-cli": "kiro"}
+AGENTS = {"claude": "claude", "copilot": "copilot", "codex": "codex", "classic": "classic", "kiro-cli": "kiro",
+          "pi": "pi"}
 
 
 class Term:
@@ -454,7 +455,8 @@ def run_case(env, case, out):
 def cases(quick):
     layers = ["direct", "tmux", "ssh", "ssh+tmux", "tmux+ssh+tmux"]
     out = []
-    for layer, profile, agent in itertools.product(layers, PROFILES, ["claude", "copilot", "codex", "kiro-cli"]):
+    for layer, profile, agent in itertools.product(layers, PROFILES,
+                                                   ["claude", "copilot", "codex", "kiro-cli", "pi"]):
         tmux_variants = [("off", "off")] if "tmux" not in layer else list(
             itertools.product(["off", "on"], ["off", "on"]))
         for mouse, ext in tmux_variants:

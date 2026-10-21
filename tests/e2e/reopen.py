@@ -3,7 +3,7 @@
 
     python3 tests/e2e/reopen.py [--only NAME]
 
-Real Codex, Claude Code, Copilot CLI and Kiro CLI, directly, the explainer
+Real Codex, Claude Code, Copilot CLI, Kiro CLI and Pi, directly, the explainer
 canned (no model calls). Each opens a saved chat, peeks at a row and at
 words in the box (a box inside it), and quits: peekme and the agent are
 killed, as when the window closes. Then the same chat opens again under a
@@ -21,6 +21,7 @@ import real_agents as ra  # noqa: E402
 import scroll as sc  # noqa: E402
 import claude_session as cs  # noqa: E402
 import kiro_session as ks  # noqa: E402
+import pi_session as ps  # noqa: E402
 
 SEL = "b2r35 words of row 35"
 
@@ -100,7 +101,7 @@ def full_screen(agent, out):
 
 
 def inline(agent, out):
-    """Claude Code's classic screen, Kiro's inline one: Alt+P on the words
+    """Claude Code's classic screen, Kiro's inline one, Pi's regular one: Alt+P on the words
     (PEEKME_SELECTION) after the reopen shows the saved answer."""
     m.COLS, m.ROWS = 120, 40
     env = m.clean_env(TERM="xterm-256color", PEEKME_FAKE_EXPLAINER="1", PEEKME_SELECTION=SEL,
@@ -113,6 +114,11 @@ def inline(agent, out):
         env["CLAUDE_CONFIG_DIR"] = home
         argv = [m.PEEKME, ra.real_binary("claude"), "--settings", '{"tui":"default"}',
                 "--resume", sid]
+    elif agent == "pi":
+        agent_dir, path = ps.pi_agent(out, 3, 40)
+        env.update(PI_CODING_AGENT_DIR=agent_dir, PI_OFFLINE="1", PI_SKIP_VERSION_CHECK="1",
+                   PI_TELEMETRY="0")
+        argv = [m.PEEKME, ra.real_binary("pi"), "--tui-mode", "regular", "--session", path]
     else:
         khome, sid = ks.kiro_home(out, 3, 40, fullscreen=False)
         env["KIRO_HOME"] = khome
@@ -159,6 +165,8 @@ CASES = {
     "kiro": lambda out: full_screen("kiro", out),
     "claude classic": lambda out: inline("claude", out),
     "kiro inline": lambda out: inline("kiro", out),
+    "pi": lambda out: full_screen("pi", out),
+    "pi regular": lambda out: inline("pi", out),
 }
 
 

@@ -9,6 +9,7 @@ use crate::codex::explain::{self as codex, Slot};
 use crate::context::{Nested, Place, ScreenSel};
 use crate::copilot::explain as copilot;
 use crate::kiro::explain as kiro;
+use crate::pi::explain as pi;
 
 /// Use the request's override, then the current chat model. With neither,
 /// leave the choice to the agent's configured default.
@@ -18,6 +19,7 @@ pub fn model(agent: Agent, question: bool, chat: Option<&str>) -> Option<String>
         Agent::Codex => ("PEEKME_MODEL", "PEEKME_CODEX_ASK_MODEL"),
         Agent::Copilot => ("PEEKME_COPILOT_MODEL", "PEEKME_COPILOT_ASK_MODEL"),
         Agent::Kiro => ("PEEKME_KIRO_MODEL", "PEEKME_KIRO_ASK_MODEL"),
+        Agent::Pi => ("PEEKME_PI_MODEL", "PEEKME_PI_ASK_MODEL"),
     };
     configured_model(
         std::env::var(if question { ask } else { peek })
@@ -141,6 +143,8 @@ pub enum Explainer {
     /// Not an agent's session: the agent picked at the first explanation
     /// (`anyterm::pick`).
     Picked(Arc<OnceLock<Explainer>>),
+    /// Pi's RPC mode, a new in-memory session per explanation.
+    Pi(Arc<pi::Slot>),
     /// Canned text, no model: `PEEKME_FAKE_EXPLAINER=1`, for end-to-end tests.
     Fake,
 }
@@ -163,6 +167,7 @@ impl Explainer {
             Agent::Claude => Explainer::Claude(Arc::default()),
             Agent::Copilot => Explainer::Copilot(Arc::default()),
             Agent::Kiro => Explainer::Kiro(Arc::default()),
+            Agent::Pi => Explainer::Pi(Arc::default()),
         }
     }
 
@@ -185,6 +190,7 @@ impl Explainer {
             Explainer::Picked(cell) => cell
                 .get_or_init(|| Self::new(crate::anyterm::pick::agent()))
                 .explain(req, tx),
+            Explainer::Pi(slot) => pi::explain(slot, req, tx),
             Explainer::Fake => {
                 let sel = match &req.nested {
                     Some(n) => {
@@ -267,6 +273,7 @@ impl Explainer {
                     e.shutdown();
                 }
             }
+            Explainer::Pi(slot) => slot.shutdown(),
             Explainer::Fake => {}
         }
     }

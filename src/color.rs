@@ -1,5 +1,5 @@
 //! The colour of peekme's boxes: by default the agent's own accent (Codex's
-//! cyan, Claude Code's orange, Copilot's and Kiro's purples), or what
+//! cyan, Claude Code's orange, Copilot's and Kiro's purples, Pi's magenta), or what
 //! `PEEKME_COLOR` (all agents) or `PEEKME_<AGENT>_COLOR` (one) says.
 //!
 //! A value is a hex colour (`#d77757`), a colour of the terminal's palette
@@ -34,6 +34,9 @@ pub fn default_for(agent: Option<Agent>) -> Color {
         Some(Agent::Copilot) => Color::Rgb(171, 125, 248),
         // Kiro's purple: its logo, agent name and links (2.28).
         Some(Agent::Kiro) => Color::Rgb(193, 154, 255),
+        // Pi's accent in its default theme ("system", the terminal's own
+        // palette): magenta (1.3).
+        Some(Agent::Pi) => Color::Palette(5),
     }
 }
 
@@ -44,6 +47,7 @@ pub fn agent_var(agent: Agent) -> &'static str {
         Agent::Codex => "PEEKME_CODEX_COLOR",
         Agent::Copilot => "PEEKME_COPILOT_COLOR",
         Agent::Kiro => "PEEKME_KIRO_COLOR",
+        Agent::Pi => "PEEKME_PI_COLOR",
     }
 }
 

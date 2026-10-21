@@ -541,8 +541,13 @@ pub fn install(shell: bool) -> Result<()> {
     }
     for agent in Agent::ALL {
         let (c, name) = (agent.command(), agent.name());
-        if launch::find_real(c).is_some() {
+        if agent.find().is_some() {
             println!("Typing `{c}` now opens {name} with peekme, in new terminals.");
+        } else if let Some(other) = launch::find_real(c) {
+            println!(
+                "`{c}` here is another program ({}), not {name}: peekme leaves it alone.",
+                tilde(&other)
+            );
         } else {
             println!("{name} is not installed. Once it is, typing `{c}` opens it with peekme.");
         }
@@ -731,13 +736,16 @@ pub fn doctor() -> i32 {
         env!("CARGO_PKG_VERSION"),
         me.as_deref().map(tilde).unwrap_or_default()
     );
-    let found: Vec<bool> = Agent::ALL
-        .iter()
-        .map(|a| launch::find_real(a.command()).is_some())
-        .collect();
+    let found: Vec<bool> = Agent::ALL.iter().map(|a| a.find().is_some()).collect();
     for (agent, found) in Agent::ALL.iter().zip(&found) {
         match launch::find_real(agent.command()) {
             Some(p) if *found => println!("ok   {} found: {}", agent.name(), tilde(&p)),
+            Some(p) => println!(
+                "note `{}` is another program ({}), not {}: left alone",
+                agent.command(),
+                tilde(&p),
+                agent.name()
+            ),
             _ => println!(
                 "note {} not found on PATH (install: {})",
                 agent.name(),
@@ -1016,7 +1024,7 @@ mod tests {
         symlink(dir.join("gone"), shims.join("copilot")).unwrap();
 
         let (added, moved) = relink(&shims, &me, false);
-        assert_eq!(added, vec!["`copilot`", "`kiro-cli`"]);
+        assert_eq!(added, vec!["`copilot`", "`kiro-cli`", "`pi`"]);
         assert_eq!(moved, vec![("0.1.0".to_string(), "`codex`".to_string())]);
         let target = |a: &str| std::fs::canonicalize(shims.join(a)).unwrap();
         assert_eq!(target("codex"), me.canonicalize().unwrap());

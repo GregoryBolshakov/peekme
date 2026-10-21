@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Scrolling Codex's chat with a peek box open: real Codex, full screen, Linux,
+"""Scrolling Codex's chat with a peek box open: real Codex (and Claude Code,
+Copilot, Kiro, Pi in sessions of their own), full screen, Linux,
 no tmux. No model calls (the fake explainer writes the box).
 
 Every frame peekme draws while a box is open is checked against the one right
@@ -43,6 +44,7 @@ import chat_session  # noqa: E402
 import claude_session  # noqa: E402
 import copilot_session  # noqa: E402
 import kiro_session  # noqa: E402
+import pi_session  # noqa: E402
 import matrix as m  # noqa: E402
 import real_agents as ra  # noqa: E402
 
@@ -149,9 +151,43 @@ class KiroWheel:
         return int(self.speed) if way > 0 else -int(self.speed)
 
 
+class PiWheel:
+    """Pi's rows for a wheel event (1.3.0, pi-tui's WheelScrollAccelerator):
+    `fullscreenWheelScrollLines` when it is a number; else one row for an
+    event that starts a gesture (the other way, or 200 ms after the last) or
+    comes within 5 ms of the last, and min(6, max(1, 100 ms / average gap))
+    plus the fraction carried otherwise. `now` is in milliseconds."""
+
+    def __init__(self, rows=None):
+        self.fixed = rows
+        self.speed = float(rows or 1)
+        self.last, self.way, self.avg, self.carry = None, 0, None, 0.0
+
+    def turn(self, way, now=None):
+        d = -1 if way < 0 else 1
+        if self.fixed:
+            return d * self.fixed
+        now = time.monotonic() * 1000 if now is None else now
+        gap = math.inf if self.last is None else now - self.last
+        same = d == self.way and gap <= 200
+        self.last, self.way = now, d
+        if not same:
+            self.avg, self.carry = None, 0.0
+            return d
+        if gap < 5:
+            return d
+        self.avg = gap if self.avg is None else (self.avg + gap) / 2
+        lines = min(6.0, max(1.0, 100 / self.avg)) + self.carry
+        whole = math.floor(lines)
+        self.carry = lines - whole
+        return d * whole
+
+
 BOX = ("╭", "│", "╰")
 # Claude Code's hint on the last chat row while scrolled up.
 CLAUDE_HINT = "Jump to bottom (ctrl+End) ↓"
+# Pi's, over its last chat row.
+PI_HINT = "↓ Jump to latest message · Ctrl+End"
 LABEL = re.compile(r"\bb\d+r\d\d\b")
 # A box's bottom border saying how far its text scrolled ("12/30").
 SCROLLED = re.compile(r"╰[^╯]*\s\d+/\d+\s[^╯]*╯")
@@ -175,10 +211,10 @@ class HintRow(str):
     that reads the same outside the hint's columns (a column of room each
     side)."""
 
-    def __new__(cls, row):
+    def __new__(cls, row, hint=CLAUDE_HINT):
         obj = super().__new__(cls, row)
-        obj.start = row.index(CLAUDE_HINT)
-        obj.end = obj.start + len(CLAUDE_HINT)
+        obj.start = row.index(hint)
+        obj.end = obj.start + len(hint)
         return obj
 
     def __eq__(self, other):
@@ -186,6 +222,25 @@ class HintRow(str):
         a, b = str(self).ljust(n), str(other).ljust(n)
         lo, hi = max(0, self.start - 1), self.end + 1
         return a[:lo] == b[:lo] and a[hi:] == b[hi:]
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    __hash__ = str.__hash__
+
+
+class NoticeRow(str):
+    """Pi's row with its " Copied! " notice at the right end, drawn over
+    whatever chat text was there: it matches a chat row that reads the same
+    left of the notice."""
+
+    def __new__(cls, row, cut):
+        obj = super().__new__(cls, row[:cut].rstrip())
+        obj.cut = cut
+        return obj
+
+    def __eq__(self, other):
+        return str(other)[:self.cut].rstrip() == str(self)
 
     def __ne__(self, other):
         return not self.__eq__(other)
@@ -209,6 +264,8 @@ def view(chat, s, holes=False):
     if s.agent == "claude" and chat and CLAUDE_HINT in chat[-1]:
         bare = chat[-1].replace(CLAUDE_HINT, "").strip()
         chat[-1] = AnyRow(chat[-1]) if holes and not bare else HintRow(chat[-1])
+    if s.agent == "pi" and chat and PI_HINT in chat[-1]:
+        chat[-1] = HintRow(chat[-1], PI_HINT)
     return chat
 
 
@@ -226,20 +283,25 @@ class Session:
         m.COLS, m.ROWS = size
         self.out = out
         self.used = set()
-        self.burst_wait = 4.0 if late else 0.15
+        # Pi gets its turns in bursts 150 ms apart (see src/pi/scroll.rs): a
+        # long burst takes it a while.
+        self.burst_wait = 4.0 if late else (1.0 if agent == "pi" else 0.15)
         self.lines_file = os.path.join(out, "lines")
         self.set_answer(6)
         self.agent = agent
         # Claude takes turns of the wheel 40 ms apart or more as one row each,
-        # and closer ones faster: bursts stay well inside that.
-        self.burst_gap = 0.012 if agent == "claude" else 0.008
+        # and closer ones faster: bursts stay well inside that. Pi takes
+        # events closer than 5 ms as a row each, else up to 6 (100 ms over
+        # the average gap): its bursts go in one write (None), a row each,
+        # unless a case asks for a gap.
+        self.burst_gap = None if agent == "pi" else (0.012 if agent == "claude" else 0.008)
         self.child_log = os.path.join(out, "child.bin")
         self.child_at = {}
-        prompts = prompts or agent in ("claude", "copilot", "kiro")
+        prompts = prompts or agent in ("claude", "copilot", "kiro", "pi")
         self.prompts = prompts
         # Codex and Claude pin the prompt of what is on screen on the top row;
         # Copilot shows no such header.
-        self.header = None if agent in ("copilot", "kiro") else (
+        self.header = None if agent in ("copilot", "kiro", "pi") else (
             ("❯ q" if agent == "claude" else "› q") if prompts else None)
         # Screen row of the chat's first row (Copilot: under its tab bar),
         # and frames with the box drawn above it.
@@ -247,7 +309,15 @@ class Session:
         # Columns left of Copilot's chat: its sidebar and divider, when open.
         self.left = 0
         extra, resume, self.codex_home, self.claude_home = {}, [], None, None
-        if agent == "kiro":
+        if agent == "pi":
+            # A saved chat in an agent folder of its own (full screen is Pi's default).
+            agent_dir, path = pi_session.pi_agent(out, blocks, block_rows, long_prompt=(2,),
+                                                  repeated=(1,) if rep else (),
+                                                  wheel_rows=int(speed) if speed else None)
+            extra = {"PI_CODING_AGENT_DIR": agent_dir, "PI_OFFLINE": "1",
+                     "PI_SKIP_VERSION_CHECK": "1", "PI_TELEMETRY": "0"}
+            resume = ["--session", path]
+        elif agent == "kiro":
             # A saved chat in a KIRO_HOME of its own, starting full screen.
             home, sid = kiro_session.kiro_home(out, blocks, block_rows, long_prompt=(2,),
                                                repeated=(1,) if rep else (),
@@ -287,7 +357,10 @@ class Session:
         relay = [sys.executable, os.path.join(HERE, "late_pty.py")] if late else []
         # Codex's wheel speed: its default 1.0, or set on its command line.
         setting = ["-c", f"tui.mouse_scroll_speed={speed}"] if speed else []
-        if agent == "kiro":
+        if agent == "pi":
+            self.model = PiWheel(int(speed) if speed else None)
+            argv = [m.PEEKME, ra.real_binary("pi")] + resume
+        elif agent == "kiro":
             self.model = KiroWheel(int(speed) if speed else 2)
             argv = [m.PEEKME, ra.real_binary("kiro-cli")] + resume
         elif agent == "copilot":
@@ -372,6 +445,10 @@ class Session:
         """Chat rows: all above the status (Codex) or notice (Claude) row,
         two above the prompt line."""
         s = self.screen()
+        if self.agent == "pi":
+            # Above the blank row over the upper of Pi's two lowest rules.
+            rules = [i for i, r in enumerate(s) if r.startswith("─") and r.count("─") * 5 >= m.COLS * 4]
+            return rules[-2] - 1
         if self.agent == "kiro":
             # Above the blank row over Kiro's rule, the one above its prompt.
             prompt = max(i for i, r in enumerate(s) if r.startswith("›"))
@@ -463,7 +540,10 @@ class Session:
         return took
 
     def wheel(self, up, n=1, gap=0.0, batch=1, side=None, at=None, track=True):
-        """Turn the wheel; returns the rows each turn moves the agent's chat."""
+        """Turn the wheel; returns the rows each turn moves the agent's chat.
+        A `gap` of None sends the `n` turns in one write."""
+        if gap is None:
+            n, batch, gap = 1, n * batch, 0.0
         # Codex scrolls for the wheel over its chat only.
         x, y = (m.COLS // 2, self.R // 2) if at in (None, "auto", "side") else at
         y += self.top
@@ -496,7 +576,13 @@ class Session:
         return rows
 
     def strip(self, rows):
-        """Rows without Copilot's sidebar, which stays put; the box covers it."""
+        """Rows without Copilot's sidebar, which stays put; the box covers it.
+        Pi's scrollbar in the last column is not chat either."""
+        if self.agent == "pi":
+            # Its " Copied! " notice after a drag is not chat either.
+            return [r if r[:1] in BOX else
+                    NoticeRow(r, m.COLS - 10) if r[:m.COLS - 1].rstrip().endswith("Copied!") else
+                    r[:m.COLS - 1].rstrip() for r in rows]
         return [r if r[:1] in BOX else r[self.left:] for r in rows] if self.left else rows
 
     def chat(self):
@@ -544,8 +630,38 @@ class Session:
         T.append(cur[R - 1])
         return T
 
+    def read_chat_pi(self):
+        """Pi's chat, from the top, a page at a time (its rows less 4). Its
+        hint covers the last row while scrolled up, and not at the bottom."""
+        self.t.send(b"\x1b[1;5H")  # Ctrl+Home
+        self.settle()
+        R = self.R
+        cur = self.chat()
+        T = cur[:R - 1]
+        while True:
+            self.t.send(b"\x1b[6~")
+            self.settle()
+            nxt = self.chat()
+            if nxt == cur:
+                break
+            k = next((k for k in [R - 4] + list(range(1, R - 1))
+                      if nxt[:R - 1 - k] == cur[k:R - 1]), None)
+            if k is None:
+                raise RuntimeError("reading the chat: screens do not overlap")
+            T += nxt[R - 1 - k:R - 1]
+            cur = nxt
+        if PI_HINT in cur[R - 1] or T[-1] != cur[R - 2]:
+            raise RuntimeError("reading the chat: not at its end")
+        T.append(cur[R - 1])
+        return T
+
     def read_chat(self):
-        T = self.read_chat_claude() if self.agent == "claude" else self.read_chat_paged()
+        if self.agent == "claude":
+            T = self.read_chat_claude()
+        elif self.agent == "pi":
+            T = self.read_chat_pi()
+        else:
+            T = self.read_chat_paged()
         if len(set(r for r in T if LABEL.search(r))) != len([r for r in T if LABEL.search(r)]):
             raise RuntimeError("labelled rows are not unique")
         # A block of repeated rows has 30 of them: read where rows repeat,
@@ -580,7 +696,8 @@ class Session:
             nxt = self.chat()
             if nxt[h:] == cur[h:]:
                 break
-            first = step * turns if self.agent in ("copilot", "kiro") else self.R - 1 - h
+            first = step * turns if self.agent in ("copilot", "kiro") else (
+                self.R - 4 if self.agent == "pi" else self.R - 1 - h)
             s = next((s for s in [first] + list(range(1, self.R - h))
                       if nxt[h:self.R - s] == cur[s + h:]), None)
             if s is None:
@@ -971,7 +1088,12 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
             before = s.chat()
             m.wait(lambda: s.chat() != before, 4, 0.05)
     if pre_up:
-        s.wheel(True, pre_up, 0.01)
+        # Pi counts events 10 ms apart as up to 6 rows each, and events in
+        # one write as a row each.
+        if s.agent == "pi":
+            s.wheel(True, 1, batch=pre_up)
+        else:
+            s.wheel(True, pre_up, 0.01)
         s.settle()
     r1, r2, sel = select(s, sel_row, two_rows)
     case.s0 = s.pos
@@ -1036,6 +1158,9 @@ def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=
                 elif s.agent == "kiro":
                     # Kiro too: its rows less 2.
                     rows = [(-1 if up else 1) * (s.R - 2)]
+                elif s.agent == "pi":
+                    # Pi too: its rows less 4.
+                    rows = [(-1 if up else 1) * (s.R - 4)]
                 else:
                     rows = [s.model.turn(-1 if up else 1) for _ in range(turns)]
                 for r in rows:
@@ -1308,7 +1433,12 @@ SESSIONS = [("long", dict(blocks=4), cases_long), ("more", dict(blocks=3, colors
             ("kiro repeated", dict(blocks=3, agent="kiro", rep=True), cases_rep),
             ("kiro small", dict(blocks=3, agent="kiro", size=(80, 24)), cases_small),
             ("kiro speed 1", dict(blocks=3, agent="kiro", speed=1), cases_speed),
-            ("kiro speed 3", dict(blocks=3, agent="kiro", speed=3), cases_speed)]
+            ("kiro speed 3", dict(blocks=3, agent="kiro", speed=3), cases_speed),
+            ("pi", dict(blocks=4, agent="pi"), cases_claude),
+            ("pi repeated", dict(blocks=3, agent="pi", rep=True), cases_rep),
+            ("pi small", dict(blocks=3, agent="pi", size=(80, 24)), cases_small),
+            ("pi speed 1", dict(blocks=3, agent="pi", speed=1), cases_speed),
+            ("pi speed 3", dict(blocks=3, agent="pi", speed=3), cases_speed)]
 
 
 def main():

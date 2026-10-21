@@ -53,13 +53,13 @@ def main():
     said = start(home)
     links = sorted(os.listdir(bindir))
     text = open(rc).read()
-    if links != ["claude", "codex", "copilot", "kiro-cli"]:
+    if links != ["claude", "codex", "copilot", "kiro-cli", "pi"]:
         fails.append(f"links after the first start: {links}")
-    for agent in ("codex", "claude", "copilot", "kiro-cli"):
+    for agent in ("codex", "claude", "copilot", "kiro-cli", "pi"):
         if f"function {agent} {{" not in text:
             fails.append(f"no `{agent}` function in the block")
     # bash takes the block, `kiro-cli` (a name with a dash) included.
-    r = subprocess.run(["bash", "-c", f". {shlex.quote(rc)} && type kiro-cli codex"],
+    r = subprocess.run(["bash", "-c", f". {shlex.quote(rc)} && type kiro-cli codex pi"],
                        capture_output=True, text=True, env=m.clean_env(HOME=home))
     if r.returncode != 0 or r.stderr:
         fails.append(f"bash could not load the block: {r.stderr.strip()}")

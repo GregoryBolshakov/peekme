@@ -53,6 +53,10 @@ fn logged_in(agent: Agent) -> bool {
         Agent::Claude => run(&bin, &["auth", "status"]).is_some_and(|out| claude_logged_in(&out)),
         Agent::Codex => run(&bin, &["login", "status"]).is_some(),
         Agent::Kiro => run(&bin, &["whoami"]).is_some(),
+        Agent::Pi => crate::pi::transcript::agent_dir()
+            .and_then(|d| std::fs::read_to_string(d.join("settings.json")).ok())
+            .and_then(|s| pi_default_provider(&s))
+            .is_some_and(|p| run(&bin, &["auth", "check", "--provider", &p]).is_some()),
         Agent::Copilot => {
             ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]
                 .iter()
@@ -68,6 +72,16 @@ fn claude_logged_in(out: &str) -> bool {
         .ok()
         .and_then(|v| v.get("loggedIn").and_then(serde_json::Value::as_bool))
         .unwrap_or(false)
+}
+
+/// `defaultProvider` in Pi's `settings.json`: `pi auth check` needs one.
+fn pi_default_provider(settings: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(settings)
+        .ok()?
+        .get("defaultProvider")?
+        .as_str()
+        .filter(|p| !p.is_empty())
+        .map(String::from)
 }
 
 /// Copilot keeps its logins in `config.json` (JSON after `//` comment lines).
@@ -129,6 +143,7 @@ mod tests {
         assert_eq!(from_name("kiro-cli"), Some(Agent::Kiro));
         assert_eq!(from_name("kiro"), Some(Agent::Kiro));
         assert_eq!(from_name("copilot"), Some(Agent::Copilot));
+        assert_eq!(from_name("pi"), Some(Agent::Pi));
         assert_eq!(from_name("gpt"), None);
     }
 
@@ -139,6 +154,14 @@ mod tests {
         ));
         assert!(!claude_logged_in(r#"{"loggedIn": false}"#));
         assert!(!claude_logged_in("Not logged in"));
+    }
+
+    #[test]
+    fn pi_settings_provider() {
+        let s = r#"{"defaultProvider": "anthropic", "defaultModel": "claude-opus-4-8"}"#;
+        assert_eq!(pi_default_provider(s).as_deref(), Some("anthropic"));
+        assert_eq!(pi_default_provider("{}"), None);
+        assert_eq!(pi_default_provider("not json"), None);
     }
 
     #[test]

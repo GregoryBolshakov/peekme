@@ -4,7 +4,7 @@
 use peekme::{agent::Agent, explain};
 use std::process::Command;
 
-const SETTINGS: [(Agent, &str, &str); 4] = [
+const SETTINGS: [(Agent, &str, &str); 5] = [
     (
         Agent::Claude,
         "PEEKME_CLAUDE_MODEL",
@@ -17,6 +17,7 @@ const SETTINGS: [(Agent, &str, &str); 4] = [
         "PEEKME_COPILOT_ASK_MODEL",
     ),
     (Agent::Kiro, "PEEKME_KIRO_MODEL", "PEEKME_KIRO_ASK_MODEL"),
+    (Agent::Pi, "PEEKME_PI_MODEL", "PEEKME_PI_ASK_MODEL"),
 ];
 
 #[test]

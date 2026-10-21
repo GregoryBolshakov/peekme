@@ -1,9 +1,9 @@
 //! Development helper: run one explanation for a selection inside some screen
 //! text, without a terminal. Prints the prompt sent and the streamed answer.
 //!
-//!     cargo run --example peek_text -- "<screen text>" "<selection>" [--deep] [--ask QUESTION] [--inside ANSWER WORDS] [--claude|--copilot|--kiro|--picked] [--terminal] [--pid PID]
+//!     cargo run --example peek_text -- "<screen text>" "<selection>" [--deep] [--ask QUESTION] [--inside ANSWER WORDS] [--claude|--copilot|--kiro|--pi|--picked] [--terminal] [--pid PID]
 //!
-//! Codex by default. With `--claude`, `--copilot` or `--kiro`, that agent; `--pid` is the
+//! Codex by default. With `--claude`, `--copilot`, `--kiro` or `--pi`, that agent; `--pid` is the
 //! process id of a running interactive session, whose transcript then gives the
 //! context. `--terminal`: the text is a plain terminal's screen, not a chat;
 //! `--picked`: the agent a plain terminal would get (`PEEKME_EXPLAINER`, logins).
@@ -22,6 +22,8 @@ fn main() {
         Agent::Copilot
     } else if has("--kiro") {
         Agent::Kiro
+    } else if has("--pi") {
+        Agent::Pi
     } else {
         Agent::Codex
     };

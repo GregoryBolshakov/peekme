@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Long boxes over an agent's inline screen: real Kiro CLI (inline) and real
-Claude Code (classic screen), Linux, no tmux, no model calls (the fake
-explainer writes the boxes).
+"""Long boxes over an agent's inline screen: real Kiro CLI (inline), real
+Claude Code (classic screen) and real Pi (regular screen), Linux, no tmux,
+no model calls (the fake explainer writes the boxes).
 
 Inline the terminal keeps the chat in its own history. With a box open peekme
 takes the mouse and scrolls that chat itself, with the boxes printed in it, as
@@ -18,7 +18,7 @@ over the boxes and beside them, then to the chat's last row a page at a time,
 and back. After Esc the terminal shows the agent's own screen, and the chat
 as before.
 
-    python3 tests/e2e/inline_scroll.py [--agent kiro|claude]
+    python3 tests/e2e/inline_scroll.py [--agent kiro|claude|pi]
 """
 import os
 import subprocess
@@ -30,6 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import claude_session  # noqa: E402
 import kiro_session  # noqa: E402
+import pi_session  # noqa: E402
 import matrix as m  # noqa: E402
 import real_agents as ra  # noqa: E402
 import scroll as sc  # noqa: E402
@@ -88,6 +89,11 @@ def run(agent, out):
         home, sid = kiro_session.kiro_home(out, 3, 40, fullscreen=False)
         extra = {"KIRO_HOME": home}
         argv = [m.PEEKME, ra.real_binary("kiro-cli"), "chat", "--resume-id", sid]
+    elif agent == "pi":
+        home, path = pi_session.pi_agent(out, 3, 40)
+        extra = {"PI_CODING_AGENT_DIR": home, "PI_OFFLINE": "1", "PI_SKIP_VERSION_CHECK": "1",
+                 "PI_TELEMETRY": "0"}
+        argv = [m.PEEKME, ra.real_binary("pi"), "--tui-mode", "regular", "--session", path]
     else:
         home, sid = claude_session.config_dir(out, 3, 40)
         extra = {"CLAUDE_CONFIG_DIR": home}
@@ -240,7 +246,7 @@ def run(agent, out):
 
 
 def main():
-    agents = ["kiro", "claude"]
+    agents = ["kiro", "claude", "pi"]
     if "--agent" in sys.argv:
         agents = [sys.argv[sys.argv.index("--agent") + 1]]
     work = tempfile.mkdtemp(prefix="peekme-inline-scroll-")
