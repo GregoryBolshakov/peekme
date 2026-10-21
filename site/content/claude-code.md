@@ -43,16 +43,14 @@ tall as their text and never scroll on their own.
 
 ## Which model explains
 
-No API key is needed. A peek runs `claude -p` with your own Claude login, on Haiku, without tools
-and without saving the session, so nothing appears in `/resume`. After the first explanation one
-`claude -p` waits in the background for the next one, so it starts in about half a second. It
-takes about 210 MB of memory.
+No API key is needed. peekme runs `claude -p` with your Claude login, without tools or saving
+the session, so nothing appears in `/resume`.
 
-A typed question (Alt+Q) goes to the model your chat runs on, with the whole
-conversation. To change either model:
+Peek and Ask use your chat's model by default. Peek sends relevant parts of the conversation.
+Ask sends the whole conversation. To change either model:
 
 ```
-export PEEKME_CLAUDE_MODEL=sonnet        # peeks, default haiku
+export PEEKME_CLAUDE_MODEL=sonnet        # peeks, default the chat's model
 export PEEKME_CLAUDE_ASK_MODEL=opus      # questions, default the chat's model
 ```
 

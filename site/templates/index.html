@@ -38,7 +38,7 @@
 <section class="band">
   <div class="wrap">
     <h2 class="sec">What it does</h2>
-    {{ m::feature(clip="feature-peek", title="Peek: Alt+P", text=`Select text and press Alt+P. A small, fast model explains it in a few lines, under the text you selected. The other lines move down to make room, like Peek in VS Code. The model knows the conversation: select "its split panes" in an answer that recommends Kitty, and it tells you about Kitty.`) }}
+    {{ m::feature(clip="feature-peek", title="Peek: Alt+P", text=`Select text and press Alt+P. Your chat's model explains it in a few lines, under the text you selected. The other lines move down to make room, like Peek in VS Code. The model knows the conversation: select "its split panes" in an answer that recommends Kitty, and it tells you about Kitty.`) }}
     {{ m::feature(clip="feature-ask", title="Ask, and boxes inside boxes", text=`Alt+Q opens the box empty, and you type your own question, for example "how do I fix that?". The model your chat runs on answers it, with the whole conversation. Select words inside a box and press Alt+P or Alt+Q again: a new box opens inside it, under that line. You can go several levels deep.`, flip=true) }}
     {{ m::feature(clip="feature-saved", title="Saved answers", text=`Text you asked about gets a dotted underline. Click it later and the answer opens again at once, with no new request. A second click closes it.`) }}
   </div>
@@ -97,8 +97,8 @@
   <div class="wrap narrow">
     <h2 class="sec">Questions</h2>
     <details><summary>Does it change my agent?</summary><p>No. peekme starts your agent in a pseudo-terminal and passes everything through unchanged. It only draws its box over a few rows while the box is open. Run <code>command claude</code> to start plain Claude Code once (the same for the other agents), and <code>peekme uninstall</code> to remove peekme.</p></details>
-    <details><summary>Which model explains?</summary><p>A peek uses a small, fast model through your agent: Haiku in Claude Code, the model your Codex account lists as fast, Copilot's Auto, and claude-haiku-4.5 in Kiro. A typed question uses the model your chat runs on. Both can be changed, see <a href="{{ get_url(path='@/docs/settings.md') }}">Settings</a>.</p></details>
-    <details><summary>How fast is it?</summary><p>The answer starts to appear after about 1 to 2 seconds. A typed question goes to a bigger model with the whole conversation, so it takes longer.</p></details>
+    <details><summary>Which model explains?</summary><p>Peek and Ask use your chat's model by default. Peek sends relevant parts of the conversation. Ask sends the whole conversation. You can change either model, see <a href="{{ get_url(path='@/docs/settings.md') }}">Settings</a>.</p></details>
+    <details><summary>How fast is it?</summary><p>Response time depends on your model and how much context is sent. Peek sends relevant parts of the conversation. Ask sends the whole conversation.</p></details>
     <details><summary>Do I need to change terminal settings on a Mac?</summary><p>No. Option+P works as it is, also over SSH and inside tmux. A Mac terminal types <code>π</code> for Option+P, and peekme takes it as the shortcut only when text is selected. <a href="{{ get_url(path='@/docs/macos.md') }}">More about macOS</a></p></details>
     <details><summary>What if the explanation is not enough?</summary><p>Press Alt+P again while the box is open. The model then gets the whole conversation instead of the parts around the selection. For a long chat peekme shows the size first and sends it only after one more Alt+P.</p></details>
     <details><summary>Can I select text that scrolled away?</summary><p>Not yet. peekme explains text that is on the screen now.</p></details>

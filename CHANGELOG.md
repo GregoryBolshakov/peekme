@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.2 (2026-10-20)
+
+- Peeks (Alt+P) use your chat's model by default. The existing model settings still override it.
+- Shorter README, with one image for Codex, Copilot CLI and Kiro CLI. The Claude Code GIF stays.
+
 ## 0.5.1 (2026-10-16)
 
 - Fixed: with a long answer open and a long answer in a box inside it, the mouse wheel often

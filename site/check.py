@@ -26,18 +26,21 @@ def table_rows(text, header):
 
 readme = read("README.md")
 
-# Key table and settings table: the same rows in the same order.
-for header, page in [("| Key |", "content/docs/keys.md"), ("| Variable |", "content/docs/settings.md")]:
-    a, b = table_rows(readme, header), table_rows(read("site", page), header)
-    if a is None or b is None:
-        errors.append(f"table '{header}' missing in README.md or site/{page}")
-    elif a != b:
-        errors.append(f"table '{header}' differs between README.md and site/{page}:\n"
-                      + "\n".join(f"  README: {x}\n  site:   {y}" for x, y in zip(a + [""] * len(b), b + [""] * len(a)) if x != y))
+# The README keeps a short key table; the docs carry the full reference.
+key_page = read("site", "content/docs/keys.md")
+readme_keys = table_rows(readme, "| Key |")
+if readme_keys is None or table_rows(key_page, "| Key |") is None:
+    errors.append("key table missing in README.md or site/content/docs/keys.md")
+else:
+    for row in readme_keys:
+        key = row.split("|")[1]
+        for shortcut in re.findall(r"Alt\+[PQ]|PgUp|PgDn|Esc|Enter|Ctrl\+Home|Ctrl\+End", key):
+            if shortcut not in key_page:
+                errors.append(f"README key missing in site/content/docs/keys.md: {shortcut}")
 
 # Every documented variable is read by the code.
 src = "".join(open(f).read() for f in glob.glob(os.path.join(ROOT, "src/**/*.rs"), recursive=True))
-for var in sorted(set(re.findall(r"`(PEEKME_[A-Z_]+)`", readme))):
+for var in sorted(set(re.findall(r"`(PEEKME_[A-Z_]+)`", readme + read("site", "content/docs/settings.md")))):
     if var not in src:
         errors.append(f"{var} is documented but src/ never reads it")
 
@@ -57,18 +60,20 @@ readme_v = re.search(r"^Status: ([0-9][^ .]*\.[0-9]+\.[0-9]+)", readme, re.M)
 # keep the last release until the next one.
 if "-" not in cargo and site_v != cargo:
     errors.append(f"site/config.toml version {site_v} != Cargo.toml {cargo}")
-if "-" not in cargo and (not readme_v or readme_v.group(1) != cargo):
+if "-" not in cargo and readme_v and readme_v.group(1) != cargo:
     errors.append(f"README Status line version != Cargo.toml {cargo}")
 
-# Tested agent versions on each agent page.
-status = re.search(r"^Status:.*?(?=\n\n)", readme, re.M | re.S).group(0)
-for name, page in [("Claude Code", "claude-code"), ("Codex", "codex"), ("Copilot CLI", "copilot-cli"), ("Kiro CLI", "kiro-cli")]:
-    m = re.search(re.escape(name) + r" ([0-9][0-9.]*[0-9])", status)
-    text = read("site", "content", page + ".md")
-    if not m:
-        errors.append(f"README Status line has no version for {name}")
-    elif f"{name} {m.group(1)}" not in text:
-        errors.append(f"site/content/{page}.md does not say tested with {name} {m.group(1)}")
+# A README may omit release and tested-version metadata and link to the docs.
+# When it includes a Status paragraph, keep those versions in agreement.
+status = re.search(r"^Status:.*?(?=\n\n)", readme, re.M | re.S)
+if status:
+    for name, page in [("Claude Code", "claude-code"), ("Codex", "codex"), ("Copilot CLI", "copilot-cli"), ("Kiro CLI", "kiro-cli")]:
+        m = re.search(re.escape(name) + r" ([0-9][0-9.]*[0-9])", status.group(0))
+        text = read("site", "content", page + ".md")
+        if not m:
+            errors.append(f"README Status line has no version for {name}")
+        elif f"{name} {m.group(1)}" not in text:
+            errors.append(f"site/content/{page}.md does not say tested with {name} {m.group(1)}")
 
 if errors:
     print("README.md and the site differ:\n")

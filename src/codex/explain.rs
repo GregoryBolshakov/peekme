@@ -1,12 +1,12 @@
 //! Explanations through Codex's own app-server: the user's existing login, an
-//! ephemeral thread on a small model, streamed back into the peek box.
+//! ephemeral thread on the chat's model, streamed back into the peek box.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -31,7 +31,6 @@ pub struct AppServer {
     pending: Arc<Pending>,
     subscribers: Arc<Mutex<HashMap<String, Sender<Value>>>>,
     child: Mutex<Option<Child>>,
-    model: OnceLock<Option<String>>,
     alive: AtomicBool,
 }
 
@@ -83,7 +82,6 @@ impl AppServer {
             pending: Arc::new(Mutex::new(HashMap::new())),
             subscribers: Arc::new(Mutex::new(HashMap::new())),
             child: Mutex::new(child),
-            model: OnceLock::new(),
             alive: AtomicBool::new(true),
         })
     }
@@ -192,52 +190,6 @@ impl AppServer {
         self.subscribers.lock().unwrap().remove(thread);
     }
 
-    /// The model used for explanations: `PEEKME_MODEL`, else the account's
-    /// model described as fast/efficient, else Codex's default.
-    fn model(&self) -> Option<String> {
-        self.model
-            .get_or_init(|| {
-                if let Ok(m) = std::env::var("PEEKME_MODEL") {
-                    return Some(m);
-                }
-                let list = self.request("model/list", json!({})).ok()?;
-                let models = list.get("data")?.as_array()?;
-                let score = |m: &Value| {
-                    let id = m
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_lowercase();
-                    let desc = m
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_lowercase();
-                    let mut s = 0;
-                    for (word, w) in [
-                        ("mini", 3),
-                        ("nano", 3),
-                        ("fast", 2),
-                        ("efficient", 2),
-                        ("small", 2),
-                        ("luna", 1),
-                    ] {
-                        if id.contains(word) || desc.contains(word) {
-                            s += w;
-                        }
-                    }
-                    s
-                };
-                models
-                    .iter()
-                    .filter(|m| !m.get("hidden").and_then(Value::as_bool).unwrap_or(false))
-                    .max_by_key(|m| score(m))
-                    .filter(|m| score(m) > 0)
-                    .and_then(|m| m.get("id").and_then(Value::as_str).map(String::from))
-            })
-            .clone()
-    }
-
     /// Stop our own server process, or leave the shared one (it is Codex's).
     pub fn shutdown(&self) {
         if let Some(child) = self.child.lock().unwrap().as_mut() {
@@ -324,15 +276,11 @@ fn run(server: &AppServer, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
         req.nested.as_ref(),
     );
     let asking = req.question.is_some();
-    // A question runs on the chat's own model (without a thread: Codex's
-    // configured default).
-    let model = match &req.question {
-        Some(_) => std::env::var("PEEKME_CODEX_ASK_MODEL")
-            .ok()
-            .filter(|m| !m.trim().is_empty())
-            .or_else(|| conv.as_ref().and_then(|c| c.model.clone())),
-        None => server.model(),
-    };
+    let model = crate::explain::model(
+        Agent::Codex,
+        asking,
+        conv.as_ref().and_then(|c| c.model.as_deref()),
+    );
     if let Some(q) = &req.question {
         // The fork carries the conversation; the prompt only needs the passage.
         built = context::build_question(

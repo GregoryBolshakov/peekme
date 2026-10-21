@@ -30,8 +30,8 @@ docs.
   long term, a path or an error message into a question.
 - **The answer opens next to the words.** The lines below move down to make room, like Peek in
   VS Code. You read the explanation and the text it explains together.
-- **A short peek is fast.** Alt+P goes to a small, fast model with only the parts of the
-  conversation around the selection, usually 1 to 7 KB. The answer starts in 1 to 2 seconds.
+- **A short explanation.** Alt+P uses your chat's model with the parts of the conversation
+  around the selection, usually 1 to 7 KB.
 - **Boxes inside boxes.** Select words in an answer and press Alt+P again. A new box opens inside,
   under that line, and you can go several levels deep.
 - **Answers stay.** Text you asked about gets a dotted underline. Click it later and the answer

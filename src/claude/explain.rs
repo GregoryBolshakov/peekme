@@ -1,5 +1,5 @@
 //! Explanations through `claude -p`: the user's existing Claude Code login, a
-//! small model, streamed back into the peek box.
+//! chat model, streamed back into the peek box.
 //!
 //! Each explanation runs in its own short-lived `claude -p` process, so no
 //! explanation sees another. Starting one takes about half a second, so after
@@ -25,22 +25,6 @@ const SYSTEM: &str = "You are \"peek\", an explainer embedded in a terminal. The
      fragment means where it appears: define the terms, name the specific thing it refers to when the \
      context shows it, say what any code does there, and why it matters for the user's task. No preamble, \
      no headings. Answer from the provided context and general knowledge only.";
-
-pub fn model() -> String {
-    std::env::var("PEEKME_CLAUDE_MODEL")
-        .ok()
-        .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| "haiku".into())
-}
-
-/// For a typed question: `PEEKME_CLAUDE_ASK_MODEL`, else the chat's own
-/// model, else Claude Code's default (None).
-fn ask_model(chat: Option<&str>) -> Option<String> {
-    std::env::var("PEEKME_CLAUDE_ASK_MODEL")
-        .ok()
-        .filter(|m| !m.trim().is_empty())
-        .or_else(|| chat.map(String::from))
-}
 
 fn claude_bin() -> String {
     std::env::var("PEEKME_CLAUDE_BIN").unwrap_or_else(|_| {
@@ -112,6 +96,9 @@ fn login_settings(config_dir: Option<&Path>, cwd: Option<&Path>) -> Value {
 
 /// A started `claude -p` waiting for its one message.
 struct Worker {
+    /// Its system prompt (a spare is only used for the same one).
+    system: String,
+    model: Option<String>,
     child: Child,
     stdin: ChildStdin,
     lines: Receiver<String>,
@@ -176,6 +163,8 @@ impl Worker {
             }
         });
         Ok(Self {
+            system: system.to_string(),
+            model: model.map(String::from),
             child,
             stdin,
             lines,
@@ -202,23 +191,25 @@ pub struct Pool {
 }
 
 impl Pool {
-    fn take(&self) -> Result<Worker> {
+    fn take(&self, model: Option<&str>, system: &'static str) -> Result<Worker> {
         if let Some(mut w) = self.spare.lock().unwrap().take()
             && w.alive()
+            && w.system == system
+            && w.model.as_deref() == model
         {
             return Ok(w);
         }
-        Worker::spawn(Some(&model()), SYSTEM)
+        Worker::spawn(model, system)
     }
 
     /// Start a spare in the background if there is none.
-    pub fn refill(self: &Arc<Self>) {
+    pub fn refill(self: &Arc<Self>, model: Option<String>, system: &'static str) {
         if *self.closed.lock().unwrap() || self.spare.lock().unwrap().is_some() {
             return;
         }
         let pool = self.clone();
         std::thread::spawn(move || {
-            if let Ok(w) = Worker::spawn(Some(&model()), SYSTEM) {
+            if let Ok(w) = Worker::spawn(model.as_deref(), system) {
                 let mut spare = pool.spare.lock().unwrap();
                 if spare.is_none() && !*pool.closed.lock().unwrap() {
                     *spare = Some(w);
@@ -234,10 +225,16 @@ impl Pool {
 }
 
 pub fn explain(pool: &Arc<Pool>, req: Request, tx: impl Fn(Progress)) {
-    if let Err(e) = run(pool, req, &tx) {
+    let system = SYSTEM;
+    let prepared = prompt_and_model(&req);
+    let model = prepared.1.clone();
+    let asking = req.question.is_some();
+    if let Err(e) = run(pool, req, prepared, &tx) {
         tx(Progress::Failed(format!("{e:#}")));
     }
-    pool.refill();
+    if !asking {
+        pool.refill(model, system);
+    }
 }
 
 /// Everything the explainer is told, and where it came from; with the
@@ -246,15 +243,21 @@ pub fn prompt(req: &Request) -> (context::Built, Option<usize>) {
     prompt_and_model(req).0
 }
 
-/// The prompt, and for a typed question the model of the chat.
+/// The prompt and model for this request.
 fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<String>) {
     let conv = transcript::config_dir()
         .and_then(|c| transcript::find(&c, req.agent_pid, &req.cwd))
         .and_then(|p| transcript::load(&p));
+    let place = Agent::Claude;
     let hit = conv.as_ref().and_then(|c| context::find(c, &req.screen));
+    let model = crate::explain::model(
+        Agent::Claude,
+        req.question.is_some(),
+        conv.as_ref().and_then(|c| c.model.as_deref()),
+    );
     if let Some(q) = &req.question {
         let mut built = context::build_question(
-            Agent::Claude,
+            place,
             &req.cwd,
             conv.as_ref(),
             hit,
@@ -266,11 +269,10 @@ fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<S
         built.prompt.push_str(&format!(
             "Keep the {OPEN}{CLOSE} marks out of the answer.\n"
         ));
-        let model = ask_model(conv.as_ref().and_then(|c| c.model.as_deref()));
         return ((built, None), model);
     }
     let compact = context::build(
-        Agent::Claude,
+        place,
         &req.cwd,
         conv.as_ref(),
         hit,
@@ -279,7 +281,7 @@ fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<S
     );
     let (mut built, compact_len) = match (&conv, req.deep) {
         (Some(c), true) => (
-            context::build_deep(Agent::Claude, &req.cwd, c, hit, &req.screen),
+            context::build_deep(place, &req.cwd, c, hit, &req.screen),
             Some(compact.prompt.chars().count()),
         ),
         _ => (compact, None),
@@ -288,7 +290,7 @@ fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<S
         "Answer in at most {} short lines; keep the {OPEN}{CLOSE} marks out of the answer.\n",
         req.max_lines
     ));
-    ((built, compact_len), None)
+    ((built, compact_len), model)
 }
 
 /// Rough token count of a prompt plus `claude -p`'s own overhead (~400 tokens
@@ -297,8 +299,13 @@ fn tokens(chars: usize) -> usize {
     chars / 4 + 400
 }
 
-fn run(pool: &Arc<Pool>, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
-    let ((built, compact_len), chat_model) = prompt_and_model(&req);
+fn run(
+    pool: &Arc<Pool>,
+    req: Request,
+    prepared: ((context::Built, Option<usize>), Option<String>),
+    tx: &impl Fn(Progress),
+) -> Result<()> {
+    let ((built, compact_len), chat_model) = prepared;
     if let Some(compact) = compact_len
         && !req.force
     {
@@ -314,11 +321,11 @@ fn run(pool: &Arc<Pool>, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
     if let Some(path) = debug_prompt_path() {
         let _ = std::fs::write(path, &built.prompt);
     }
-    // A question runs on its own process: another model, other instructions.
+    // A question runs on its own process with different instructions.
     let mut w = if req.question.is_some() {
         Worker::spawn(chat_model.as_deref(), &context::ask_system(Agent::Claude))?
     } else {
-        pool.take()?
+        pool.take(chat_model.as_deref(), SYSTEM)?
     };
     let msg = json!({"type": "user", "message": {"role": "user", "content": built.prompt}});
     writeln!(w.stdin, "{msg}").context("the explainer process is not running")?;
@@ -327,10 +334,7 @@ fn run(pool: &Arc<Pool>, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
     let mut started = false;
     // Each content block is its own part: text, thinking, text again.
     let (mut parts, mut block) = (Parts::default(), 0usize);
-    let mut model_name = match &req.question {
-        Some(_) => chat_model.clone().unwrap_or_else(|| "Claude".into()),
-        None => model(),
-    };
+    let mut model_name = chat_model.clone().unwrap_or_else(|| "Claude".into());
     loop {
         let line = w
             .lines
@@ -415,6 +419,50 @@ fn debug_prompt_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spare_workers_are_reused_only_for_the_same_model() {
+        // Isolate the fake CLI setting in a subprocess, never in the test
+        // runner's environment. The fake worker waits on stdin, with no model call.
+        if std::env::var_os("PEEKME_TEST_CLAUDE_POOL").is_none() {
+            use std::os::unix::fs::PermissionsExt;
+            let path = std::env::temp_dir().join(format!("peekme-pool-{}.sh", std::process::id()));
+            std::fs::write(&path, "#!/bin/sh\nexec cat >/dev/null\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "claude::explain::tests::spare_workers_are_reused_only_for_the_same_model",
+                    "--nocapture",
+                ])
+                .env("PEEKME_TEST_CLAUDE_POOL", "1")
+                .env("PEEKME_CLAUDE_BIN", &path)
+                .output()
+                .unwrap();
+            std::fs::remove_file(path).unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let pool = Pool::default();
+        let first = pool.take(Some("first"), SYSTEM).unwrap();
+        let first_pid = first.child.id();
+        *pool.spare.lock().unwrap() = Some(first);
+        let reused = pool.take(Some("first"), SYSTEM).unwrap();
+        assert_eq!(reused.child.id(), first_pid);
+        *pool.spare.lock().unwrap() = Some(reused);
+        let switched = pool.take(Some("second"), SYSTEM).unwrap();
+        assert_ne!(switched.child.id(), first_pid);
+        assert_eq!(switched.model.as_deref(), Some("second"));
+        *pool.spare.lock().unwrap() = Some(switched);
+        let default = pool.take(None, SYSTEM).unwrap();
+        assert_eq!(default.model, None);
+        pool.shutdown();
+    }
 
     #[test]
     fn login_settings_come_from_user_project_and_local_files() {
