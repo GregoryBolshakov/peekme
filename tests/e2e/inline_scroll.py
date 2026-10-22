@@ -37,9 +37,9 @@ import scroll as sc  # noqa: E402
 LABEL = "b2r30"
 WORDS = f"{LABEL} words of row 30 in block 2"
 LINES = 12
-# Outer box: its first line, then a blank row and a line for each of LINES,
-# borders; the box inside it the same.
-H = 2 * (2 * LINES + 3)
+# Outer box: its first line, a blank row, then a line for each of LINES (one
+# list, as the agent draws it), borders; the box inside it the same.
+H = 2 * (LINES + 4)
 
 
 def with_history(t):

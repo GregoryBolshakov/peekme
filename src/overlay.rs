@@ -6,6 +6,7 @@ use std::ops::Range;
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::markdown::{Glyph, Line, Style, glyphs, width_of};
 use crate::render::{self, SYNC_BEGIN, SYNC_END};
 use crate::shadow::Snapshot;
 
@@ -118,54 +119,6 @@ pub fn layout_at_top(top: usize, rows: usize) -> Layout {
         free: false,
     };
     resize(&lay, want.min(rows - top))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Style {
-    Plain,
-    Bold,
-    Code,
-    Dim,
-    Error,
-}
-
-impl Style {
-    fn sgr(self) -> &'static str {
-        match self {
-            Style::Plain => "\x1b[0m",
-            Style::Bold => "\x1b[0;1m",
-            Style::Code => "\x1b[0;36m",
-            Style::Dim => "\x1b[0;2m",
-            Style::Error => "\x1b[0;31m",
-        }
-    }
-}
-
-/// One char of the box text: its style and where it is in the answer (none
-/// for what the box adds: indents, the space between words, "…").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Glyph {
-    c: char,
-    style: Style,
-    src: Option<usize>,
-}
-
-type Line = Vec<Glyph>;
-
-/// `text` as glyphs, its first char at `src` of the answer when it is from it.
-fn glyphs(style: Style, text: &str, src: Option<usize>) -> Line {
-    text.chars()
-        .enumerate()
-        .map(|(i, c)| Glyph {
-            c,
-            style,
-            src: src.map(|s| s + i),
-        })
-        .collect()
-}
-
-fn width_of(line: &[Glyph]) -> usize {
-    line.iter().map(|g| g.c.width().unwrap_or(0)).sum()
 }
 
 /// A screen position in a box's text: (body line, column).
@@ -319,19 +272,19 @@ impl PeekBox {
     fn body_lines(&self, width: usize) -> Vec<Line> {
         if let Some(input) = &self.input {
             let mut l = wrap(
-                &glyphs(Style::Dim, "Your question about this text:", None),
+                &glyphs(Style::DIM, "Your question about this text:", None),
                 width,
             );
-            let mut line = glyphs(Style::Bold, "› ", None);
-            line.extend(glyphs(Style::Plain, &sanitize(input), None));
-            line.extend(glyphs(Style::Dim, "▏", None));
+            let mut line = glyphs(Style::BOLD, "› ", None);
+            line.extend(glyphs(Style::PLAIN, &sanitize(input), None));
+            line.extend(glyphs(Style::DIM, "▏", None));
             l.extend(wrap(&line, width));
             return l;
         }
         let mut l = match &self.question {
             Some(q) => {
                 let mut l = wrap(
-                    &glyphs(Style::Dim, &format!("› {}", sanitize(q)), None),
+                    &glyphs(Style::DIM, &format!("› {}", sanitize(q)), None),
                     width,
                 );
                 l.push(Vec::new());
@@ -346,19 +299,19 @@ impl PeekBox {
     fn answer_lines(&self, width: usize) -> Vec<Line> {
         let text = sanitize(&self.text);
         match &self.status {
-            Status::Message(m) => wrap(&glyphs(Style::Plain, &sanitize(m), None), width),
+            Status::Message(m) => wrap(&glyphs(Style::PLAIN, &sanitize(m), None), width),
             Status::Thinking if self.text.is_empty() => {
-                vec![glyphs(Style::Dim, "thinking…", None)]
+                vec![glyphs(Style::DIM, "thinking…", None)]
             }
             Status::Error(e) => {
-                let mut l = markdown_lines(&text, width);
+                let mut l = crate::markdown::lines(&text, width);
                 l.extend(wrap(
-                    &glyphs(Style::Error, &format!("error: {}", sanitize(e)), None),
+                    &glyphs(Style::ERROR, &format!("error: {}", sanitize(e)), None),
                     width,
                 ));
                 l
             }
-            _ => markdown_lines(&text, width),
+            _ => crate::markdown::lines(&text, width),
         }
     }
 
@@ -427,7 +380,8 @@ impl PeekBox {
     /// the mouse): the box's borders in it are not its text, and runs of
     /// white space (wrapped lines) count as one space.
     pub fn find_text(&self, width: usize, text: &str) -> Option<(Pos, Pos)> {
-        let frame = |c: char| "│╭╮╰╯".contains(c);
+        // The box's borders, and the lines it draws around tables and quotes.
+        let frame = |c: char| ('\u{2500}'..='\u{257f}').contains(&c) || c == '▎';
         let want: Vec<char> = text.chars().filter(|&c| !frame(c)).collect();
         let (want, _) = crate::select::normalize(&want);
         let mut want: Vec<char> = want.into_iter().skip_while(|c| *c == ' ').collect();
@@ -446,8 +400,10 @@ impl PeekBox {
             }
             let mut col = 0;
             for g in line {
-                chars.push(g.c);
-                at.push(Some((l, col)));
+                if g.src.is_some() || !frame(g.c) {
+                    chars.push(g.c);
+                    at.push(Some((l, col)));
+                }
                 col += g.c.width().unwrap_or(0);
             }
         }
@@ -743,25 +699,25 @@ fn draw_line(out: &mut String, line: &[Glyph], l: usize, decor: &Decor) -> usize
         src.is_some_and(|(a, b)| r.contains(&a) && r.contains(&b))
     };
     let mut col = 0;
-    let mut pen = String::new();
+    let mut pen = None;
     for (i, g) in line.iter().enumerate() {
         let hover = decor.hover.as_ref().is_some_and(|r| within(r, i));
         let mark = decor.marks.iter().any(|r| within(r, i));
         let selected = decor
             .selection
             .is_some_and(|(a, b)| a <= (l, col) && (l, col) <= b);
-        let mut sgr = g.style.sgr().to_string();
-        if hover {
-            sgr.push_str("\x1b[4m");
-        } else if mark {
-            sgr.push_str("\x1b[4:4m");
-        }
-        if selected {
-            sgr.push_str("\x1b[7m");
-        }
-        if sgr != pen {
-            out.push_str(&sgr);
-            pen = sgr;
+        let now = Some((g.style, hover, mark, selected));
+        if now != pen {
+            out.push_str(&g.style.sgr());
+            if hover {
+                out.push_str("\x1b[4m");
+            } else if mark {
+                out.push_str("\x1b[4:4m");
+            }
+            if selected {
+                out.push_str("\x1b[7m");
+            }
+            pen = now;
         }
         out.push(g.c);
         col += g.c.width().unwrap_or(0);
@@ -1048,108 +1004,6 @@ fn clip(s: &str, max: usize) -> String {
     out
 }
 
-/// Minimal markdown: **bold**, `code`, fenced code blocks, headings as bold.
-fn markdown_lines(text: &str, width: usize) -> Vec<Line> {
-    let mut lines = Vec::new();
-    let mut in_fence = false;
-    let mut at = 0;
-    for raw in text.split('\n') {
-        let start = at;
-        let len = raw.chars().count();
-        at += len + 1;
-        let trimmed = raw.trim_start();
-        if trimmed.starts_with("```") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if in_fence {
-            lines.push(clip_line(glyphs(Style::Code, raw, Some(start)), width));
-            continue;
-        }
-        if raw.trim().is_empty() {
-            lines.push(Vec::new());
-            continue;
-        }
-        let (heading, body) = match trimmed.strip_prefix('#') {
-            Some(_) => (true, trimmed.trim_start_matches('#').trim_start()),
-            None => (false, raw),
-        };
-        // `body` ends where `raw` does.
-        let mut line = inline_glyphs(body, start + len - body.chars().count());
-        if heading {
-            for g in &mut line {
-                g.style = Style::Bold;
-            }
-        }
-        lines.extend(wrap(&line, width));
-    }
-    while lines.last().is_some_and(|l| l.is_empty()) {
-        lines.pop();
-    }
-    lines
-}
-
-/// `line` cut to `max` columns, with "…" when cut.
-fn clip_line(line: Line, max: usize) -> Line {
-    if width_of(&line) <= max {
-        return line;
-    }
-    let mut out = Vec::new();
-    let mut w = 0;
-    for g in &line {
-        let cw = g.c.width().unwrap_or(0);
-        if w + cw + 1 > max {
-            break;
-        }
-        out.push(*g);
-        w += cw;
-    }
-    let style = line[0].style;
-    out.push(Glyph {
-        c: '…',
-        style,
-        src: None,
-    });
-    out
-}
-
-/// `s` without its markdown markers, styled; its first char is char `at` of
-/// the answer.
-fn inline_glyphs(s: &str, at: usize) -> Line {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out = Vec::new();
-    let mut bold = false;
-    let mut code = false;
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '`' {
-            code = !code;
-            i += 1;
-            continue;
-        }
-        if c == '*' && !code && chars.get(i + 1) == Some(&'*') {
-            bold = !bold;
-            i += 2;
-            continue;
-        }
-        let style = if code {
-            Style::Code
-        } else if bold {
-            Style::Bold
-        } else {
-            Style::Plain
-        };
-        out.push(Glyph {
-            c,
-            style,
-            src: Some(at + i),
-        });
-        i += 1;
-    }
-    out
-}
-
 /// Word-wrap a line to `width` columns, keeping each word's style.
 fn wrap(line: &[Glyph], width: usize) -> Vec<Line> {
     let width = width.max(8);
@@ -1159,7 +1013,7 @@ fn wrap(line: &[Glyph], width: usize) -> Vec<Line> {
     let indent = (lead + if bullet { 2 } else { 0 }).min(width / 2);
     let space = Glyph {
         c: ' ',
-        style: Style::Plain,
+        style: Style::PLAIN,
         src: None,
     };
     let pad = |n: usize| vec![space; n];
@@ -1412,7 +1266,7 @@ mod tests {
     fn punctuation_stays_with_its_word() {
         let text = "one straight sequence on top of the current `main`, without merge commits";
         for width in 20..60 {
-            for line in markdown_lines(text, width) {
+            for line in crate::markdown::lines(text, width) {
                 let s = plain(&line);
                 assert!(
                     !s.trim_start().starts_with(','),
@@ -1425,7 +1279,7 @@ mod tests {
 
     #[test]
     fn wraps_and_styles() {
-        let lines = markdown_lines(
+        let lines = crate::markdown::lines(
             "An **orphaned process group** uses `kill(0, SIGTSTP)` here.",
             20,
         );
@@ -1438,8 +1292,8 @@ mod tests {
                 .map(|g| g.c)
                 .collect()
         };
-        assert!(styled(Style::Bold).contains("orphaned"));
-        assert!(styled(Style::Code).contains("kill(0,"));
+        assert!(styled(Style::BOLD).contains("orphaned"));
+        assert!(styled(Style::CODE).contains("kill(0,"));
         for l in &lines {
             assert!(width_of(l) <= 20, "line too wide: {l:?}");
         }
@@ -1452,11 +1306,12 @@ mod tests {
         peek.text = "# Head\nAn **orphaned process group** has `no` parent.".into();
         let lines = peek.body_lines(16);
         assert_eq!(plain(&lines[0]), "Head");
-        assert_eq!(plain(&lines[1]), "An orphaned");
+        assert_eq!(plain(&lines[1]), "", "a heading has a blank line under it");
+        assert_eq!(plain(&lines[2]), "An orphaned");
         // "orphaned" starts at char 12 of the answer: "# Head\nAn **" is 12 chars.
-        assert_eq!(peek.src_at(16, (1, 3)), Some(12));
-        assert_eq!(peek.src_at(16, (1, 2)), None, "the space the box put there");
-        let (text, src) = peek.shown(16, (1, 3), (2, 6));
+        assert_eq!(peek.src_at(16, (2, 3)), Some(12));
+        assert_eq!(peek.src_at(16, (2, 2)), None, "the space the box put there");
+        let (text, src) = peek.shown(16, (2, 3), (3, 6));
         assert_eq!(text, "orphaned process");
         let answer: Vec<char> = peek.text.chars().collect();
         let src = src.unwrap();

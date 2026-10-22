@@ -747,16 +747,17 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
                 H = len(ref)
                 break
         if ref is None:
-            ref = box_from_parts(fr, done_at, R, 2 * case.lines + 2 + len(sel_rows)
-                                 + (2 * case.lines + 3 if case.nested else 0))
+            ref = box_from_parts(fr, done_at, R, case.lines + 3 + len(sel_rows)
+                                 + (case.lines + 4 if case.nested else 0))
             H = len(ref) if ref else None
         if ref is None:
             case.err("never saw the whole box once its text was done")
             return
-        # Borders, the header (a row a selected row), a gap, lines and gaps;
-        # a box inside has the same, its header one row. A box never scrolls
-        # its own text: it is as tall as all of it, taller than the chat too.
-        want_h = 2 * case.lines + 2 + len(sel_rows) + (2 * case.lines + 3 if case.nested else 0)
+        # Borders, the header (a row a selected row), a gap, the lines (one
+        # list); a box inside has the same, its header one row. A box never
+        # scrolls its own text: it is as tall as all of it, taller than the
+        # chat too.
+        want_h = case.lines + 3 + len(sel_rows) + (case.lines + 4 if case.nested else 0)
         if not case.capped and len(sel_rows) == 1 and H != want_h:
             case.err(f"box is {H} rows, not {want_h} for {case.lines} lines")
         if not case.scrolled_early and H <= R:
@@ -1167,8 +1168,9 @@ def cases_more(s):
         actions=[("nested",), ("slow", True, 3, "auto"), ("slow", False, 8, "auto"),
                  ("slow", True, 12, "auto")])
     # The wheel over the boxes: the chat scrolls, never a box's own text.
+    # Together the two boxes are taller than the chat (16 lines: 39 rows).
     yield "long box in a long box, wheel over them", lambda: run_case(
-        s, "nested-long", 6, lines=12, nested=True,
+        s, "nested-long", 6, lines=16, nested=True,
         actions=[("nested",), ("slow", False, 20), ("slow", True, 30), ("burst", False, 40),
                  ("burst", True, 40), ("page", False, 2), ("page", True, 2)])
 

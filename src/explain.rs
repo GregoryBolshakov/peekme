@@ -184,6 +184,18 @@ impl Explainer {
                     tx(Progress::Done);
                     return;
                 }
+                // `PEEKME_FAKE_ANSWER=<file>`: that file's text is the answer.
+                if let Some(text) = std::env::var_os("PEEKME_FAKE_ANSWER")
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                {
+                    tx(Progress::Started {
+                        model: "test".into(),
+                        source: "test",
+                    });
+                    tx(Progress::Delta(text));
+                    tx(Progress::Done);
+                    return;
+                }
                 tx(Progress::Started {
                     model: "test".into(),
                     source: if req.deep {
