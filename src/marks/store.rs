@@ -63,6 +63,8 @@ struct DiskMark {
     alt: bool,
     before: String,
     after: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    words: Option<String>,
 }
 
 /// A key no other answer has.
@@ -267,6 +269,7 @@ fn export(marks: &Marks) -> (Vec<DiskAnswer>, Vec<DiskMark>) {
                 alt: m.place.alt,
                 before: m.place.before.iter().collect(),
                 after: m.place.after.iter().collect(),
+                words: m.place.words.clone(),
             })
         })
         .collect();
@@ -350,6 +353,7 @@ fn restore(disk: Disk) -> Marks {
                 after: m.after.chars().collect(),
                 rows: Vec::new(),
                 restored: true,
+                words: m.words.clone(),
             },
             drawn: None,
         });
@@ -401,7 +405,15 @@ mod tests {
         let mut marks = store.load();
         assert!(marks.is_empty());
         let s = screen(&CHAT, true);
-        let (place, _) = Place::new(&s.snapshot(), "pseudo-terminal", (1, 6), 0, true).unwrap();
+        let (place, _) = Place::new(
+            &s.snapshot(),
+            "pseudo-terminal",
+            "pseudo-terminal",
+            (1, 6),
+            0,
+            true,
+        )
+        .unwrap();
         let top = marks.save(None, "pseudo-terminal", "a fake terminal: the pty", "m");
         marks.set_question(top, Some("why?".into()));
         marks.add(top, place);
@@ -442,6 +454,7 @@ mod tests {
         let s = screen(&CHAT, false);
         let (place, _) = Place::new(
             &s.snapshot(),
+            "pseudo-terminal",
             "pseudo-terminal",
             (1, 6),
             s.history_size(),

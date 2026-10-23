@@ -26,6 +26,7 @@ pub fn selection(snap: &Snapshot) -> Option<Located> {
             start,
             end,
         },
+        unseen: Default::default(),
     })
 }
 

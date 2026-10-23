@@ -2993,7 +2993,7 @@ impl App {
         }
         let ext = self.shadow.snapshot_with_history(lines);
         let loc = select::locate(&ext, sel, None)?;
-        (loc.last_row < lines).then_some(loc.screen)
+        (loc.last_row < lines).then(|| loc.whole())
     }
 
     /// The agent inside tmux leaves the mouse to the terminal, and tmux does
@@ -3076,6 +3076,7 @@ impl App {
                     first_row: top,
                     last_row: top,
                     screen,
+                    unseen: Default::default(),
                 }
             }),
             (_, l) => l,
@@ -3145,6 +3146,7 @@ impl App {
                     mark = Place::new(
                         &tsnap,
                         sel,
+                        &loc.screen.selected(),
                         first,
                         self.shadow.history_size(),
                         self.shadow.alt_screen(),
@@ -3171,19 +3173,13 @@ impl App {
                     peek.deep_available = true;
                 } else {
                     let max_lines = lay.box_height.saturating_sub(2).clamp(3, 12);
-                    if let Some(e) = self.start_explain(
-                        id,
-                        loc.screen.clone(),
-                        max_lines,
-                        false,
-                        false,
-                        None,
-                        None,
-                    ) {
+                    if let Some(e) =
+                        self.start_explain(id, loc.whole(), max_lines, false, false, None, None)
+                    {
                         peek.status = Status::Error(e);
                     }
                 }
-                remembered = Some((sel.clone(), loc.screen));
+                remembered = Some((sel.clone(), loc.whole()));
                 (peek, lay)
             }
             (None, _) => {
@@ -4266,6 +4262,75 @@ mod tests {
         let open = app.open.as_ref().unwrap();
         assert_eq!(open.peek.text, answer);
         assert_eq!(open.peek.status, Status::Done);
+    }
+
+    /// A selection longer than the screen (the agent scrolled during the
+    /// drag): the explainer gets all of it, the rows on screen get the
+    /// underline, and the answer is saved for the same words.
+    #[test]
+    fn a_selection_longer_than_the_screen_is_explained_and_marked() {
+        for alt in [false, true] {
+            let lines: Vec<String> = (0..30).map(|i| format!("+ let v{i} = f({i});")).collect();
+            let mut bytes = if alt {
+                b"\x1b[?1049h".to_vec()
+            } else {
+                Vec::new()
+            };
+            let shown = if alt { &lines[19..] } else { &lines[..] };
+            bytes.extend_from_slice(shown.join("\r\n").as_bytes());
+            bytes.extend_from_slice(b"\r\n> ");
+            let sel = lines[10..].join("\n");
+            let mut app = test_app(40, 12);
+            app.selection = SelectionSource::fixed(&sel);
+            let mut real = Shadow::new(40, 12);
+            let mut out = Vec::new();
+            app.on_output(&bytes, &mut out, &mut Vec::new()).unwrap();
+            app.open_peek(&mut out).unwrap();
+            let open = app.open.as_ref().unwrap();
+            let (_, screen) = open.selection.as_ref().unwrap();
+            assert_eq!(screen.selected(), sel, "the explainer gets all of it");
+            let id = open.id;
+            app.on_progress(id, Progress::Delta("A diff.".into()), &mut out)
+                .unwrap();
+            app.on_progress(id, Progress::Done, &mut out).unwrap();
+            app.close(&mut out, false).unwrap();
+            app.tick(&mut out).unwrap();
+            real.advance(&out);
+            let shown = real.snapshot();
+            let marked: Vec<String> = (0..12).map(|r| dotted(&shown, r)).collect();
+            let want: Vec<String> = lines[19..]
+                .iter()
+                .map(|l| l.replace(' ', ""))
+                .chain(["".into()])
+                .collect();
+            let got: Vec<String> = marked.iter().map(|l| l.replace(' ', "")).collect();
+            assert_eq!(got, want, "alt {alt}");
+            app.open_peek(&mut out).unwrap();
+            let open = app.open.as_ref().unwrap();
+            assert_eq!(open.peek.text, "A diff.", "saved, alt {alt}");
+        }
+    }
+
+    /// Claude Code copies an answer without the bullet it draws before it.
+    #[test]
+    fn a_selection_over_claudes_answer_bullet_is_marked() {
+        let mut app = test_app(40, 12);
+        let screen = "❯ show it\r\n\r\n● The first row\r\n  and the second\r\n";
+        app.selection = SelectionSource::fixed("show it\n\nThe first row\nand the second");
+        let mut out = Vec::new();
+        app.on_output(screen.as_bytes(), &mut out, &mut Vec::new())
+            .unwrap();
+        app.open_peek(&mut out).unwrap();
+        let id = app.open.as_ref().unwrap().id;
+        app.on_progress(id, Progress::Delta("Rows.".into()), &mut out)
+            .unwrap();
+        app.on_progress(id, Progress::Done, &mut out).unwrap();
+        app.close(&mut out, false).unwrap();
+        let mut real = Shadow::new(40, 12);
+        real.advance(&out);
+        let shown = real.snapshot();
+        let marked: Vec<String> = (0..4).map(|r| dotted(&shown, r)).collect();
+        assert_eq!(marked, ["show it", "", "The first row", "and the second"]);
     }
 
     /// The box opens at 3 rows while it thinks, grows with every line that

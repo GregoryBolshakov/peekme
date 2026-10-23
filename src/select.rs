@@ -183,14 +183,20 @@ impl Default for SelectionSource {
     }
 }
 
-/// Collapse whitespace runs to one space; returns the text and, for each output
-/// char, the index of the input char it came from.
+/// Blank for matching a selection with the screen: whitespace, and the
+/// bullet Claude Code draws before an answer, which its copies leave out.
+fn blank(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '\u{a0}' | '●' | '⏺')
+}
+
+/// Collapse blank runs (see `blank`) to one space; returns the text and, for
+/// each output char, the index of the input char it came from.
 pub fn normalize(chars: &[char]) -> (Vec<char>, Vec<usize>) {
     let mut out = Vec::with_capacity(chars.len());
     let mut map = Vec::with_capacity(chars.len());
     let mut in_space = false;
     for (i, &c) in chars.iter().enumerate() {
-        if c.is_whitespace() || c == '\u{a0}' {
+        if blank(c) {
             if !in_space && !out.is_empty() {
                 out.push(' ');
                 map.push(i);
@@ -215,6 +221,33 @@ pub struct Located {
     pub last_row: usize,
     /// The whole screen as text, with the selection's range in it.
     pub screen: crate::context::ScreenSel,
+    /// The selected text before and after the part on screen, when not all
+    /// of it is there: scrolled away during the drag, or copied otherwise
+    /// than drawn.
+    pub unseen: (String, String),
+}
+
+impl Located {
+    /// `screen` with the unseen parts of the selection put in place, so that
+    /// the explainer gets all of what the user selected.
+    pub fn whole(&self) -> crate::context::ScreenSel {
+        let s = &self.screen;
+        let (before, after) = &self.unseen;
+        if before.is_empty() && after.is_empty() {
+            return s.clone();
+        }
+        let mut text = s.text[..s.start].to_vec();
+        text.extend(before.chars());
+        text.extend(&s.text[s.start..s.end]);
+        text.extend(after.chars());
+        let end = text.len();
+        text.extend(&s.text[s.end..]);
+        crate::context::ScreenSel {
+            text,
+            start: s.start,
+            end,
+        }
+    }
 }
 
 /// Find the selection on screen. With a `hint` (the cell where a mouse drag
@@ -224,7 +257,7 @@ pub fn locate(snap: &Snapshot, selection: &str, hint: Option<(usize, usize)>) ->
     let (screen, pos) = snap.text_with_positions();
     let (norm_screen, map) = normalize(&screen);
     let sel: Vec<char> = selection.chars().collect();
-    let (norm_sel, _) = normalize(&sel);
+    let (norm_sel, sel_map) = normalize(&sel);
     if norm_sel.is_empty() {
         return None;
     }
@@ -245,17 +278,36 @@ pub fn locate(snap: &Snapshot, selection: &str, hint: Option<(usize, usize)>) ->
         }?;
         Some((best, best + len - 1))
     };
-    let found = pick(find_all(&norm_screen, &norm_sel), norm_sel.len()).or_else(|| {
-        // Part of a long selection may be off screen: anchor on its visible end or start.
-        let n = norm_sel.len().min(40);
-        if norm_sel.len() <= n {
-            return None;
+    let len = norm_sel.len();
+    // The found range on screen and the part of the selection it is.
+    let (found, part) = match pick(find_all(&norm_screen, &norm_sel), len) {
+        Some(f) => (f, 0..len),
+        None => {
+            // Part of a long selection may be off screen: anchor on its
+            // visible end or start, then take as much more as agrees.
+            let n = len.min(40);
+            if len <= n {
+                return None;
+            }
+            if let Some((s, e)) = pick(find_all(&norm_screen, &norm_sel[len - n..]), n) {
+                let more = (1..=(len - n).min(s))
+                    .take_while(|&k| norm_sel[len - n - k] == norm_screen[s - k])
+                    .count();
+                ((s - more, e), len - n - more..len)
+            } else {
+                let (s, e) = pick(find_all(&norm_screen, &norm_sel[..n]), n)?;
+                let more = (1..=(len - n).min(norm_screen.len() - 1 - e))
+                    .take_while(|&k| norm_sel[n - 1 + k] == norm_screen[e + k])
+                    .count();
+                ((s, e + more), 0..n + more)
+            }
         }
-        let tail = &norm_sel[norm_sel.len() - n..];
-        let head = &norm_sel[..n];
-        pick(find_all(&norm_screen, tail), n).or_else(|| pick(find_all(&norm_screen, head), n))
-    })?;
+    };
     let (start, last) = (map[found.0], map[found.1]);
+    let unseen = (
+        sel[..sel_map[part.start]].iter().collect::<String>(),
+        sel[sel_map[part.end - 1] + 1..].iter().collect::<String>(),
+    );
     Some(Located {
         first_row: pos[start].0,
         last_row: pos[last].0,
@@ -264,6 +316,7 @@ pub fn locate(snap: &Snapshot, selection: &str, hint: Option<(usize, usize)>) ->
             start,
             end: last + 1,
         },
+        unseen,
     })
 }
 
@@ -325,7 +378,7 @@ impl Text {
                 let end = s + norm_text.len();
                 let mut cells: Vec<(usize, usize)> = Vec::new();
                 for &i in &map[s..end] {
-                    if screen[i].is_whitespace() {
+                    if blank(screen[i]) {
                         continue;
                     }
                     let (r, c) = pos[i];
@@ -369,6 +422,7 @@ pub fn at_cells(snap: &Snapshot, cells: &[(usize, usize)]) -> Option<Located> {
             start,
             end,
         },
+        unseen: Default::default(),
     })
 }
 
@@ -419,6 +473,40 @@ mod tests {
         assert_eq!(at(None), Some((2, 2)));
         assert_eq!(at(Some((0, 10))), Some((0, 0)));
         assert_eq!(at(Some((1, 3))), Some((2, 2)));
+    }
+
+    #[test]
+    fn a_selection_longer_than_the_screen_is_all_of_its_rows_there() {
+        let lines: Vec<String> = (0..9).map(|i| format!("row {i} of the diff")).collect();
+        let s = snap(lines.join("\r\n").as_bytes(), 30, 4);
+        // Scrolled away above the screen during the drag.
+        let l = locate(&s, &lines[2..].join("\n"), None).unwrap();
+        assert_eq!((l.first_row, l.last_row), (0, 3));
+        assert_eq!(l.screen.selected(), lines[5..].join("\n"));
+        assert_eq!(l.whole().selected(), lines[2..].join("\n"));
+        // And below it: the copy runs on past the last row.
+        let more = format!("{}\nrow 9 of the diff\nrow 10", lines[6..].join("\n"));
+        let l = locate(&s, &more, None).unwrap();
+        assert_eq!((l.first_row, l.last_row), (1, 3));
+        assert_eq!(l.whole().selected(), more);
+        assert_eq!(
+            l.unseen,
+            (String::new(), "\nrow 9 of the diff\nrow 10".to_string())
+        );
+    }
+
+    #[test]
+    fn claude_copies_leave_out_the_answer_bullet() {
+        let s = snap(
+            "❯ q0 show it\r\n\r\n● - first row\r\n  - second row".as_bytes(),
+            30,
+            5,
+        );
+        let copied = "❯ q0 show it\n\n- first row\n- second row";
+        let l = locate(&s, copied, None).unwrap();
+        assert_eq!((l.first_row, l.last_row, l.unseen.0.as_str()), (0, 3, ""));
+        let cells = occurrences(&s, copied).remove(0);
+        assert!(!cells.contains(&(2, 0)), "the bullet gets no underline");
     }
 
     #[test]

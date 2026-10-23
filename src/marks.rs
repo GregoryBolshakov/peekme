@@ -97,6 +97,9 @@ pub struct Place {
     /// Read back from disk and not on screen since: where it was is not
     /// known, so only a copy amid the same text as before is the mark.
     restored: bool,
+    /// The part of the answer's text that is the mark, when not all of it
+    /// was on screen (a selection longer than the screen).
+    words: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -131,17 +134,28 @@ pub struct Marks {
 }
 
 impl Place {
-    /// The place of the occurrence of `text` that starts at screen cell `first`.
+    /// The place of the occurrence of `text` that starts at screen cell
+    /// `first`. When `text` is not all on screen, `shown`, the part of it
+    /// that is, makes the mark.
     pub fn new(
         snap: &Snapshot,
         text: &str,
+        shown: &str,
         first: (usize, usize),
         history: usize,
         alt: bool,
     ) -> Option<(Place, Vec<(usize, usize)>)> {
-        let copy = select::copies(snap, text, AROUND)
-            .into_iter()
-            .find(|c| c.cells.first() == Some(&first))?;
+        let screen = select::Text::of(snap);
+        let at = |words: &str| {
+            screen
+                .copies(snap, words, AROUND)
+                .into_iter()
+                .find(|c| c.cells.first() == Some(&first))
+        };
+        let (copy, words) = match at(text) {
+            Some(copy) => (copy, None),
+            None => (at(shown)?, Some(shown.to_string())),
+        };
         let place = Place {
             alt,
             anchor: (history + first.0, first.1),
@@ -149,6 +163,7 @@ impl Place {
             after: copy.after,
             rows: rows_of(snap, &copy.cells),
             restored: false,
+            words,
         };
         Some((place, copy.cells))
     }
@@ -489,7 +504,7 @@ impl Place {
         let alt = self.alt;
         let (ar, ac) = self.anchor;
         let at = |c: &[(usize, usize)]| c.first().map(|&(r, c)| (history + r, c));
-        let copies = screen.copies(snap, text, AROUND);
+        let copies = screen.copies(snap, self.words.as_deref().unwrap_or(text), AROUND);
         let only = copies.len() == 1;
         let restored = self.restored;
         let best = copies
@@ -600,7 +615,8 @@ mod tests {
     fn a_mark_stays_with_its_text_while_the_screen_scrolls() {
         let mut s = shadow(b"one ripgrep\r\ntwo\r\nripgrep three");
         let snap = s.snapshot();
-        let (place, cells) = Place::new(&snap, "ripgrep", (0, 4), s.history_size(), false).unwrap();
+        let (place, cells) =
+            Place::new(&snap, "ripgrep", "ripgrep", (0, 4), s.history_size(), false).unwrap();
         assert_eq!(cells, (4..11).map(|c| (0, c)).collect::<Vec<_>>());
         let mut marks = Marks::default();
         mark(&mut marks, "ripgrep", "a search tool", "haiku", place);
@@ -621,7 +637,7 @@ mod tests {
     fn full_screen_marks_follow_the_nearest_copy() {
         let s = shadow(b"\x1b[?1049h\x1b[2;1Hsee the  PTY  here");
         let snap = s.snapshot();
-        let (place, _) = Place::new(&snap, "the PTY", (1, 4), 0, true).unwrap();
+        let (place, _) = Place::new(&snap, "the PTY", "the PTY", (1, 4), 0, true).unwrap();
         let mut marks = Marks::default();
         mark(&mut marks, "the PTY", "x", "m", place);
         // The agent scrolled its own view by one row.
@@ -662,7 +678,7 @@ mod tests {
             "outro",
         ];
         let snap = alt(30, 6, &page);
-        let (place, cells) = Place::new(&snap, text, (1, 12), 0, true).unwrap();
+        let (place, cells) = Place::new(&snap, text, text, (1, 12), 0, true).unwrap();
         assert_eq!(cells.last(), Some(&(2, 13)));
         let mut marks = Marks::default();
         mark(&mut marks, text, "x", "m", place);
@@ -689,7 +705,7 @@ mod tests {
             "- the pseudo-terminal layer: tmux gives each pane one",
         ];
         let snap = alt(60, 6, &wide);
-        let (place, _) = Place::new(&snap, text, (1, 6), 0, true).unwrap();
+        let (place, _) = Place::new(&snap, text, text, (1, 6), 0, true).unwrap();
         let mut marks = Marks::default();
         mark(&mut marks, text, "x", "m", place);
         // Narrower: the answer's line wraps, the question stays on row 0.
@@ -706,7 +722,8 @@ mod tests {
         // The normal screen: the row number changes when lines rewrap.
         let mut s = Shadow::new(60, 4);
         s.advance(b"first\r\n- the pseudo-terminal layer: tmux gives each pane one");
-        let (place, _) = Place::new(&s.snapshot(), text, (1, 6), s.history_size(), false).unwrap();
+        let (place, _) =
+            Place::new(&s.snapshot(), text, text, (1, 6), s.history_size(), false).unwrap();
         let mut marks = Marks::default();
         mark(&mut marks, text, "x", "m", place);
         let mut s = Shadow::new(30, 4);
@@ -731,7 +748,8 @@ mod tests {
         };
         let s = screen(3);
         let snap = s.snapshot();
-        let (place, _) = Place::new(&snap, "pseudo-terminal", (3, 6), 0, true).unwrap();
+        let (place, _) =
+            Place::new(&snap, "pseudo-terminal", "pseudo-terminal", (3, 6), 0, true).unwrap();
         let mut marks = Marks::default();
         mark(&mut marks, "pseudo-terminal", "x", "m", place);
         // Scrolled: the answer is 3 rows lower, the question copy is now nearer
@@ -778,7 +796,7 @@ mod tests {
         let s = shadow(b"one ripgrep");
         let snap = s.snapshot();
         let mut marks = Marks::default();
-        let (place, _) = Place::new(&snap, "ripgrep", (0, 4), 0, false).unwrap();
+        let (place, _) = Place::new(&snap, "ripgrep", "ripgrep", (0, 4), 0, false).unwrap();
         let first = mark(&mut marks, "ripgrep", "a", "m", place);
         let child = marks.save(Some(first), "a", "b", "m");
         for i in 0..MAX_ANSWERS - 2 {
