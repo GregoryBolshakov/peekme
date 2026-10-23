@@ -75,5 +75,38 @@ fn main() {
             );
         }
     }
+    if std::env::var_os("VTDUMP_RUNS").is_some() {
+        // Each row as runs of one style: "[fg bg flags]text".
+        use alacritty_terminal::term::cell::Flags;
+        let name = |c: &alacritty_terminal::vte::ansi::Color| match c {
+            alacritty_terminal::vte::ansi::Color::Named(n) => format!("{n:?}"),
+            alacritty_terminal::vte::ansi::Color::Spec(c) => {
+                format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
+            }
+            alacritty_terminal::vte::ansi::Color::Indexed(i) => format!("i{i}"),
+        };
+        for (r, row) in snap.rows.iter().enumerate() {
+            let mut out = String::new();
+            let mut pen = None;
+            for cell in row {
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                let flags = cell.flags & !(Flags::WIDE_CHAR | Flags::WRAPLINE);
+                let now = (name(&cell.fg), name(&cell.bg), flags);
+                if pen.as_ref() != Some(&now) {
+                    let f = format!("{:?}", now.2)
+                        .replace("Flags(", "")
+                        .replace(')', "");
+                    out.push_str(&format!("[{} {} {}]", now.0, now.1, f));
+                    pen = Some(now);
+                }
+                out.push(cell.c);
+            }
+            if row.iter().any(|c| !c.c.is_whitespace()) {
+                println!("{r:3} {}", out.trim_end());
+            }
+        }
+    }
     println!("-- cursor {:?}", snap.cursor);
 }

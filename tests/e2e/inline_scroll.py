@@ -37,9 +37,14 @@ import scroll as sc  # noqa: E402
 LABEL = "b2r30"
 WORDS = f"{LABEL} words of row 30 in block 2"
 LINES = 12
-# Outer box: its first line, a blank row, then a line for each of LINES (one
-# list, as the agent draws it), borders; the box inside it the same.
-H = 2 * (LINES + 4)
+
+
+def box_height(agent):
+    """Outer box: its first line, a blank row, then the LINES (one list, as
+    the agent draws it: Kiro puts a blank row between its loose items),
+    borders; the box inside it the same."""
+    text = 2 * LINES - 1 if agent == "kiro" else LINES
+    return 2 * (text + 4)
 
 
 def with_history(t):
@@ -170,6 +175,7 @@ def run(agent, out):
         # Down a page at a time to the chat's last row past the boxes.
         down = turn(lambda i: t.send(b"\x1b[6~"))
         settle(t)
+        H = box_height(agent)
         if not down or down[-1] != H:
             fails.append(f"pages down stopped at {down[-1] if down else None}, not {H}")
         last = t.screen()[strip - 1]

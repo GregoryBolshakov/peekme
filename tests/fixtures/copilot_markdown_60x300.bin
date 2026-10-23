@@ -1,0 +1,357 @@
+[>4;2m[?u[?2026$p[?1049h[?2004h[?1004h[?1003h[?1006h[?25l[?12$p[?1007$p[H[2J[>q]10;?\]11;?\]4;0;?\]4;1;?\]4;2;?\]4;3;?\]4;4;?\]4;5;?\]4;6;?\]4;7;?\]4;8;?\]4;9;?\]4;10;?\]4;11;?\]4;12;?\]4;13;?\]4;14;?\]4;15;?\[?25l[22;0t]0;GitHub Copilot[H[2J [1;97;44m[Current][m  Sessions  [2m Issues [m [2m Pull requests [m  Gists[?996n
+
+[34m  ╭─╮╭─╮
+  ╰─╯╰─╯[m  Copilot v1.0.98 uses AI.
+[35m  █ [96m▘▝[35m █[m  Check for mistakes.
+[35m   ▔▔▔▔ [m[1;23H Issues   Pull requests [8;2H❯ case 6[44C19:47
+
+ [34m●[m [90m┌───────┬─────────────────┬───────┬────────┬─────────┐
+[3C│[m [1mA    [m [90m│[m [1mB              [m [90m│[m [1mC    [m [90m│[m [1mD     [m [90m│[m [1mE      [m [90m│
+[3C├───────┼─────────────────┼───────┼────────┼─────────┤
+[3C│[m alpha [90m│[m delta epsilon   [90m│[m eta   [90m│[m kappa  [90m│[m nu xi   [90m│
+[3C│[m beta  [90m│[m zeta theta iota [90m│[m theta [90m│[m lambda [90m│[m omicron [90m│
+[3C│[m gamma [90m│[m kappa lambda mu [90m│[m iota  [90m│[m mu[5C[90m│[m pi[6C[90m│
+[3C│[7C│[m nu xi omicron   [90m│[7C│[16;47H│[9C│
+[3C├───────┼─────────────────┼───────┼────────┼─────────┤
+[3C│[m one   [90m│[m two[18;30H[90m│[m three [90m│[m four   [90m│[m five    [90m│
+[3C└───────┴─────────────────┴───────┴────────┴─────────┘
+
+[C[m❯ case 7[44C19:47
+
+ [34m●[m Run this:
+
+   [36mcargo build --release
+[3C    indented line inside the fence
+[3Ca very long line of code that is longer than the width 
+[3Cof the box for sure and then some more
+
+[3Cindented code block
+
+[3C[mend
+
+ ❯ case 8[44C19:47
+
+ [34m●[m Before the rule.
+
+   [90m────────────────────
+
+[3C[0;1mAfter the rule
+
+[3C[mText right after a heading.
+
+ ❯ case 9[44C19:47
+
+ [34m●[m A paragraph with a very-long-unbreakable-word-that-is-l
+   onger-than-the-width-of-the-terminal-for-sure and more
+   words after it to wrap, plus  two  spaces.
+   xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+   xxxxxxxxxxxxxxxxxxx next word
+
+ ❯ case 10[43C19:47
+
+ [34m●[m Escaped *not italic* and snake_case_word and 2[3m3[m4 and a
+   [1mbold [37m code [39m inside[m and [3mitalic [37m code [m and ~5 s to ~10 s.
+
+ ❯ case 11[43C19:47
+
+ [34m●[m • item with a table:
+[5C[90m┌───┬───┐
+[5C│[m [1mk[m [90m│[m [1mv[m [90m│
+[5C├───┼───┤
+[5C│[m a [90m│[m b [90m│
+[5C└───┴───┘
+[3C[m• item with code:
+[5C[36mcode in item
+[3C[m• item with a quote:
+[5C│ quoted in item
+   • last
+
+ ❯ case 12[43C19:47
+
+ [34m●
+
+[C[m❯ case 13[43C19:47
+
+ [34m●[m The box shows an [3mexplanation[m of the selected text. It
+   uses a [1msmaller model[m so the answer comes back fast:
+
+   1. peekme reads the selection and the chat around it
+   2. it asks the model for a short explanation
+   3. the answer streams into the box
+
+   Keys: [37m Alt+P [m opens it, [37m Esc [m closes it.[299;2H~/Documents/Projects/peekme
+ ● Resuming session…[299;30H[⎇ anyterm*%][299;14H.../peekme [⎇ anyterm*%]   Session: 0 AIC used
+ ◉ [86;2H[34m●[m Tip: /clear
+   └ Abandon this session and start fresh[300;2H◎ ]0;Scroll test - GitHub Copilot[H
+
+[K
+[K
+[K
+[K
+
+[K
+
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+
+[K
+
+[K
+
+[K
+[K
+[K
+[K
+
+[K
+
+[K
+
+[K
+
+[K
+
+[K
+
+[K
+
+[K
+
+[K
+
+[K
+[K
+[K
+[K
+[K
+
+[K
+
+[K
+[K
+
+[K
+
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+
+[K
+
+[K
+
+[K
+
+[K
+[K
+
+[K
+[K
+[K
+
+[K
+
+[K
+[K[299;14HProjects/peekme [⎇ anyterm*%][K
+ ● [H
+
+[34m  ╭─╮╭─╮
+  ╰─╯╰─╯[m  Copilot v1.0.98 uses AI.
+[35m  █ [96m▘▝[35m █[m  Check for mistakes.
+[35m   ▔▔▔▔ [m
+
+ ❯ case 6[44C19:47
+
+ [34m●[m [90m┌───────┬─────────────────┬───────┬────────┬─────────┐
+[3C│[m [1mA    [m [90m│[m [1mB              [m [90m│[m [1mC    [m [90m│[m [1mD     [m [90m│[m [1mE      [m [90m│
+[3C├───────┼─────────────────┼───────┼────────┼─────────┤
+[3C│[m alpha [90m│[m delta epsilon   [90m│[m eta   [90m│[m kappa  [90m│[m nu xi   [90m│
+[3C│[m beta  [90m│[m zeta theta iota [90m│[m theta [90m│[m lambda [90m│[m omicron [90m│
+[3C│[m gamma [90m│[m kappa lambda mu [90m│[m iota  [90m│[m mu[5C[90m│[m pi[6C[90m│
+[3C│[7C│[m nu xi omicron   [90m│[7C│[16;47H│[9C│
+[3C├───────┼─────────────────┼───────┼────────┼─────────┤
+[3C│[m one   [90m│[m two[18;30H[90m│[m three [90m│[m four   [90m│[m five    [90m│
+[3C└───────┴─────────────────┴───────┴────────┴─────────┘
+
+[C[m❯ case 7[44C19:47
+
+ [34m●[m Run this:
+
+   [36mcargo build --release
+[3C    indented line inside the fence
+[3Ca very long line of code that is longer than the width 
+[3Cof the box for sure and then some more
+
+[3Cindented code block
+
+[3C[mend
+
+ ❯ case 8[44C19:47
+
+ [34m●[m Before the rule.
+
+   [90m────────────────────
+
+[3C[0;1mAfter the rule
+
+[3C[mText right after a heading.
+
+ ❯ case 9[44C19:47
+
+ [34m●[m A paragraph with a very-long-unbreakable-word-that-is-l
+   onger-than-the-width-of-the-terminal-for-sure and more
+   words after it to wrap, plus  two  spaces.
+   xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+   xxxxxxxxxxxxxxxxxxx next word
+
+ ❯ case 10[43C19:47
+
+ [34m●[m Escaped *not italic* and snake_case_word and 2[3m3[m4 and a
+   [1mbold [37m code [39m inside[m and [3mitalic [37m code [m and ~5 s to ~10 s.
+
+ ❯ case 11[43C19:47
+
+ [34m●[m • item with a table:
+[5C[90m┌───┬───┐
+[5C│[m [1mk[m [90m│[m [1mv[m [90m│
+[5C├───┼───┤
+[5C│[m a [90m│[m b [90m│
+[5C└───┴───┘
+[3C[m• item with code:
+[5C[36mcode in item
+[3C[m• item with a quote:
+[5C│ quoted in item
+   • last
+
+ ❯ case 12[43C19:47
+
+ [34m●
+
+[C[m❯ case 13[43C19:47
+
+ [34m●[m The box shows an [3mexplanation[m of the selected text. It
+   uses a [1msmaller model[m so the answer comes back fast:
+
+   1. peekme reads the selection and the chat around it
+   2. it asks the model for a short explanation
+   3. the answer streams into the box
+
+   Keys: [37m Alt+P [m opens it, [37m Esc [m closes it.[299;14H.../peekme [⎇ anyterm*%]   Session: 0 AIC used
+ ◉ [85;300r[300;1H
+
+
+[1;300r[297;1H[2m────────────────────────────────────────────────────────────
+[m❯
+[2m────────────────────────────────────────────────────────────
+[C[0;94m●[m [94mL[34moading:[m[2A❯ [?25h[?25l[2;295r[295;1H
+
+
+
+
+[1;300r[300;12H[34m 2 instructions[m[2A❯ [?25h[?25l[2;295r[2;1HMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM[1;300r[3;2H❯ case 0[44C19:47
+
+ [34m●[m [1;4mJob control[7;4H[24mWhat [37m kill(0, SIGTSTP) [39m does[9;4HIn short
+
+[3C[mIt sends [1mSIGTSTP[m to every process in the [3mcaller's
+[3C[mprocess group, so the shell and its children stop
+   together. Use [9mSIGSTOP[m only when the group must not
+   catch it; see [4;36m]8;id=md-1wwruqn;https://man7.org/linux/man-pages/man2/kill.2.htmlthe man page[m]8;; or
+   [4;36m]8;id=md-1plt909;https://example.com/signalshttps://example.com/signals[m]8;;.
+
+ ❯ case 1[44C19:47
+
+ [34m●[m Three things happen:
+
+   • the kernel marks each process in the group as
+[5C[1mstopped[m, which takes a moment on a busy machine with
+[5Cmany threads
+   • the parent gets [37m SIGCHLD 
+[5C[m• with [37m WUNTRACED [m, [37m waitpid [m reports it
+[7C• deeper note
+   • the terminal is left alone
+
+   1. first step
+   2. second step
+[6C1. nested step[32;10H1. third level
+   3. third step
+
+   • open task
+   ✓ done task
+
+ ❯ case 2[44C19:47
+
+ [34m●[m Para one
+
+   Para two
+   line two right after a single newline
+
+   • x
+   • y
+
+   End of it.
+
+   • a
+   • b
+   • c[BAfter loose.
+
+ ❯ case 3[44C19:47
+
+ [34m●[m │ A quote with [1mbold[m inside that is long enough to wrap
+   │ around the width of this box.
+   │
+   │ Second paragraph of the quote.
+   │
+   │ │ Nested quote line.
+   │
+   │ • list in quote
+   │ • second item
+
+   After the quote.
+
+ ❯ case 4[44C19:47
+
+ [34m●[m [90m┌────────────────┬─────────────┬──────┐
+[3C│[m [1mCall          [m [90m│[m [1m  Effect   [m [90m│[m [1mCode[m [90m│
+[3C├────────────────┼─────────────┼──────┤
+[3C│[m kill(0, sig)   [90m│[m whole group [90m│[m    0 [90m│
+[3C├────────────────┼─────────────┼──────┤
+[3C│[m kill(pid, sig) [90m│[m one process [90m│[m   -1 [90m│
+[3C└────────────────┴─────────────┴──────┘
+
+[3C[mText after the table.
+
+ ❯ case 5[44C19:47
+
+ [34m●[m [90m┌────────┬───────────────────────────────────────────┐
+[3C│[m [1mName  [m [90m│[m [1mWhat it does                             [m [90m│
+[3C├────────┼───────────────────────────────────────────┤
+[3C│[m peekme [90m│[m a wrapper that explains selected text in  [90m│
+[3C│[87;13H│[m agent chats in a small box under it[7C[90m│
+[3C├────────┼───────────────────────────────────────────┤
+[3C│[m codex  [90m│[m the OpenAI agent CLI that runs in the[5C[90m│
+[3C│[90;13H│[m terminal and edits code[19C[90m│
+[3C└────────┴───────────────────────────────────────────┘[300;27H[34m, 2 skills[m[2A❯ [?25h[?25l
+
+ [94m◉[m [34mLo[94mad[m[2A❯ [?25h[?25l
+
+ [34m◎[m [94mL[34moadi[94mng[m[2A❯ [?25h[?25l
+
+ [34m○[m [34mLo[94mad[34ming:[94m 2[m[2A❯ [?25h[?25l
+
+ Interactive · Manual Approval · [1m/[m commands[12CAuto[2A❯ [?25h

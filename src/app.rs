@@ -510,18 +510,8 @@ pub fn run(
         crate::log(&w);
     }
     overlay::set_color(&crate::color::sgr(color, crate::color::truecolor()));
-    // Inline code in the agent's own colour (cyan until an agent's is known).
-    let code = match agent {
-        Some(Agent::Claude) => crate::color::sgr(
-            claude::theme::code_color(claude::theme::theme().as_deref()),
-            crate::color::truecolor(),
-        ),
-        _ => "36".into(),
-    };
-    crate::markdown::set_look(crate::markdown::Look {
-        code,
-        strike: crate::markdown::strike_shown(|k| std::env::var(k).ok()),
-    });
+    // Answers laid out and coloured the way the agent draws its own.
+    crate::markdown::set_look(crate::markdown::look_for(agent));
     let scroll_speed = matches!(agent, Some(Agent::Codex))
         .then(|| codex::scroll::speed_setting(args))
         .flatten();

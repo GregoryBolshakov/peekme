@@ -747,17 +747,15 @@ def check(case, open_at, end_at, sel_rows, p0, capped=False):
                 H = len(ref)
                 break
         if ref is None:
-            ref = box_from_parts(fr, done_at, R, case.lines + 3 + len(sel_rows)
-                                 + (case.lines + 4 if case.nested else 0))
+            ref = box_from_parts(fr, done_at, R, box_rows(s.agent, case.lines, sel_rows,
+                                                          case.nested))
             H = len(ref) if ref else None
         if ref is None:
             case.err("never saw the whole box once its text was done")
             return
-        # Borders, the header (a row a selected row), a gap, the lines (one
-        # list); a box inside has the same, its header one row. A box never
-        # scrolls its own text: it is as tall as all of it, taller than the
-        # chat too.
-        want_h = case.lines + 3 + len(sel_rows) + (case.lines + 4 if case.nested else 0)
+        # A box never scrolls its own text: it is as tall as all of it,
+        # taller than the chat too.
+        want_h = box_rows(s.agent, case.lines, sel_rows, case.nested)
         if not case.capped and len(sel_rows) == 1 and H != want_h:
             case.err(f"box is {H} rows, not {want_h} for {case.lines} lines")
         if not case.scrolled_early and H <= R:
@@ -947,6 +945,15 @@ def check_live(case, open_at, end_at, sel_rows):
                 case.err(f"frame at byte {o}: the row below the box is {chat[b1]!r}, not {seen[1]!r}")
     if not seen:
         case.err("never saw the box next to its selection")
+
+
+def box_rows(agent, lines, sel_rows, nested):
+    """Rows of the fake answer's box: borders, the header (a row a selected
+    row), a gap, then the lines, one list as the agent draws it (Kiro puts a
+    blank row between its loose items); a box inside has the same, its header
+    one row."""
+    text = 2 * lines - 1 if agent == "kiro" else lines
+    return text + 3 + len(sel_rows) + (text + 4 if nested else 0)
 
 
 def run_case(s, name, sel_row, lines=6, delay=0, pre_up=0, actions=(), two_rows=False,
@@ -1168,9 +1175,10 @@ def cases_more(s):
         actions=[("nested",), ("slow", True, 3, "auto"), ("slow", False, 8, "auto"),
                  ("slow", True, 12, "auto")])
     # The wheel over the boxes: the chat scrolls, never a box's own text.
-    # Together the two boxes are taller than the chat (16 lines: 39 rows).
+    # Together the two boxes are taller than the chat: 16 lines are 39 rows,
+    # 12 are 54 for Kiro (a blank row between its loose items).
     yield "long box in a long box, wheel over them", lambda: run_case(
-        s, "nested-long", 6, lines=16, nested=True,
+        s, "nested-long", 6, lines=12 if s and s.agent == "kiro" else 16, nested=True,
         actions=[("nested",), ("slow", False, 20), ("slow", True, 30), ("burst", False, 40),
                  ("burst", True, 40), ("page", False, 2), ("page", True, 2)])
 
