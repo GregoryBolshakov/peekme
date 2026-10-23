@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0 (2026-10-22)
+
+- Answers in the box now look like the agent's own answers. Tables, headings, lists, quotes,
+  code blocks, links, bold, italic and struck text are drawn the way Claude Code, Codex,
+  Copilot CLI and Kiro CLI draw them, in their colours. Before, tables showed as raw `|` text.
+  A link shows its address after the text, because the box cannot make clickable links.
+- New: Alt+P on any text in the terminal, not only in an agent chat. Run `peekme -- bash` (or
+  any other program), select some shell output and press Alt+P. The box opens under the copy
+  you selected. The explanation comes from `PEEKME_EXPLAINER`, else from the first agent CLI
+  that is installed and logged in. Works on X11 and on GNOME with Wayland. On GNOME the first
+  Alt+P offers to install a small Shell extension that gives peekme the selection.
+- New: `peekme install --shell` starts every new terminal's shell with peekme, so Alt+P works
+  there from the first line. `peekme uninstall --shell` removes only that. It does nothing
+  over SSH, in the VS Code terminal and inside peekme.
+
 ## 0.5.2 (2026-10-20)
 
 - Peeks (Alt+P) use your chat's model by default. The existing model settings still override it.
