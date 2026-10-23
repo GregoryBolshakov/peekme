@@ -9,7 +9,7 @@ clipboard writes travel. These tests run peekme through those layers.
 ```
 cargo build --release --bins --examples
 python3 tests/e2e/matrix.py           # fake agents, 112 cases, about a minute
-python3 tests/e2e/real_agents.py      # real claude, codex, copilot, kiro-cli, 48 cases
+python3 tests/e2e/real_agents.py      # real claude, codex, copilot, kiro-cli, 44 cases
 python3 tests/e2e/upgrade.py          # an older setup gets the new agents, links to an older copy move
 python3 tests/e2e/inline_start.py     # an agent started under shell output, box in the right rows, box inside it
 python3 tests/e2e/copy_mode.py        # Option+P while tmux stays in copy mode after a drag
@@ -32,6 +32,11 @@ Nothing is sent to a model: `PEEKME_FAKE_EXPLAINER=1` makes peekme answer with
 canned text. `PEEKME_EVENT_LOG` records what peekme decided, and the fake agent
 logs every byte it gets, so a test can tell whether a key was taken by peekme
 or reached the agent.
+
+The Linux PTY has no native text selection. Real-agent cases that leave selection to the
+terminal, including Codex in tmux with its mouse off, run in the macOS jobs instead. Copilot
+uses a temporary config and launcher for the test folder in every layer. The harness never
+accepts a folder-trust prompt or changes the owner's trusted folders.
 
 The SSH layers start a private `sshd` on 127.0.0.1 as the current user. Set
 `E2E_TMUX`, `E2E_SSHD` and `E2E_LD_LIBRARY_PATH` to use binaries that are not

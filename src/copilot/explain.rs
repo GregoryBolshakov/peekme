@@ -34,13 +34,6 @@ fn copilot_bin() -> String {
     })
 }
 
-/// `PEEKME_COPILOT_MODEL`, else Copilot's own choice (Auto).
-fn model() -> Option<String> {
-    std::env::var("PEEKME_COPILOT_MODEL")
-        .ok()
-        .filter(|m| !m.trim().is_empty())
-}
-
 type Pending = Mutex<HashMap<u64, Sender<Result<Value, String>>>>;
 
 /// A running `copilot --headless --stdio`.
@@ -224,8 +217,7 @@ pub fn prompt(req: &Request) -> (context::Built, Option<usize>) {
     prompt_and_model(req).0
 }
 
-/// The prompt, and for a typed question the model to answer it:
-/// `PEEKME_COPILOT_ASK_MODEL`, else the chat's own model (None: Auto).
+/// The prompt and model for this request (None: Copilot's Auto).
 fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<String>) {
     let pids = req
         .agent_pid
@@ -237,6 +229,12 @@ fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<S
         .and_then(|p| transcript::load(&p));
     let place = req.place(Agent::Copilot);
     let hit = conv.as_ref().and_then(|c| context::find(c, &req.screen));
+    let model = crate::explain::model(
+        Agent::Copilot,
+        req.question.is_some(),
+        conv.as_ref().and_then(|c| c.model.as_deref()),
+    )
+    .filter(|m| m != "auto");
     if let Some(q) = &req.question {
         let mut built = context::build_question(
             place,
@@ -251,11 +249,6 @@ fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<S
         built.prompt.push_str(&format!(
             "Keep the {OPEN}{CLOSE} marks out of the answer.\n"
         ));
-        let model = std::env::var("PEEKME_COPILOT_ASK_MODEL")
-            .ok()
-            .filter(|m| !m.trim().is_empty())
-            .or_else(|| conv.and_then(|c| c.model))
-            .filter(|m| m != "auto");
         return ((built, None), model);
     }
     let compact = context::build(
@@ -277,7 +270,7 @@ fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<S
         "Answer in at most {} short lines; keep the {OPEN}{CLOSE} marks out of the answer.\n",
         req.max_lines
     ));
-    ((built, compact_len), None)
+    ((built, compact_len), model)
 }
 
 pub fn explain(slot: &Slot, req: Request, tx: impl Fn(Progress)) {
@@ -287,9 +280,8 @@ pub fn explain(slot: &Slot, req: Request, tx: impl Fn(Progress)) {
 }
 
 fn run(slot: &Slot, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
-    let ((built, compact_len), ask_model) = prompt_and_model(&req);
+    let ((built, compact_len), model) = prompt_and_model(&req);
     let asking = req.question.is_some();
-    let model = || if asking { ask_model.clone() } else { model() };
     if let Some(compact) = compact_len
         && !req.force
     {
@@ -335,7 +327,7 @@ fn run(slot: &Slot, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
         if !asking {
             params["reasoningEffort"] = json!("none");
         }
-        if let Some(m) = model() {
+        if let Some(m) = &model {
             params["model"] = json!(m);
         }
         server.request("session.create", params)?;
@@ -343,7 +335,7 @@ fn run(slot: &Slot, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
             "session.send",
             json!({"sessionId": sid, "prompt": built.prompt}),
         )?;
-        let mut model_name = model().unwrap_or_else(|| "Copilot".into());
+        let mut model_name = model.clone().unwrap_or_else(|| "Copilot".into());
         let mut started = false;
         let mut parts = Parts::default();
         loop {

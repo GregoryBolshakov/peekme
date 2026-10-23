@@ -36,11 +36,11 @@ thread that is not saved, so nothing appears in your history. Codex runs a share
 background, and peekme uses it, so it adds only a few MB of memory. Without that server peekme
 starts its own `codex app-server`, which takes about 250 MB.
 
-A peek uses the model your account lists as fast. `/model` in Codex shows the names. A typed question (Alt+Q) uses the
-thread's model and gets a copy of the whole thread. To change either model:
+Peek and Ask use the thread's model by default. Peek sends relevant parts of the conversation.
+Ask gets a copy of the whole thread. `/model` in Codex shows the names. To change either model:
 
 ```
-export PEEKME_MODEL=<model>              # peeks, default your account's fast model
+export PEEKME_MODEL=<model>              # peeks, default the thread's model
 export PEEKME_CODEX_ASK_MODEL=<model>    # questions, default the thread's model
 ```
 

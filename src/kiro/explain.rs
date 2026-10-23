@@ -30,9 +30,6 @@ const SYSTEM: &str = "You are \"peek\", an explainer embedded in a terminal. The
      context shows it, say what any code does there, and why it matters for the user's task. No \
      preamble, no headings. Answer from the provided context and general knowledge only.";
 
-/// Fast, and among the cheapest per credit on Kiro (0.4x of Auto in Kiro CLI 2.28).
-const DEFAULT_MODEL: &str = "claude-haiku-4.5";
-
 /// The name of our agent in Kiro.
 const AGENT: &str = "peekme";
 
@@ -42,14 +39,6 @@ fn kiro_bin() -> String {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| "kiro-cli".into())
     })
-}
-
-/// `PEEKME_KIRO_MODEL`, else a small fast model.
-fn model() -> (String, bool) {
-    match std::env::var("PEEKME_KIRO_MODEL") {
-        Ok(m) if !m.trim().is_empty() => (m.trim().to_string(), true),
-        _ => (DEFAULT_MODEL.to_string(), false),
-    }
 }
 
 /// Where the server runs: Kiro finds our agent in `.kiro/agents` there, and
@@ -98,7 +87,7 @@ pub struct Server {
 impl Server {
     fn start() -> Result<Arc<Self>> {
         let dir = workspace();
-        write_agent(&dir, &model().0).context("could not write peekme's Kiro agent")?;
+        write_agent(&dir, "auto").context("could not write peekme's Kiro agent")?;
         let mut child = Command::new(kiro_bin())
             .args(["acp", "--agent", AGENT])
             .current_dir(&dir)
@@ -282,8 +271,7 @@ pub fn prompt(req: &Request) -> (context::Built, Option<usize>) {
     prompt_and_model(req).0
 }
 
-/// The prompt, and for a typed question the model to answer it:
-/// `PEEKME_KIRO_ASK_MODEL`, else the chat's own model, else Auto.
+/// The prompt and model for this request (None: Kiro's Auto).
 fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<String>) {
     let pids = req
         .agent_pid
@@ -295,6 +283,11 @@ fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<S
         .and_then(|p| transcript::load(&p));
     let place = req.place(Agent::Kiro);
     let hit = conv.as_ref().and_then(|c| context::find(c, &req.screen));
+    let model = crate::explain::model(
+        Agent::Kiro,
+        req.question.is_some(),
+        conv.as_ref().and_then(|c| c.model.as_deref()),
+    );
     if let Some(q) = &req.question {
         let mut built = context::build_question(
             place,
@@ -310,12 +303,7 @@ fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<S
         built.prompt.push_str(&format!(
             "Keep the {OPEN}{CLOSE} marks out of the answer.\n"
         ));
-        let model = std::env::var("PEEKME_KIRO_ASK_MODEL")
-            .ok()
-            .filter(|m| !m.trim().is_empty())
-            .or_else(|| conv.and_then(|c| c.model))
-            .unwrap_or_else(|| "auto".into());
-        return ((built, None), Some(model));
+        return ((built, None), model);
     }
     let compact = context::build(
         place,
@@ -342,7 +330,7 @@ fn prompt_and_model(req: &Request) -> ((context::Built, Option<usize>), Option<S
         "Answer in at most {} short lines; keep the {OPEN}{CLOSE} marks out of the answer.\n",
         req.max_lines
     ));
-    ((built, compact_len), None)
+    ((built, compact_len), model)
 }
 
 pub fn explain(slot: &Slot, req: Request, tx: impl Fn(Progress)) {
@@ -352,7 +340,7 @@ pub fn explain(slot: &Slot, req: Request, tx: impl Fn(Progress)) {
 }
 
 fn run(slot: &Slot, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
-    let ((built, compact_len), ask_model) = prompt_and_model(&req);
+    let ((built, compact_len), model) = prompt_and_model(&req);
     if let Some(compact) = compact_len
         && !req.force
     {
@@ -373,22 +361,7 @@ fn run(slot: &Slot, req: Request, tx: &impl Fn(Progress)) -> Result<()> {
         );
     }
     let server = slot.get()?;
-    if let Some(m) = &ask_model {
-        return ask(&server, &built, Some(m), tx).map_err(|e| anyhow!(e.message));
-    }
-    match ask(&server, &built, None, tx) {
-        // The default model is not on every plan: fall back to Kiro's Auto.
-        Err(e) if !model().1 && !e.started && e.message.contains("is not available") => {
-            ask(&server, &built, Some("auto"), tx).map_err(|e| anyhow!(e.message))
-        }
-        r => r.map_err(|e| anyhow!(e.message)),
-    }
-}
-
-struct Failure {
-    message: String,
-    /// Some of the answer was shown already.
-    started: bool,
+    ask(&server, &built, model.as_deref(), tx)
 }
 
 /// One explanation in a new session, closed and deleted afterwards whatever happens.
@@ -397,16 +370,13 @@ fn ask(
     built: &context::Built,
     model_override: Option<&str>,
     tx: &impl Fn(Progress),
-) -> Result<(), Failure> {
-    let fail = |message: String, started: bool| Failure { message, started };
-    let created = server
-        .request(
-            "session/new",
-            json!({"cwd": server.dir.to_string_lossy(), "mcpServers": []}),
-        )
-        .map_err(|e| fail(format!("{e:#}"), false))?;
+) -> Result<()> {
+    let created = server.request(
+        "session/new",
+        json!({"cwd": server.dir.to_string_lossy(), "mcpServers": []}),
+    )?;
     let Some(sid) = created.get("sessionId").and_then(Value::as_str) else {
-        return Err(fail("Kiro did not open a session".into(), false));
+        bail!("Kiro did not open a session");
     };
     let events = server.subscribe(sid);
     let mut started = false;
@@ -486,7 +456,7 @@ fn ask(
     })();
     server.unsubscribe(sid);
     server.discard(sid);
-    result.map_err(|e| fail(format!("{e:#}"), started))
+    result
 }
 
 /// Point at the fix when Kiro says the login is missing or expired.

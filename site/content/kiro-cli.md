@@ -42,14 +42,13 @@ tall as their text and never scroll on their own.
 No API key is needed. On the first explanation peekme starts Kiro's ACP server (`kiro-cli acp`,
 the one Kiro's own screen and editors use) with your Kiro login. It runs with a peekme agent that
 has no tools. Each explanation is a short session, and peekme deletes it afterwards, so nothing
-appears in your session list. One explanation costs about 0.01 Kiro credits.
+appears in your session list. Explanations use your Kiro credits.
 
-A peek uses `claude-haiku-4.5` (Auto if your plan doesn't have it). A typed question
-(Alt+Q) uses the model your chat runs on, with the whole conversation. To change either
-model:
+Peek and Ask use your chat's model by default. Peek sends relevant parts of the conversation.
+Ask sends the whole conversation. To change either model:
 
 ```
-export PEEKME_KIRO_MODEL=<model>        # peeks, default claude-haiku-4.5
+export PEEKME_KIRO_MODEL=<model>        # peeks, default the chat's model
 export PEEKME_KIRO_ASK_MODEL=<model>    # questions, default the chat's model
 ```
 

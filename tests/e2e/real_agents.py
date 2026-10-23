@@ -10,11 +10,12 @@ word on the agent's startup screen, presses the shortcut, and checks peekme's
 event log and the screen. This catches what a fake agent cannot: how each real
 agent copies a selection inside tmux, how it draws, which keys it asks for.
 
-Run it from a directory Claude Code already trusts (this repo). Copilot's
-folder-trust question is answered with "Yes" for the session only, Codex's
-update prompt with Esc (skip once). Needs the agents installed and logged in.
+Run it from a directory Claude Code already trusts (this repo). Copilot gets
+an isolated config for that directory, without changing the owner's trust
+settings. Codex's update prompt is dismissed with Esc (skip once). Needs the
+agents installed and logged in.
 """
-import argparse, concurrent.futures as cf, itertools, os, re, shlex, shutil, subprocess, sys, tempfile, time
+import argparse, concurrent.futures as cf, itertools, json, os, re, shlex, shutil, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import matrix as m  # noqa: E402
@@ -28,7 +29,7 @@ AGENTS = {
     # No update prompt (only for this run; the user's config is not touched).
     "codex": ("codex", ["-c", "check_for_update_on_startup=false"], "OpenAI Codex", "OpenAI",
               [("Update available", b"\x1b"), ("Hooks need review", b"\x1b")]),
-    "copilot": ("copilot", ["--no-auto-update"], "uses AI", "Copilot", [("Do you trust", b"\r")]),
+    "copilot": ("copilot", ["--no-auto-update"], "uses AI", "Copilot", []),
     # Kiro starts inline and leaves the mouse to the terminal; `/fullscreen`
     # (typed, then Enter once its menu has caught up) takes the mouse.
     "kiro-inline": ("kiro-cli", [], "ask a question", "Kiro", []),
@@ -51,6 +52,37 @@ def real_binary(name):
             if os.path.basename(real) != "peekme":
                 return p
     return None
+
+
+def isolated_copilot(work):
+    """A temporary launcher carries the test config through SSH as well."""
+    binary = real_binary("copilot")
+    if not binary:
+        return None
+    home = os.path.join(work, "copilot-home")
+    bindir = os.path.join(work, "agent-bin")
+    os.makedirs(home)
+    os.makedirs(bindir)
+    source = os.path.join(os.environ.get("COPILOT_HOME", os.path.expanduser("~/.copilot")), "config.json")
+    try:
+        with open(source) as f:
+            config = json.loads("\n".join(l for l in f if not l.lstrip().startswith("//")))
+    except (OSError, ValueError):
+        config = {}
+    # Login identities use the existing keyring. Never copy tokens or the
+    # owner's trustedFolders into the temporary config.
+    allowed = ("firstLaunchAt", "appTipShown", "lastLoggedInUser", "loggedInUsers",
+               "reasoningSummariesCleanupDone", "model", "lastUsedModel")
+    config = {k: config[k] for k in allowed if k in config}
+    config["trustedFolders"] = [os.getcwd()]
+    with open(os.path.join(home, "config.json"), "w") as f:
+        json.dump(config, f)
+    launcher = os.path.join(bindir, "copilot")
+    with open(launcher, "w") as f:
+        f.write("#!/bin/sh\nexport COPILOT_HOME=" + shlex.quote(home)
+                + "\nexec " + shlex.quote(binary) + ' "$@"\n')
+    os.chmod(launcher, 0o700)
+    return bindir
 
 
 KIRO_SESSIONS = os.path.expanduser("~/.kiro/sessions/cli")
@@ -228,14 +260,19 @@ def main():
     for layer, agent, profile in itertools.product(["direct", "tmux", "ssh+tmux"], AGENTS, m.PROFILES):
         for mouse in (["off"] if layer == "direct" else ["off", "on"]):
             todo.append(dict(layers=layer, agent=agent, profile=profile, mouse=mouse))
-    # Claude's classic screen and Kiro inline leave the mouse to the terminal (or to tmux with
-    # `mouse on`). A pseudo-terminal has no selection of its own, so those
-    # cases belong to the macOS job with real terminals.
-    todo = [c for c in todo if not (c["agent"] in ("claude-classic", "kiro-inline") and c["mouse"] == "off")]
+    # Inline agents and Codex inside tmux with its mouse off leave selection
+    # to the terminal. A PTY has no native selection. The macOS jobs use real
+    # terminals to check these cases, including the SSH diagnostic for Codex.
+    todo = [c for c in todo if not (c["mouse"] == "off" and (
+        c["agent"] in ("claude-classic", "kiro-inline")
+        or (c["agent"] == "codex" and c["layers"] != "direct")))]
     todo = [c for c in todo if args.only in f"{c['layers']}|mouse-{c['mouse']}|{c['profile']}|{c['agent']}"]
     for i, c in enumerate(todo):
         c["n"] = i
     work = tempfile.mkdtemp(prefix="peekme-real-")
+    copilot_bin = isolated_copilot(work) if any(c["agent"] == "copilot" for c in todo) else None
+    if copilot_bin:
+        os.environ["PATH"] = copilot_bin + os.pathsep + os.environ.get("PATH", "")
     out = args.out or os.path.join(work, "cases")
     env = m.Env(work, need_ssh=any("ssh" in c["layers"] for c in todo))
     failed = []

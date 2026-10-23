@@ -10,6 +10,30 @@ use crate::context::{Nested, Place, ScreenSel};
 use crate::copilot::explain as copilot;
 use crate::kiro::explain as kiro;
 
+/// Use the request's override, then the current chat model. With neither,
+/// leave the choice to the agent's configured default.
+pub fn model(agent: Agent, question: bool, chat: Option<&str>) -> Option<String> {
+    let (peek, ask) = match agent {
+        Agent::Claude => ("PEEKME_CLAUDE_MODEL", "PEEKME_CLAUDE_ASK_MODEL"),
+        Agent::Codex => ("PEEKME_MODEL", "PEEKME_CODEX_ASK_MODEL"),
+        Agent::Copilot => ("PEEKME_COPILOT_MODEL", "PEEKME_COPILOT_ASK_MODEL"),
+        Agent::Kiro => ("PEEKME_KIRO_MODEL", "PEEKME_KIRO_ASK_MODEL"),
+    };
+    configured_model(
+        std::env::var(if question { ask } else { peek })
+            .ok()
+            .as_deref(),
+        chat,
+    )
+}
+
+fn configured_model(override_model: Option<&str>, chat: Option<&str>) -> Option<String> {
+    override_model
+        .filter(|m| !m.trim().is_empty())
+        .or_else(|| chat.filter(|m| !m.trim().is_empty()))
+        .map(|m| m.trim().to_string())
+}
+
 /// Streamed progress of one explanation.
 #[derive(Debug)]
 pub enum Progress {
@@ -250,6 +274,31 @@ impl Explainer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn model_overrides_win_and_empty_settings_follow_the_chat() {
+        use super::configured_model;
+        assert_eq!(
+            configured_model(Some(" custom "), Some("chat")).as_deref(),
+            Some("custom")
+        );
+        for setting in [None, Some(""), Some("  ")] {
+            assert_eq!(
+                configured_model(setting, Some("first")).as_deref(),
+                Some("first")
+            );
+            assert_eq!(
+                configured_model(setting, Some("second")).as_deref(),
+                Some("second")
+            );
+            assert_eq!(configured_model(setting, None), None);
+        }
+        assert_eq!(
+            configured_model(Some("custom"), None).as_deref(),
+            Some("custom")
+        );
+        assert_eq!(configured_model(None, Some(" ")), None);
+    }
+
     use super::*;
 
     #[test]

@@ -46,7 +46,7 @@ Shift+drag.
   or, in Terminal, asks macOS Accessibility.
 - A click on underlined text works when the agent takes the mouse (full screen mode), or inside
   tmux with its mouse on.
-- An explanation takes about 1 to 2 seconds to start arriving.
+- Response time depends on the model and how much context is sent.
 - No Windows yet.
 
 ## Report a bug

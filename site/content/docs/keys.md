@@ -44,8 +44,8 @@ In Claude Code, Alt+P opens the model picker. With peekme it explains the select
 After Alt+Q the box opens empty and you type. Enter sends the question, Esc cancels. While
 you type, the keys stay in the box and don't go to the agent.
 
-The question goes to the model your chat runs on, not the small one, together with the whole
-conversation (Codex gets a copy of the thread). So it takes longer and costs more than a peek.
+Peek and Ask use your chat's model by default. Peek sends relevant parts of the conversation.
+Ask sends the whole conversation (Codex gets a copy of the thread).
 To use another model, see [Settings](@/docs/settings.md).
 
 - With a box open and nothing new selected, Alt+Q asks about the text that box explains.
