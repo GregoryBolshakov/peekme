@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.1 (2026-10-23)
+
+- Fixed: a long selection, such as a big diff that Claude Code scrolled while you dragged,
+  got no dotted underline and its answer was not saved. The model also saw only the last
+  or first few words of it. Now the model gets all of the selected text, the rows of it on
+  screen get the underline, and selecting it again shows the saved answer.
+- Fixed: in Claude Code, a selection over the start of an answer was not found on screen.
+  Claude draws a dot there and leaves it out when it copies the selection.
+
 ## 0.6.0 (2026-10-22)
 
 - Answers in the box now look like the agent's own answers. Tables, headings, lists, quotes,
