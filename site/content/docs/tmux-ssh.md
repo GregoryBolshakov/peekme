@@ -13,17 +13,17 @@ What peekme can read depends on who takes the mouse: the agent, tmux, or your te
 
 | Agent | tmux mouse on (`set -g mouse on`) | tmux mouse off (tmux's default) |
 |---|---|---|
-| Full screen: Claude Code with `"tui": "fullscreen"`, Copilot CLI, Kiro CLI after `/fullscreen` | the agent's selection, also over SSH | the same |
+| Full screen: Claude Code with `"tui": "fullscreen"`, Pi, Copilot CLI, Kiro CLI after `/fullscreen` | the agent's selection, also over SSH | the same |
 | Codex | the agent's selection, also over SSH | your terminal's selection (Codex leaves it the mouse), not readable over SSH |
-| Claude Code classic screen, Kiro CLI inline | tmux's selection, also over SSH | your terminal's selection, not readable over SSH |
+| Claude Code classic screen, Pi regular screen, Kiro CLI inline | tmux's selection, also over SSH | your terminal's selection, not readable over SSH |
 
 ## Over SSH
 
 In full screen mode the agent makes the selection itself, and peekme reads it from the agent, so
 it works over SSH with no extra setup. Full screen is Claude Code with `"tui": "fullscreen"`,
-Codex and Copilot CLI by default, and Kiro CLI after `/fullscreen`.
+Codex, Pi and Copilot CLI by default, and Kiro CLI after `/fullscreen`.
 
-On Claude Code's classic screen and Kiro CLI inline the selection belongs to your local
+On Claude Code's classic screen, Pi's regular screen and Kiro CLI inline the selection belongs to your local
 terminal, and a program on the other side of SSH can't read it. Run the agent inside tmux with
 its mouse on instead, and tmux makes the selection on the remote machine.
 

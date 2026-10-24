@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "macros.html" as m %}
 {% block head %}
-<link rel="preload" as="image" href="{{ get_url(path='media/' ~ page.extra.media ~ '-start.webp') }}" fetchpriority="high">
+{% if page.extra.media %}<link rel="preload" as="image" href="{{ get_url(path='media/' ~ page.extra.media ~ '-start.webp') }}" fetchpriority="high">{% endif %}
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"peekme for {{ page.extra.agent }}","applicationCategory":"DeveloperApplication","operatingSystem":"Linux, macOS","softwareVersion":"{{ config.extra.version }}","url":"{{ page.permalink }}","codeRepository":"{{ config.extra.repo }}","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"description":"{{ page.description }}"}
 </script>
@@ -16,13 +16,13 @@
       <a class="btn primary" href="#install">Install</a>
       <a class="btn" href="{{ config.extra.repo }}">Star on GitHub</a>
     </div>
-    <figure class="term">
+    {% if page.extra.media %}<figure class="term">
       <div class="term-bar"><span></span><span></span><span></span></div>
       <video autoplay muted loop playsinline preload="auto" poster="{{ get_url(path='media/' ~ page.extra.media ~ '-start.webp') }}" data-still="{{ get_url(path='media/' ~ page.extra.media ~ '.webp') }}" width="1028" height="599" aria-label="peekme in {{ page.extra.agent }}">
         <source src="{{ get_url(path='media/' ~ page.extra.media ~ '.mp4') }}" type="video/mp4">
       </video>
       {% for a in config.extra.agents %}{% if a.page == page.slug %}<figcaption class="muted">{{ a.caption | safe }}</figcaption>{% endif %}{% endfor %}
-    </figure>
+    </figure>{% endif %}
   </div>
 </section>
 <section id="install">

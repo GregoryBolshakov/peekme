@@ -11,7 +11,7 @@
 {% block content %}
 <section class="hero">
   <div class="wrap">
-    <p class="eyebrow">For Claude Code, Codex CLI, GitHub Copilot CLI and Kiro CLI</p>
+    <p class="eyebrow">For Claude Code, Codex CLI, Pi, GitHub Copilot CLI and Kiro CLI</p>
     <h1>Explain any text in your coding agent's terminal</h1>
     <p class="lead">Select words in your agent's answer and press <kbd>Alt+P</kbd>. A short explanation opens right under them. <kbd>Esc</kbd> closes it, and the screen is exactly as before.</p>
     <div class="cta">
@@ -22,7 +22,7 @@
 
     <div class="demo" data-tabs>
       <div class="tabs" role="tablist" aria-label="Agent">
-        {% for a in config.extra.agents %}<button role="tab" aria-selected="{% if loop.first %}true{% else %}false{% endif %}" data-src="{{ get_url(path='media/' ~ a.media ~ '.mp4') }}" data-poster="{{ get_url(path='media/' ~ a.media ~ '-start.webp') }}" data-still="{{ get_url(path='media/' ~ a.media ~ '.webp') }}" data-caption='{{ a.caption | safe }}'>{{ a.name | replace(from="GitHub ", to="") }}</button>
+        {% for a in config.extra.agents | filter(attribute="media") %}<button role="tab" aria-selected="{% if loop.first %}true{% else %}false{% endif %}" data-src="{{ get_url(path='media/' ~ a.media ~ '.mp4') }}" data-poster="{{ get_url(path='media/' ~ a.media ~ '-start.webp') }}" data-still="{{ get_url(path='media/' ~ a.media ~ '.webp') }}" data-caption='{{ a.caption | safe }}'>{{ a.name | replace(from="GitHub ", to="") }}</button>
         {% endfor %}</div>
       <figure class="term">
         <div class="term-bar"><span></span><span></span><span></span></div>
@@ -46,10 +46,10 @@
 
 <section>
   <div class="wrap">
-    <h2 class="sec">Same keys in four agents</h2>
-    <p class="muted center">You install peekme once. The keys and the boxes are the same in every agent, and an agent you install later gets peekme too.</p>
+    <h2 class="sec">Same keys in every agent</h2>
+    <p class="muted center">You install peekme once. The keys and the boxes are the same in Claude Code, Codex, <a href="{{ get_url(path='@/pi.md') }}">Pi</a>, Copilot CLI and Kiro CLI, and an agent you install later gets peekme too.</p>
     <div class="agents">
-      {% for a in config.extra.agents %}
+      {% for a in config.extra.agents | filter(attribute="media") %}
       <a class="agent-card" href="{{ get_url(path='@/' ~ a.page ~ '.md') }}">
         <img src="{{ get_url(path='media/' ~ a.media ~ '.webp') }}" alt="peekme in {{ a.name }}" width="1028" height="599" loading="lazy">
         <span class="agent-name">{{ a.name }}</span>
@@ -72,7 +72,7 @@
   <div class="wrap narrow">
     <h2 class="sec">Install</h2>
     {{ m::install() }}
-    <p>Open a new terminal and start your agent as always: <code>claude</code>, <code>codex</code>, <code>copilot</code> or <code>kiro-cli</code>. That's all. <code>peekme doctor</code> checks the setup and <code>peekme uninstall</code> removes it. <a href="{{ get_url(path='@/docs/install.md') }}">Install details</a></p>
+    <p>Open a new terminal and start your agent as always: <code>claude</code>, <code>codex</code>, <code>pi</code>, <code>copilot</code> or <code>kiro-cli</code>. That's all. <code>peekme doctor</code> checks the setup and <code>peekme uninstall</code> removes it. <a href="{{ get_url(path='@/docs/install.md') }}">Install details</a></p>
   </div>
 </section>
 
@@ -102,7 +102,7 @@
     <details><summary>Do I need to change terminal settings on a Mac?</summary><p>No. Option+P works as it is, also over SSH and inside tmux. A Mac terminal types <code>π</code> for Option+P, and peekme takes it as the shortcut only when text is selected. <a href="{{ get_url(path='@/docs/macos.md') }}">More about macOS</a></p></details>
     <details><summary>What if the explanation is not enough?</summary><p>Press Alt+P again while the box is open. The model then gets the whole conversation instead of the parts around the selection. For a long chat peekme shows the size first and sends it only after one more Alt+P.</p></details>
     <details><summary>Can I select text that scrolled away?</summary><p>Not yet. peekme explains text that is on the screen now.</p></details>
-    <details><summary>Can I use it with another program?</summary><p>Yes, run <code>peekme -- COMMAND</code>. The explanations need one of the four agents' logins.</p></details>
+    <details><summary>Can I use it with another program?</summary><p>Yes, run <code>peekme -- COMMAND</code>. The explanations need one of the five agents' logins.</p></details>
   </div>
 </section>
 

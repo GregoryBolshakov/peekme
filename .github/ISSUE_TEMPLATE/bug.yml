@@ -24,6 +24,8 @@ body:
         - Claude Code (full screen)
         - Claude Code (classic screen)
         - Codex CLI
+        - Pi (full screen)
+        - Pi (regular screen)
         - GitHub Copilot CLI
         - Kiro CLI
         - Other

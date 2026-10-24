@@ -18,9 +18,9 @@ works too.
 ## Where the selection comes from
 
 When the agent draws full screen, peekme gets the selection from the agent. That is Claude Code
-with `"tui": "fullscreen"`, Codex and Copilot CLI by default, and Kiro CLI after `/fullscreen`.
+with `"tui": "fullscreen"`, Codex, Pi and Copilot CLI by default, and Kiro CLI after `/fullscreen`.
 
-Otherwise (Claude Code's classic screen, Kiro CLI before `/fullscreen`) the selection is your
+Otherwise (Claude Code's classic screen, Pi's regular screen, Kiro CLI before `/fullscreen`) the selection is your
 terminal's own:
 
 - iTerm2 copies a selection to the clipboard by itself, and peekme reads it there.

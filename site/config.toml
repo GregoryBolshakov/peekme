@@ -1,6 +1,6 @@
 base_url = "https://peekme.dev"
 title = "peekme"
-description = "Select text in Claude Code, Codex CLI, GitHub Copilot CLI or Kiro CLI output, press Alt+P, and read a short explanation right under it, inside the terminal."
+description = "Select text in Claude Code, Codex CLI, Pi, GitHub Copilot CLI or Kiro CLI output, press Alt+P, and read a short explanation right under it, inside the terminal."
 default_language = "en"
 compile_sass = false
 build_search_index = false
@@ -27,6 +27,12 @@ caption = 'Codex CLI: peek at "--force-with-lease", then ask "When is plain --fo
 media = "codex"
 name = "Codex CLI"
 cmd = "codex"
+
+[[extra.agents]]
+page = "pi"
+caption = ""
+name = "Pi"
+cmd = "pi"
 
 [[extra.agents]]
 page = "copilot-cli"

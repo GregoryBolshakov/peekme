@@ -26,13 +26,13 @@ deep while the window is wide enough.
 
 Scrolling with a box open works as if the box were printed in the chat. The box keeps its size
 and grows only while its answer comes in, taller than the screen when the answer is long. Text
-never scrolls inside a box. In Codex, GitHub Copilot CLI and the full screens of Claude Code and
-Kiro CLI the chat and the box move together, as many rows per turn of the wheel as the agent
+never scrolls inside a box. In Codex, GitHub Copilot CLI and the full screens of Claude Code, Pi
+and Kiro CLI the chat and the box move together, as many rows per turn of the wheel as the agent
 scrolls without peekme, from the start of the chat to its end. On the classic screen of Claude
-Code and Kiro's inline screen peekme scrolls the chat itself, 3 rows per turn of the wheel, from
+Code, Pi's regular screen and Kiro's inline screen peekme scrolls the chat itself, 3 rows per turn of the wheel, from
 the oldest line it saw in your terminal's history to the end of the chat.
 
-When the agent draws full screen (Claude Code with `"tui": "fullscreen"`, Codex since 0.157,
+When the agent draws full screen (Claude Code with `"tui": "fullscreen"`, Codex since 0.157, Pi,
 Copilot CLI, Kiro CLI after `/fullscreen`), it makes the selection itself, and peekme uses that
 selection. A click on underlined text works only there.
 

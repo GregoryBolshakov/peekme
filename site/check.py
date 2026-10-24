@@ -67,7 +67,7 @@ if "-" not in cargo and readme_v and readme_v.group(1) != cargo:
 # When it includes a Status paragraph, keep those versions in agreement.
 status = re.search(r"^Status:.*?(?=\n\n)", readme, re.M | re.S)
 if status:
-    for name, page in [("Claude Code", "claude-code"), ("Codex", "codex"), ("Copilot CLI", "copilot-cli"), ("Kiro CLI", "kiro-cli")]:
+    for name, page in [("Claude Code", "claude-code"), ("Codex", "codex"), ("Pi", "pi"), ("Copilot CLI", "copilot-cli"), ("Kiro CLI", "kiro-cli")]:
         m = re.search(re.escape(name) + r" ([0-9][0-9.]*[0-9])", status.group(0))
         text = read("site", "content", page + ".md")
         if not m:

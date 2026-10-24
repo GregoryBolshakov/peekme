@@ -14,7 +14,7 @@ npm i -g peekme
 peekme install
 ```
 
-Open a new terminal. Now `claude`, `codex`, `copilot` and `kiro-cli` open with peekme, and you
+Open a new terminal. Now `claude`, `codex`, `pi`, `copilot` and `kiro-cli` open with peekme, and you
 type them as always. That's all.
 
 Don't have npm? Use one of these instead of the first line:
@@ -29,14 +29,14 @@ that it skipped an install script of peekme. That is fine: peekme then downloads
 first time it runs.
 
 peekme has no account of its own. The explanations use the login of the agent you are in, so you
-need at least one of Claude Code, Codex CLI, GitHub Copilot CLI or Kiro CLI, logged in.
+need at least one of Claude Code, Codex CLI, Pi, GitHub Copilot CLI or Kiro CLI, logged in.
 
 ## What `peekme install` does
 
-1. It defines shell functions `claude`, `codex`, `copilot` and `kiro-cli` in your shell setup. A
+1. It defines shell functions `claude`, `codex`, `pi`, `copilot` and `kiro-cli` in your shell setup. A
    function wins over anything on PATH, so it keeps working when nvm, mise, Homebrew or an
    agent's installer change PATH later. Aliases that call them go through it too.
-2. It puts `claude`, `codex`, `copilot` and `kiro-cli` links to peekme in
+2. It puts `claude`, `codex`, `pi`, `copilot` and `kiro-cli` links to peekme in
    `~/.local/share/peekme/bin` at the front of PATH, so scripts that run them also get peekme. If
    some tool puts its own directory in front of it later, only scripts lose peekme, and
    `peekme doctor` tells you which directory it is.
@@ -45,7 +45,7 @@ Both find the real agent on PATH themselves, so updating the agent changes nothi
 peekme, the functions fall back to the plain agents.
 
 The block in `~/.bashrc` or `~/.zshrc` (for fish, a file in `~/.config/fish/conf.d`) is short and
-marked. It covers all four agents, so an agent you install later gets peekme too. When a new
+marked. It covers all five agents, so an agent you install later gets peekme too. When a new
 peekme version knows more agents, it adds them to your setup the next time it starts and says so
 once.
 
@@ -54,15 +54,17 @@ once.
 ```
 peekme doctor      # check the setup, and see what is in the way if something is
 peekme uninstall   # remove it, your files are as before
-command claude     # run plain Claude Code once (same for codex, copilot, kiro-cli)
+command claude     # run plain Claude Code once (same for codex, pi, copilot, kiro-cli)
 ```
 
 ## What gets peekme
 
 Only the interactive screen gets peekme: `claude`, `claude "prompt"`, `claude --resume`,
-`claude -c`, `codex`, `codex "prompt"`, `codex resume`, `codex fork`, `copilot`,
+`claude -c`, `codex`, `codex "prompt"`, `codex resume`, `codex fork`, `pi`, `pi "message"`,
+`pi -c`, `pi -r`, `copilot`,
 `copilot -i "prompt"`, `copilot --resume`, and `kiro-cli`, `kiro-cli chat`, `kiro-cli --resume`.
-Commands like `claude -p`, `codex exec`, `copilot -p`, `copilot login`,
+Commands like `claude -p`, `codex exec`, `pi -p`, `pi --mode rpc`, `pi update`, `copilot -p`,
+`copilot login`,
 `kiro-cli chat --no-interactive` or `kiro-cli acp`, and anything with output going to a pipe or
 a file, run the agent directly.
 

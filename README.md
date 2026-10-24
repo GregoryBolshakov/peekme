@@ -1,7 +1,7 @@
 # peekme
 
 Select text in [Claude Code](https://github.com/anthropics/claude-code),
-[Codex CLI](https://github.com/openai/codex),
+[Codex CLI](https://github.com/openai/codex), [Pi](https://pi.dev),
 [GitHub Copilot CLI](https://github.com/github/copilot-cli) or [Kiro CLI](https://kiro.dev/cli/)
 output, press **Alt+P**, and an explanation opens right under it, inside the terminal.
 The other lines move to make room, like Peek in VS Code. **Esc** closes the box.
@@ -31,7 +31,7 @@ npm i -g peekme
 peekme install
 ```
 
-Open a new terminal. Start `claude`, `codex`, `copilot` or `kiro-cli` as always.
+Open a new terminal. Start `claude`, `codex`, `pi`, `copilot` or `kiro-cli` as always.
 peekme opens with the agent, including when you resume an existing chat.
 
 You can replace the npm command with one of these, then run `peekme install`:
@@ -91,7 +91,7 @@ peekme doctor
 
 See [troubleshooting](https://peekme.dev/docs/troubleshooting/) for selection problems and known
 limits. To remove peekme, run `peekme uninstall`. To run an agent without it once, use
-`command claude` (or `codex`, `copilot`, `kiro-cli`).
+`command claude` (or `codex`, `pi`, `copilot`, `kiro-cli`).
 
 Full documentation: [peekme.dev/docs](https://peekme.dev/docs/).
 

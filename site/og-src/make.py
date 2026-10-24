@@ -10,7 +10,7 @@ CHROME = sys.argv[1] if len(sys.argv) > 1 else "google-chrome"
 MARK = open(os.path.join(SITE, "static/favicon.svg")).read()
 
 IMAGES = [
-    ("home", "claude", "Explain any text in your coding agent's terminal", "Claude Code, Codex CLI, Copilot CLI, Kiro CLI"),
+    ("home", "claude", "Explain any text in your coding agent's terminal", "Claude Code, Codex CLI, Pi, Copilot CLI, Kiro CLI"),
     ("claude-code", "claude", "Explain any words in a Claude Code answer", "Select, press Alt+P, read it right under"),
     ("codex", "codex", "Explain any words in a Codex CLI answer", "Select, press Alt+P, read it right under"),
     ("copilot-cli", "copilot", "Explain any words in a Copilot CLI answer", "Select, press Alt+P, read it right under"),

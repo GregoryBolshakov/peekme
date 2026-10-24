@@ -1,7 +1,7 @@
 +++
 title = "Explain any words in a GitHub Copilot CLI answer"
 description = "peekme for GitHub Copilot CLI: select text in Copilot's output, press Alt+P, and a short explanation opens right under it. Alt+Q asks your own question about it."
-weight = 3
+weight = 4
 template = "agent.html"
 [extra]
 seo_title = "peekme for GitHub Copilot CLI: explain selected text in the terminal"

@@ -9,9 +9,9 @@ lead = "peekme has no server and no account. It sends text only when you press A
 ## What is sent, and where
 
 An explanation goes through your agent's own CLI, with your own login: `claude -p` for Claude
-Code, Codex's app-server, Copilot's headless server, or `kiro-cli acp`. So the text goes to the
-same company your agent already sends your chat to (Anthropic, OpenAI, GitHub or AWS), under the
-same terms. Nothing goes to peekme or to anyone else.
+Code, Codex's app-server, `pi --mode rpc` for Pi, Copilot's headless server, or `kiro-cli acp`.
+So the text goes to the same company your agent already sends your chat to (Anthropic, OpenAI,
+GitHub, AWS, or the provider you logged in to in Pi), under the same terms. Nothing goes to peekme or to anyone else.
 
 For a peek (Alt+P) the model gets:
 

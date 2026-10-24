@@ -1,7 +1,7 @@
 +++
 title = "Explain any words in a Kiro CLI answer"
 description = "peekme for Kiro CLI: select text in Kiro's output, press Alt+P, and a short explanation opens right under it. Alt+Q asks your own question about it."
-weight = 4
+weight = 5
 template = "agent.html"
 [extra]
 seo_title = "peekme for Kiro CLI: explain selected text in the terminal"

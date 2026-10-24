@@ -2,7 +2,7 @@
 name = "peekme"
 version = "0.6.1"
 edition = "2024"
-description = "Select text in Claude Code, Codex CLI, GitHub Copilot CLI or Kiro CLI output and get a short explanation right under it, inside the terminal"
+description = "Select text in Claude Code, Codex CLI, Pi, GitHub Copilot CLI or Kiro CLI output and get a short explanation right under it, inside the terminal"
 authors = ["Gregory Bolshakov"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/GregoryBolshakov/peekme"

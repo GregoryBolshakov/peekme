@@ -17,7 +17,8 @@ lead = "Every coding agent now has a way to ask a side question without adding i
 | GitHub Copilot CLI | `/ask` (also `/btw`) | type `/ask` and the question | a separate dialog |
 | Kiro CLI | tangent mode (experimental) | enter a tangent, ask, return | in the chat, then you go back to where you were |
 
-All of them answer from the conversation and keep the question out of its history. Claude Code's
+Pi has no side question of its own. All of the ones above answer from the conversation and keep
+the question out of its history. Claude Code's
 `/btw` and Copilot's `/ask` work while the agent is still busy, and they have no tools. See
 [Claude Code](https://code.claude.com/docs/en/interactive-mode),
 [Codex](https://developers.openai.com/codex/cli/slash-commands) and
@@ -36,8 +37,8 @@ docs.
   under that line, and you can go several levels deep.
 - **Answers stay.** Text you asked about gets a dotted underline. Click it later and the answer
   opens again with no new request.
-- **Same keys in four agents.** If you switch between Claude Code, Codex, Copilot CLI and Kiro
-  CLI, you learn one thing.
+- **Same keys in five agents.** If you switch between Claude Code, Codex, Pi, Copilot CLI and
+  Kiro CLI, you learn one thing.
 
 For your own question about the words, press Alt+Q. It goes to the model your chat runs on,
 with the whole conversation, like a side question does, and opens in the same place.
