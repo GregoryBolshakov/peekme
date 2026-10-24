@@ -194,6 +194,18 @@ pub fn tokenize(input: &[u8], carry: &mut Vec<u8>, in_paste: &mut bool) -> Vec<T
         }
         flush_text(&mut out, &mut text_start, i, &data, *in_paste);
         match seq_len(&data[i..]) {
+            SeqLen::Complete(2) if &data[i..] == b"\x1b\x1b" && !*in_paste => {
+                // Escape pressed twice within tmux's escape-time: tmux sends
+                // both in one write, the way it writes Alt+Escape. Two presses
+                // (inner box, then outer); the child gets the same bytes.
+                for _ in 0..2 {
+                    out.push(Token {
+                        bytes: vec![0x1b],
+                        kind: Kind::Esc,
+                    });
+                }
+                i += 2;
+            }
             SeqLen::Complete(n) => {
                 let bytes = data[i..i + n].to_vec();
                 let kind = if *in_paste {
@@ -557,6 +569,8 @@ mod tests {
     #[test]
     fn esc_and_paging() {
         assert_eq!(kinds(b"\x1b"), vec![Kind::Esc]);
+        assert_eq!(kinds(b"\x1b\x1b"), vec![Kind::Esc, Kind::Esc]);
+        assert_eq!(kinds(b"\x1b\x1bx"), vec![Kind::Key, Kind::Key]);
         assert_eq!(kinds(b"\x1b[27u"), vec![Kind::Esc]);
         assert_eq!(kinds(b"\x1b[5~"), vec![Kind::PageUp]);
         assert_eq!(kinds(b"\x1b[1;5H"), vec![Kind::ChatJump]);
