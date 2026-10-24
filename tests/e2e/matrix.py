@@ -148,9 +148,14 @@ class Term:
 def clean_env(**extra):
     """This process's environment without what would change peekme's behaviour:
     TMUX (we may run inside tmux), PEEKME_ACTIVE (inside peekme, a new peekme
-    steps aside) and the Mac terminal hints."""
+    steps aside) and the Mac terminal hints; with PEEKME_KEEP_SETUP unless
+    `extra` has a HOME of its own."""
     env = {k: v for k, v in os.environ.items()
            if k not in ("TMUX", "TMUX_PANE", "PEEKME_ACTIVE", "TERM_PROGRAM", "LC_TERMINAL")}
+    # In the real HOME the peekme under test leaves the user's shell setup
+    # and links alone (with a fake HOME, upgrade.py checks that it updates them).
+    if "HOME" not in extra:
+        env["PEEKME_KEEP_SETUP"] = "1"
     env.update(extra)
     return env
 
@@ -239,6 +244,9 @@ def build_command(env, case, paths):
     tmux_dir = os.path.dirname(os.path.abspath(env.tmux))
     path = shlex.quote(tmux_dir)
     run = [shlex.quote(PEEKME), shlex.quote(os.path.join(env.bin, case["agent"]))]
+    if case.get("run"):
+        # Another program than a fake agent: these words, shell-quoted already.
+        run = case["run"]
     if case.get("via_link"):
         # As after `peekme install`: the agent's name is a link to peekme, in
         # front of the real agent on PATH. On macOS peekme then sees its own
@@ -254,6 +262,8 @@ def build_command(env, case, paths):
         "env", f"PATH={path}:\"$PATH\"",
         *([f"LD_LIBRARY_PATH={shlex.quote(env.libs)}"] if env.libs else []),
         f"PEEKME_FAKE_EXPLAINER=1", f"PEEKME_EVENT_LOG={shlex.quote(paths['events'])}",
+        # Over ssh too: the user's shell setup and links stay as they are.
+        "PEEKME_KEEP_SETUP=1",
         *[f"{k}={shlex.quote(v)}" for k, v in case.get("env", {}).items()],
         f"FAKEAGENT_LOG={shlex.quote(paths['agent'])}", "TERM_PROGRAM=", "LC_TERMINAL=",
         # Never read this desktop's own selection.

@@ -380,7 +380,9 @@ fn install_shim(shim_dir: &Path, shell: bool) -> Result<()> {
 /// setup the user made: our marked block, our fish file, our links. Returns a
 /// line to show when something changed.
 pub fn refresh() -> Option<String> {
-    if !installed() {
+    // End-to-end tests run a peekme under test in the real HOME: it must not
+    // move the user's links to itself.
+    if !installed() || std::env::var_os("PEEKME_KEEP_SETUP").is_some() {
         return None;
     }
     let shim_dir = launch::shim_dir()?;

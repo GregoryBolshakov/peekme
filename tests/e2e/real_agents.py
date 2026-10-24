@@ -4,7 +4,8 @@
     python3 tests/e2e/real_agents.py [--only SUBSTRING] [--jobs N] [--out DIR]
 
 Like matrix.py, but the agent is the real `claude` (full screen and classic
-screen), `codex`, `copilot` or `kiro-cli` (inline and after `/fullscreen`). The explainer stays canned
+screen), `codex`, `pi` (full screen and regular screen), `copilot` or `kiro-cli` (inline and
+after `/fullscreen`). The explainer stays canned
 (PEEKME_FAKE_EXPLAINER), so nothing is sent to a model: the test drags over a
 word on the agent's startup screen, presses the shortcut, and checks peekme's
 event log and the screen. This catches what a fake agent cannot: how each real
@@ -12,13 +13,15 @@ agent copies a selection inside tmux, how it draws, which keys it asks for.
 
 Run it from a directory Claude Code already trusts (this repo). Copilot gets
 an isolated config for that directory, without changing the owner's trust
-settings. Codex's update prompt is dismissed with Esc (skip once). Needs the
-agents installed and logged in.
+settings. Codex's update prompt is dismissed with Esc (skip once). Pi opens
+a saved chat in an agent folder of its own (no login, no skills). Needs the
+other agents installed and logged in.
 """
 import argparse, concurrent.futures as cf, itertools, json, os, re, shlex, shutil, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import matrix as m  # noqa: E402
+import pi_session  # noqa: E402
 
 # name -> (argv after the binary, words that show it is ready, word to drag,
 #          dialogs as (text on screen, keys to send))
@@ -29,6 +32,9 @@ AGENTS = {
     # No update prompt (only for this run; the user's config is not touched).
     "codex": ("codex", ["-c", "check_for_update_on_startup=false"], "OpenAI Codex", "OpenAI",
               [("Update available", b"\x1b"), ("Hooks need review", b"\x1b")]),
+    # Pi opens a saved chat (see `isolated_pi`); its rows are labelled `b0rNN`.
+    "pi-fullscreen": ("pi", ["--no-skills"], "b0r05", "b0r05", []),
+    "pi-regular": ("pi", ["--no-skills", "--tui-mode", "regular"], "b0r05", "b0r05", []),
     "copilot": ("copilot", ["--no-auto-update"], "uses AI", "Copilot", []),
     # Kiro starts inline and leaves the mouse to the terminal; `/fullscreen`
     # (typed, then Enter once its menu has caught up) takes the mouse.
@@ -40,7 +46,12 @@ START = {"kiro-fullscreen": ([b"/fullscreen", b"\r"], "Entered fullscreen")}
 
 
 # Agents that take the mouse themselves, so the wheel reaches them.
-WHEEL_TO_AGENT = ("codex", "claude-fullscreen", "copilot", "kiro-fullscreen")
+WHEEL_TO_AGENT = ("codex", "claude-fullscreen", "pi-fullscreen", "copilot", "kiro-fullscreen")
+# Agents that leave the mouse to the terminal (it selects; tmux with its
+# mouse off keeps the drag to itself).
+INLINE = ("claude-classic", "pi-regular", "kiro-inline")
+# Pi's agent folder and saved chat, environment and arguments: see `isolated_pi`.
+PI = {}
 
 
 def real_binary(name):
@@ -83,6 +94,15 @@ def isolated_copilot(work):
                 + "\nexec " + shlex.quote(binary) + ' "$@"\n')
     os.chmod(launcher, 0o700)
     return bindir
+
+
+def isolated_pi(work):
+    """An agent folder of its own with one saved chat, so Pi needs no login
+    and the owner's sessions and settings stay as they are."""
+    agent, path = pi_session.pi_agent(work, 1, 30)
+    PI["env"] = {"PI_CODING_AGENT_DIR": agent, "PI_OFFLINE": "1", "PI_SKIP_VERSION_CHECK": "1",
+                 "PI_TELEMETRY": "0"}
+    PI["args"] = ["--session", path]
 
 
 KIRO_SESSIONS = os.path.expanduser("~/.kiro/sessions/cli")
@@ -131,9 +151,15 @@ def run_case(env, case, out):
     # The local PATH, literally: over SSH the remote shell's PATH may lack node
     # (agents installed with nvm) - on this test machine it is the same host.
     path = tmux_dir + os.pathsep + os.environ.get("PATH", "")
+    if binary == "pi":
+        args = args + PI["args"]
+    extra = PI["env"] if binary == "pi" else {}
     inner = " ".join(["cd", shlex.quote(os.getcwd()), "&&", "env", f"PATH={shlex.quote(path)}",
                       *([f"LD_LIBRARY_PATH={shlex.quote(env.libs)}"] if env.libs else []),
                       "PEEKME_FAKE_EXPLAINER=1", f"PEEKME_EVENT_LOG={shlex.quote(events_path)}",
+                      # Over SSH too: the owner's shell setup and links stay as they are.
+                      "PEEKME_KEEP_SETUP=1",
+                      *[f"{k}={shlex.quote(v)}" for k, v in extra.items()],
                       "DISPLAY=", "WAYLAND_DISPLAY=",
                       shlex.quote(m.PEEKME), shlex.quote(agent), *map(shlex.quote, args)])
     case = dict(case, extkeys="off")
@@ -203,7 +229,7 @@ def run_case(env, case, out):
         t.send(b"\x1b")
         check(m.wait(lambda: events("close"), 5), "Esc did not close the box")
         time.sleep(1.0)
-        if case["profile"] == "mac-default" and case["agent"] in ("claude-classic", "kiro-inline"):
+        if case["profile"] == "mac-default" and case["agent"] in INLINE:
             # tmux handled the drag: peekme cannot see the click that clears
             # it, so a copy counts for π for 15 s. Wait that out.
             time.sleep(16)
@@ -264,13 +290,15 @@ def main():
     # to the terminal. A PTY has no native selection. The macOS jobs use real
     # terminals to check these cases, including the SSH diagnostic for Codex.
     todo = [c for c in todo if not (c["mouse"] == "off" and (
-        c["agent"] in ("claude-classic", "kiro-inline")
+        c["agent"] in INLINE
         or (c["agent"] == "codex" and c["layers"] != "direct")))]
     todo = [c for c in todo if args.only in f"{c['layers']}|mouse-{c['mouse']}|{c['profile']}|{c['agent']}"]
     for i, c in enumerate(todo):
         c["n"] = i
     work = tempfile.mkdtemp(prefix="peekme-real-")
     copilot_bin = isolated_copilot(work) if any(c["agent"] == "copilot" for c in todo) else None
+    if any(c["agent"].startswith("pi-") for c in todo):
+        isolated_pi(work)
     if copilot_bin:
         os.environ["PATH"] = copilot_bin + os.pathsep + os.environ.get("PATH", "")
     out = args.out or os.path.join(work, "cases")

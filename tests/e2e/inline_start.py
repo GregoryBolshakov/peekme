@@ -8,7 +8,9 @@ moves only, and never asks where that is. So peekme must learn the start row
 itself, and must never paint the rows above it: they hold the user's earlier
 shell output, which peekme has not seen. The terminal here prints shell lines
 first (a few, or a screenful so the screen scrolls), then starts peekme around
-a fake agent in that style, directly, in tmux and over SSH + tmux.
+a fake agent in that style, directly, in tmux and over SSH + tmux. Real Pi's
+regular screen (`--tui-mode regular`, a saved chat in an agent folder of its
+own) draws the same way and gets the same cases.
 
 Checks: the box opens right under the selected text as the terminal shows it,
 the earlier shell lines stay as they were while the box is open, a drag in the
@@ -22,21 +24,45 @@ import os, re, shlex, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import matrix as m  # noqa: E402
+import pi_session  # noqa: E402
+import real_agents as ra  # noqa: E402
 
 # A box that scrolls its own text shows where it is in its bottom border.
 SCROLLED = re.compile(r"╰[^╯]*\s\d+/\d+\s[^╯]*╯")
 
 
-def run(env, layer, shell_lines, n, out):
-    name = f"{layer}|{shell_lines} shell lines"
-    d = os.path.join(out, f"{layer}-{shell_lines}".replace("+", "-"))
+def pi_run(env, work):
+    """Real Pi on its regular screen, opening a saved chat of labelled rows
+    (`b0rNN`): the words after `env`, and what shows it is ready and what is
+    selected."""
+    agent, path = pi_session.pi_agent(work, 1, 30)
+    pi = ra.real_binary("pi")
+    tmux_dir = os.path.dirname(os.path.abspath(env.tmux))
+    # Over SSH the remote PATH may lack node (Pi installed with nvm).
+    path_env = f"{tmux_dir}:{os.path.dirname(pi)}:" + os.environ.get("PATH", "")
+    words = [f"PATH={shlex.quote(path_env)}", f"PI_CODING_AGENT_DIR={shlex.quote(agent)}",
+             "PI_OFFLINE=1", "PI_SKIP_VERSION_CHECK=1", "PI_TELEMETRY=0",
+             shlex.quote(m.PEEKME), shlex.quote(pi), "--no-skills", "--tui-mode", "regular",
+             "--session", shlex.quote(path)]
+    return words, "b0r30", "b0r20 words of row 20 in block 0"
+
+
+def run(env, layer, shell_lines, n, out, pi=None):
+    agent = "pi" if pi else "classic"
+    name = f"{agent}|{layer}|{shell_lines} shell lines"
+    d = os.path.join(out, f"{agent}-{layer}-{shell_lines}".replace("+", "-"))
     os.makedirs(d, exist_ok=True)
     paths = {"events": os.path.join(d, "events.jsonl"), "agent": os.path.join(d, "agent.jsonl")}
+    ready, selected = "fake status line", "alpha bravo"
     case = dict(layers=layer, mouse="off", extkeys="off", agent="classic", n=n,
-                env={"PEEKME_SELECTION": "alpha bravo", "PEEKME_FAKE_LINES": "12"})
+                env={"PEEKME_SELECTION": selected, "PEEKME_FAKE_LINES": "12"})
+    if pi:
+        case["run"], ready, selected = pi
+        case["env"]["PEEKME_SELECTION"] = selected
     argv, socks = m.build_command(env, case, paths)
     shell = "".join(f"user@host:~$ echo shell line {i}\\r\\nshell line {i}\\r\\n" for i in range(shell_lines // 2))
-    line = f"printf %b {shlex.quote(shell + 'user@host:~$ claude' + chr(92) + 'r' + chr(92) + 'n')}; {argv[2]}"
+    typed = "user@host:~$ " + agent + chr(92) + "r" + chr(92) + "n"
+    line = f"printf %b {shlex.quote(shell + typed)}; {argv[2]}"
     t = m.Term(["/bin/sh", "-c", line], m.clean_env(TERM="xterm-256color"), os.path.join(d, "terminal.bin"))
     fails = []
 
@@ -44,11 +70,11 @@ def run(env, layer, shell_lines, n, out):
         return [e for e in m.jsonl(paths["events"]) if e["event"] == kind]
 
     try:
-        if not m.wait(lambda: any("fake status line" in l for l in t.screen()), 15):
+        if not m.wait(lambda: any(ready in l for l in t.screen()), 30 if pi else 15):
             return name, ["agent never drew"]
-        time.sleep(0.5)
+        time.sleep(3 if pi else 0.5)
         before = t.screen()
-        sel_row = max(i for i, l in enumerate(before) if "alpha bravo" in l)
+        sel_row = max(i for i, l in enumerate(before) if selected in l)
         shell_rows = [i for i, l in enumerate(before) if "shell line" in l or "user@host" in l]
         t.send(b"\x1bp")
         opened = m.wait(lambda: events("open"), 6)
@@ -133,18 +159,26 @@ def main():
     out = os.path.join(work, "cases")
     layers = ["direct", "tmux", "ssh+tmux"]
     env = m.Env(work, need_ssh=True)
-    failed = 0
+    agents = [None]
+    if ra.real_binary("pi"):
+        agents.append("pi")
+    else:
+        print("pi not installed: its cases are skipped")
+    failed = total = 0
     try:
         n = 0
-        for layer in layers:
-            for shell_lines in (2, 34):
-                name, fails = run(env, layer, shell_lines, n, out)
-                n += 1
-                print(("ok    " if not fails else "FAIL  ") + name + ("" if not fails else "  <- " + "; ".join(fails)))
-                failed += bool(fails)
+        for agent in agents:
+            for layer in layers:
+                for shell_lines in (2, 34):
+                    pi = pi_run(env, os.path.join(work, f"pi-{n}")) if agent else None
+                    name, fails = run(env, layer, shell_lines, n, out, pi)
+                    n += 1
+                    total += 1
+                    print(("ok    " if not fails else "FAIL  ") + name + ("" if not fails else "  <- " + "; ".join(fails)))
+                    failed += bool(fails)
     finally:
         env.stop()
-    print(f"\n{2 * len(layers) - failed}/{2 * len(layers)} passed. Artifacts: {out}")
+    print(f"\n{total - failed}/{total} passed. Artifacts: {out}")
     sys.exit(1 if failed else 0)
 
 
