@@ -1024,7 +1024,7 @@ mod tests {
         symlink(dir.join("gone"), shims.join("copilot")).unwrap();
 
         let (added, moved) = relink(&shims, &me, false);
-        assert_eq!(added, vec!["`copilot`", "`kiro-cli`", "`pi`"]);
+        assert_eq!(added, vec!["`pi`", "`copilot`", "`kiro-cli`"]);
         assert_eq!(moved, vec![("0.1.0".to_string(), "`codex`".to_string())]);
         let target = |a: &str| std::fs::canonicalize(shims.join(a)).unwrap();
         assert_eq!(target("codex"), me.canonicalize().unwrap());

@@ -1,5 +1,5 @@
 //! peekme: select text in an agent CLI's output (Claude Code, Codex CLI,
-//! GitHub Copilot CLI, Kiro CLI, Pi), press Alt+P, and read an explanation
+//! Pi, GitHub Copilot CLI, Kiro CLI), press Alt+P, and read an explanation
 //! that opens inline next to it.
 //!
 //! The terminal side (pseudo-terminal, shadow emulator, the box drawn in place)

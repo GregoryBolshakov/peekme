@@ -8,18 +8,18 @@ use std::path::{Path, PathBuf};
 pub enum Agent {
     Claude,
     Codex,
+    Pi,
     Copilot,
     Kiro,
-    Pi,
 }
 
 impl Agent {
     pub const ALL: [Agent; 5] = [
         Agent::Claude,
         Agent::Codex,
+        Agent::Pi,
         Agent::Copilot,
         Agent::Kiro,
-        Agent::Pi,
     ];
 
     /// The command users type.
@@ -65,12 +65,12 @@ impl Agent {
         }
     }
 
-    /// "Claude Code, Codex, GitHub Copilot CLI, Kiro CLI and Pi", for messages.
+    /// "Claude Code, Codex, Pi, GitHub Copilot CLI and Kiro CLI", for messages.
     pub fn all_names() -> String {
         list(Agent::ALL.iter().map(|a| a.name().to_string()).collect())
     }
 
-    /// "`claude`, `codex`, `copilot`, `kiro-cli` or `pi`", for messages.
+    /// "`claude`, `codex`, `pi`, `copilot` or `kiro-cli`", for messages.
     pub fn all_commands(last: &str) -> String {
         let mut v: Vec<String> = Agent::ALL
             .iter()
@@ -188,11 +188,11 @@ mod tests {
         assert_eq!(Agent::from_program("htop"), None);
         assert_eq!(
             Agent::all_names(),
-            "Claude Code, Codex, GitHub Copilot CLI, Kiro CLI and Pi"
+            "Claude Code, Codex, Pi, GitHub Copilot CLI and Kiro CLI"
         );
         assert_eq!(
             Agent::all_commands("or"),
-            "`claude`, `codex`, `copilot`, `kiro-cli` or `pi`"
+            "`claude`, `codex`, `pi`, `copilot` or `kiro-cli`"
         );
     }
 

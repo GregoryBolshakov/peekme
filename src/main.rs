@@ -8,20 +8,20 @@ use std::io::IsTerminal;
 
 const HELP: &str = "\
 peekme {version}
-Select text in Claude Code, Codex CLI, GitHub Copilot CLI, Kiro CLI or Pi
+Select text in Claude Code, Codex CLI, Pi, GitHub Copilot CLI or Kiro CLI
 output with the mouse, press Alt+P (Option+P on a Mac), and an explanation from
 your chat's model opens right next to it. Esc closes it. Alt+Q (Option+Q), Q for
 question, asks first: type a question about the selection, and the chat's own
 model answers it with the whole conversation.
 
 USAGE:
-    peekme                     run the first installed of claude, codex, copilot, kiro-cli, pi
+    peekme                     run the first installed of claude, codex, pi, copilot, kiro-cli
     peekme claude [ARGS...]    run claude with peekme
     peekme codex [ARGS...]     run codex with peekme
+    peekme pi [ARGS...]        run pi with peekme
     peekme copilot [ARGS...]   run copilot with peekme
     peekme kiro-cli [ARGS...]  run kiro-cli with peekme
-    peekme pi [ARGS...]        run pi with peekme
-    peekme install             make typing `claude`, `codex`, `copilot`, `kiro-cli`, `pi`
+    peekme install             make typing `claude`, `codex`, `pi`, `copilot`, `kiro-cli`
                                open them with peekme
     peekme install --shell     also start every new terminal's shell with peekme, so
                                Alt+P works on any text there
@@ -30,7 +30,7 @@ USAGE:
     peekme doctor              check the setup
     peekme -- COMMAND [ARGS]   run any other command with peekme
 
-After `peekme install`, `command claude` (or codex, copilot, kiro-cli, pi) runs
+After `peekme install`, `command claude` (or codex, pi, copilot, kiro-cli) runs
 the agent without peekme once.
 
 ENVIRONMENT:
@@ -38,14 +38,14 @@ ENVIRONMENT:
     PEEKME_CLAUDE_BIN    claude binary used for the explainer (default: the one on PATH)
     PEEKME_MODEL         model for Codex explanations (default: the chat's model)
     PEEKME_CODEX_BIN     codex binary used for the explainer (default: the one on PATH)
+    PEEKME_PI_MODEL      model for Pi explanations, provider/id (default: the chat's own)
+    PEEKME_PI_BIN        pi binary used for the explainer (default: the one on PATH)
     PEEKME_COPILOT_MODEL model for Copilot explanations (default: the chat's model)
     PEEKME_COPILOT_BIN   copilot binary used for the explainer (default: the one on PATH)
     PEEKME_KIRO_MODEL    model for Kiro explanations (default: the chat's model)
     PEEKME_KIRO_BIN      kiro-cli binary used for the explainer (default: the one on PATH)
-    PEEKME_PI_MODEL      model for Pi explanations, provider/id (default: the chat's own)
-    PEEKME_PI_BIN        pi binary used for the explainer (default: the one on PATH)
-    PEEKME_CLAUDE_ASK_MODEL, PEEKME_CODEX_ASK_MODEL, PEEKME_COPILOT_ASK_MODEL,
-    PEEKME_KIRO_ASK_MODEL, PEEKME_PI_ASK_MODEL
+    PEEKME_CLAUDE_ASK_MODEL, PEEKME_CODEX_ASK_MODEL, PEEKME_PI_ASK_MODEL,
+    PEEKME_COPILOT_ASK_MODEL, PEEKME_KIRO_ASK_MODEL
                          model for typed questions (default: the chat's own model)
 ";
 
