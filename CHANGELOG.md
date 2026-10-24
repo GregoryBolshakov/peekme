@@ -1,7 +1,20 @@
 # Changelog
 
-## 0.6.1 (2026-10-23)
+## 0.7.0 (2026-10-24)
 
+- New: [Pi](https://pi.dev), the fifth agent. After `peekme install`, typing `pi` opens it with
+  peekme, on its full screen and on its regular screen (`--tui-mode regular`), also inside tmux
+  and over SSH. A setup from an older peekme gets `pi` the next time peekme starts.
+  Explanations go through `pi --mode rpc` with the providers you logged in to in Pi, with no
+  tools and no saved session, and use your chat's model. `PEEKME_PI_MODEL` and
+  `PEEKME_PI_ASK_MODEL` take another one as provider/model. peekme starts Pi with
+  `PI_CLIPBOARD_OSC52=1`, so a drag in Pi reaches it also over SSH. The other program called
+  `pi`, which prints the digits of pi, runs without peekme.
+- Agents are listed in this order now: Claude Code, Codex, Pi, Copilot CLI, Kiro CLI. A bare
+  `peekme` starts the first one installed in this order.
+- Fixed: inside tmux, Esc pressed twice quickly reached the agent as Alt+Esc when its input line
+  was live under the box, and the boxes stayed open. Now the first Esc closes the inner box and
+  the second one the outer box.
 - Fixed: a long selection, such as a big diff that Claude Code scrolled while you dragged,
   got no dotted underline and its answer was not saved. The model also saw only the last
   or first few words of it. Now the model gets all of the selected text, the rows of it on
